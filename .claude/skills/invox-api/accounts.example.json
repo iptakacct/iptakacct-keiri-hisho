@@ -1,0 +1,12 @@
+{
+  "_comment": "このファイルを accounts.json にコピーして使う。invox_company_code はinvoxの企業コード。1アカウントで複数社を部門で区別する場合は1エントリにまとめる。",
+  "accounts": [
+    {
+      "name": "サンプルA",
+      "invox_company_code": "SMPL1",
+      "instance": "サンプルA",
+      "credentials_path": "サンプルA/.claude/scripts/credentials_invox_SAMPLEA.json",
+      "slack_channel": "CH-SAMPLE-A"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "_comment": "このファイルを companies.json にコピーして使う。company_id はfreeeの事業所ID（認可時にURLで確認できる）。credentials_path は各インスタンスの .claude/scripts/ 配下（credentials* は .gitignore 対象）。",
+  "companies": [
+    {
+      "name": "株式会社サンプルA",
+      "company_id": 100001,
+      "instance": "サンプルA",
+      "credentials_path": "サンプルA/.claude/scripts/credentials_freee_サンプルA.json",
+      "slack_channel": "CH-SAMPLE-A",
+      "monthly_check": {
+        "variance_threshold": 0.30,
+        "recurring_min_months": 6,
+        "variance_history_months": 6,
+        "variance_materiality_floor": 10000
+      }
+    }
+  ]
+}

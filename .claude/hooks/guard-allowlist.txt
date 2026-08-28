@@ -1,0 +1,2 @@
+# git clone / git push / pip・npm の git直インストールを許可するリポジトリの場所（1行1つ）
+# 例: github.com/your-org      ← 自社のGitHubアカウント・組織に書き換える

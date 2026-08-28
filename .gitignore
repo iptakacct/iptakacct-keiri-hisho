@@ -1,0 +1,20 @@
+# 秘密・認証情報
+.env
+.env.*
+!.env.example
+*.pem
+*_key
+credentials*
+.mcp.json
+*.log
+
+# ローカル環境依存（配布しない）
+upstream/local.json
+.claude/settings.local.json
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 実データ（各インスタンスで生成される生データ）
+*/work/mf-monthly-check/raw/
+*/work/monthly-check/raw/

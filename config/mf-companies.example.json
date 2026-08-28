@@ -1,0 +1,24 @@
+{
+  "_comment": "マネーフォワード クラウド会計の事業者名（mfc_ca_currentOfficeが返す名前）→インスタンスの対応表。このファイルを mf-companies.json にコピーして使う。mf-fee-post が接続先の会社を判定し、ログ・Slack投稿先・会社固有ルールの場所を決めるために参照する。",
+  "instances": [
+    {
+      "instance": "サンプルグループ",
+      "slack_channel_name": "#サンプルグループ",
+      "companies": ["株式会社サンプルA", "株式会社サンプルB"],
+      "log_file": "サンプルグループ/work/自動処理ログ.md",
+      "trade_partner_map": "サンプルグループ/work/取引先対応表.md",
+      "accounting_rules": "サンプルグループ/context/company/accounting-rules.md",
+      "intercompany_transfers": true,
+      "cross_company_handoff_file": "サンプルグループ/work/クロスカンパニー引き継ぎ.md"
+    },
+    {
+      "instance": "サンプル単体",
+      "slack_channel_name": "#サンプル単体",
+      "companies": ["サンプルC合同会社"],
+      "log_file": "サンプル単体/work/自動処理ログ.md",
+      "trade_partner_map": "サンプル単体/work/取引先対応表.md",
+      "accounting_rules": "サンプル単体/context/company/accounting-rules.md",
+      "intercompany_transfers": false
+    }
+  ]
+}

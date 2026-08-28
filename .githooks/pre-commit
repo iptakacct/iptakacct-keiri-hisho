@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# keiri-hisho: コミット前に固有情報・秘密の混入を検査する（tools/leak-scan.py）
+set -u
+export PYTHONIOENCODING=utf-8 PYTHONUTF8=1
+ROOT="$(git rev-parse --show-toplevel)"
+PY=""; for c in python3 python py; do if "$c" -c "import sys" >/dev/null 2>&1; then PY="$c"; break; fi; done
+[ -n "$PY" ] || { echo "python が見つかりません" >&2; exit 1; }
+"$PY" "$ROOT/tools/leak-scan.py" --staged
+rc=$?
+if [ $rc -ne 0 ]; then
+  echo "pre-commit: leak-scan が失敗したためコミットを中止しました（rc=$rc）" >&2
+  exit 1
+fi

@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(Remove-Item -Recurse -Force:*)",
+      "Bash(git push --force:*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*_key)",
+      "Read(**/*.pem)",
+      "Read(**/credentials*)"
+    ],
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(Get-ChildItem:*)",
+      "Bash(Get-Content:*)",
+      "Bash(Select-String:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "WebSearch",
+      "WebFetch"
+    ],
+    "ask": [
+      "Write(context/company/**)",
+      "Write(context/customers/**)",
+      "Write(context/members/**)",
+      "Write(context/rules/**)",
+      "Edit(context/company/**)",
+      "Edit(context/customers/**)",
+      "Edit(context/members/**)",
+      "Edit(context/rules/**)",
+      "mcp__claude_ai_Slack__slack_send_message",
+      "mcp__claude_ai_Slack__slack_schedule_message",
+      "mcp__claude_ai_Slack__slack_create_conversation"
+    ]
+  }
+}

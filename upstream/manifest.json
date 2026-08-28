@@ -1,0 +1,42 @@
+{
+  "_comment": "開発元（上流）リポジトリからの取り込み管理。src=上流の相対パス、dst=このリポジトリの相対パス。last_synced_commitは /upstream-sync が更新する。上流のローカルパスは upstream/local.json（git管理外）に置く。",
+  "last_synced_commit": "5833693",
+  "mappings": [
+    { "src": "CLAUDE.md", "dst": "CLAUDE.md", "note": "インスタンス一覧・個人名・リポジトリURLは移植しない。構造・運用ルールのみ" },
+    { "src": ".claude/rules/", "dst": ".claude/rules/", "note": "日付付きの経緯・クライアント名入りの実例は除去し、ルール本文のみ移植" },
+    { "src": ".claude/hooks/guard.py", "dst": ".claude/hooks/guard.py", "note": "ALLOWEDはguard-allowlist.txtから読む構造に変更済み" },
+    { "src": ".claude/hooks/long-task-notify.py", "dst": ".claude/hooks/long-task-notify.py", "note": "メンションIDは環境設定ファイルのSLACK_MENTION_USER_IDから" },
+    { "src": ".claude/settings.json", "dst": ".claude/settings.json", "note": "" },
+    { "src": ".claude/agents/", "dst": ".claude/agents/", "note": "呼称の置換のみ" },
+    { "src": ".claude/skills/setup/", "dst": ".claude/skills/setup/", "note": "クライアント名入りの決定経緯は除去" },
+    { "src": ".claude/skills/new-instance/", "dst": ".claude/skills/new-instance/", "note": "" },
+    { "src": ".claude/skills/daily-log/", "dst": ".claude/skills/daily-log/", "note": "" },
+    { "src": ".claude/skills/daily-schedule/", "dst": ".claude/skills/daily-schedule/", "note": "" },
+    { "src": ".claude/skills/weekly-report/", "dst": ".claude/skills/weekly-report/", "note": "" },
+    { "src": ".claude/skills/slack-digest/", "dst": ".claude/skills/slack-digest/", "note": "" },
+    { "src": ".claude/skills/mtg-prep/", "dst": ".claude/skills/mtg-prep/", "note": "" },
+    { "src": ".claude/skills/meeting-email/", "dst": ".claude/skills/meeting-email/", "note": "署名の実名は置換" },
+    { "src": ".claude/skills/interview/", "dst": ".claude/skills/interview/", "note": "" },
+    { "src": ".claude/skills/sparring/", "dst": ".claude/skills/sparring/", "note": "" },
+    { "src": ".claude/skills/clip/", "dst": ".claude/skills/clip/", "note": "" },
+    { "src": ".claude/skills/knowledge-team/", "dst": ".claude/skills/knowledge-team/", "note": "" },
+    { "src": ".claude/skills/monthly-report-team/", "dst": ".claude/skills/monthly-report-team/", "note": "" },
+    { "src": ".claude/skills/mention-check/", "dst": ".claude/skills/mention-check/", "note": "ワークスペース名・チャンネルIDは除去" },
+    { "src": ".claude/skills/mf-fee-post/SKILL.md", "dst": ".claude/skills/mf-fee-post/SKILL.md", "note": "会社対応表→config/mf-companies.json、確認済みパターン→各インスタンスのaccounting-rules.md。グループ固有処理は型だけ残す" },
+    { "src": ".claude/skills/mf-fee-post/check-items-common.md", "dst": ".claude/skills/mf-fee-post/check-items-common.md", "note": "" },
+    { "src": ".claude/skills/mf-monthly-check/", "dst": ".claude/skills/mf-monthly-check/", "note": "known_safe_pairsの会社別一覧は移植せず、型だけ残す。Python内のコメントの社名は置換" },
+    { "src": ".claude/skills/freee-monthly-check/", "dst": ".claude/skills/freee-monthly-check/", "note": "Python内のコメントの社名は置換" },
+    { "src": ".claude/skills/freee-api-post/", "dst": ".claude/skills/freee-api-post/", "note": "companies.json→companies.example.json。setup-guideの個別事情は一般化" },
+    { "src": ".claude/skills/invox-api/", "dst": ".claude/skills/invox-api/", "note": "accounts.json→accounts.example.json。setup-guideは書き直し" },
+    { "src": "テンプレート/", "dst": "テンプレート/", "note": "" }
+  ],
+  "excluded": [
+    { "src": ".claude/skills/mf-fee-post-legacy/", "reason": "旧ブラウザ自動化版。MCP方式に置き換え済みで汎用版には不要" },
+    { "src": ".claude/skills/mf-fee-post/invox-<クライアント>-approval.md", "reason": "承認基準が特定クライアント固有。汎用の型が抽出できたら移植を検討" },
+    { "src": ".claude/skills/mf-fee-post/check-items-per-company.md", "reason": "会社別項目。汎用版では各インスタンスのaccounting-rules.mdに置く" },
+    { "src": ".claude/scripts/*.ps1", "reason": "Windows専用。automation.mdの方針（新規はクロスプラットフォーム）に沿ってbash版を作る際に移植" },
+    { "src": "<クライアント>/.claude/scripts/ (Slack Bot)", "reason": "クライアント固有のBot設定。Bot方式の汎用化は次点候補" },
+    { "src": "*/ (各インスタンスフォルダ)", "reason": "クライアント実データ。移植対象外" },
+    { "src": "docs/", "reason": "設計書は経緯にクライアント名を含む。必要な知見はSKILL.md側に反映済み" }
+  ]
+}
