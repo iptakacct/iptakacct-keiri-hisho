@@ -9,7 +9,7 @@ import json
 import os
 import sys
 
-sys.stdout.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")  # WindowsでCRLFにならないように
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 what = sys.argv[1] if len(sys.argv) > 1 else "root"
 
