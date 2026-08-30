@@ -21,7 +21,7 @@ freee会計のAPIを、会社ごとに発行したOAuthプライベートアプ�
 
 ## ファイル構成
 
-- `companies.json`：会社ごとの設定（`companies.example.json`からコピー）
+- `companies.json`：会社ごとの設定（`companies.example.json`からコピー）。任意項目`ignored_company_ids`（配列）に、対象社と同じfreeeアカウントに紐づいていて自分では削除できない事業所IDを列挙すると、疎通確認の「対象1社だけか」検証でその事業所を無視する
 - `lib/freee_api.py`：freee APIとのやりとり（トークン管理・API呼び出し）
 - `lib/freee_cli.py`：companies.json引き当て・ログ書き込み・CLIサブコマンド
 - `lib/find_python.sh`：`python3`/`python`のどちらが実行可能かを判定するヘルパー
@@ -54,6 +54,19 @@ freee会計のAPIを、会社ごとに発行したOAuthプライベートアプ�
 - **既存の売掛金・未収入金等への入金消込を自動化したい** → APIでは不可能。オーナーにfreee画面で1回だけ手動設定してもらう
 
 運用方針の全体像は`.claude/rules/output-format.md`の「freee会計の自動処理方針」節を参照。
+
+### ③ 登録済み取引の修正（科目・税区分・取引先・摘要・証憑）は`PUT /api/1/deals/{id}`で可能
+
+- 「自動で経理」から登録された取引（`deal_origin_name: 自動で経理`、明細と紐付き済み）でも、`details`の`tax_code`等を書き換える更新はできる（例：税区分を「課対仕入（控80）10%」から「課対仕入10%」へ修正し、再取得で反映と`payments`の明細紐付き維持を確認済み）
+- 手順：`GET /api/1/deals/{id}`で現状を取得 → `details`と`payments`に**既存の`id`を含めて**全体を送る（`id`を省くと明細行が作り直される恐れがある）→ 直後に`GET`で再取得して検証。金額・決済口座は変えない（明細との整合が崩れる）
+- ①〈消込ができない〉は「明細→取引の紐付けを**新規に作れない**」という意味で、既に紐付いた取引を直すことは妨げない
+
+### ④ ファイルボックスの証憑（receipts）の取得・添付
+
+- 一覧：`GET /api/1/receipts?start_date=&end_date=`（`created_at`基準）。スマホ・LINE登録の写真は`receipt_metadatum`（日付・金額・取引先）が空のことが多く、機械照合できない → `GET /api/1/receipts/{id}/download`（`Authorization: Bearer`、`company_id`をクエリで）で画像/PDFを落としてReadツールで目視する
+- 「添付済みか」は`receipts`側に項目が無い。`GET /deals`の各取引の`receipts[].id`を集めて差分を取る
+- 添付：`PUT /api/1/deals/{id}`に、既存の`details`/`payments`（idを含む）＋`receipt_ids`（既存＋追加）を渡す（税区分・決済は維持されることを検証済み）
+- 連携外の支払手段（個人カード・現金・QR決済）の領収書は、取引自体が無いので添付先が無い。役員立替の取引登録が先
 
 ## 今後の課題
 

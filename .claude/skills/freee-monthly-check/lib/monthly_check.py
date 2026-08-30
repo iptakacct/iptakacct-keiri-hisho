@@ -3,6 +3,7 @@
 API呼び出しから独立してユニットテストできる。"""
 
 import calendar
+import re
 
 
 def check_duplicates(deals):
@@ -77,6 +78,81 @@ def check_recurring_missing(deals, target_month, recurring_min_months=6):
                 "prior_months_present": sorted(prior_months),
             })
     findings.sort(key=lambda f: (f["partner_id"] or 0, f["account_item_id"] or 0))
+    return findings
+
+
+def _normalize_description(text):
+    """摘要の照合用に、空白・数字（「5月分」「2026/07」等）を取り除いた文字列を返す。"""
+    if not text:
+        return ""
+    text = text.translate(str.maketrans("０１２３４５６７８９　", "0123456789 "))
+    return re.sub(r"[\s0-9/\-\.:]", "", text)
+
+
+MISSING_ATTRIBUTES = ("partner_id", "item_id")
+MISSING_ATTRIBUTE_LABELS = {"partner_id": "取引先", "item_id": "品目"}
+
+
+def check_missing_partner_or_item(deals, target_month, lookback_months=2):
+    """monthly-closing-checklist.mdの項目8の注記（2026-08-31、オーナーの指示）：
+    定例取引の計上漏れ照合と同じdealsを使って、補助科目の付け忘れに相当する
+    「取引先（partner_id）・品目（item_id）の付け忘れ」を拾う。freeeには補助科目が
+    無く、取引先・品目がその役割を担うため。
+
+    照合キーは（account_item_id, 摘要を正規化したもの）。摘要が無い明細は照合できない
+    ので除外。対象月の明細で属性が空のものについて、直近lookback_months分の同じキーの
+    明細が1ヶ月以上存在し、かつ全てその属性付きなら候補（重要度B）。過去に空が混在する
+    キーは運用が揺れているだけなので対象外。"""
+    prior_months = month_range(target_month, lookback_months + 1)[:-1]
+    window = set(prior_months) | {target_month}
+
+    # attribute -> key -> month -> [value or None]
+    seen = {a: {} for a in MISSING_ATTRIBUTES}
+    labels = {}
+    target_deal_ids = {a: {} for a in MISSING_ATTRIBUTES}
+    for deal in deals:
+        month = (deal.get("issue_date") or "")[:7]
+        if month not in window:
+            continue
+        for detail in deal.get("details", []) or []:
+            desc = (detail.get("description") or "").strip()
+            key_text = _normalize_description(desc)
+            if not key_text:
+                continue
+            key = (detail.get("account_item_id"), key_text)
+            labels.setdefault(key, desc)
+            values = {"partner_id": deal.get("partner_id"), "item_id": detail.get("item_id")}
+            for attr in MISSING_ATTRIBUTES:
+                seen[attr].setdefault(key, {}).setdefault(month, []).append(values[attr])
+                if month == target_month and values[attr] is None:
+                    ids = target_deal_ids[attr].setdefault(key, [])
+                    if deal.get("id") not in ids:
+                        ids.append(deal.get("id"))
+
+    findings = []
+    for attr in MISSING_ATTRIBUTES:
+        for key, by_month in seen[attr].items():
+            target_values = by_month.get(target_month)
+            if not target_values or all(v is not None for v in target_values):
+                continue
+            prior_present = [m for m in prior_months if m in by_month]
+            if not prior_present:
+                continue
+            prior_values = [v for m in prior_present for v in by_month[m]]
+            if any(v is None for v in prior_values):
+                continue
+            account_item_id, _ = key
+            findings.append({
+                "check": "missing_subaccount",
+                "severity": "B",
+                "attribute": attr,
+                "account_item_id": account_item_id,
+                "key_label": labels[key],
+                "deal_ids": target_deal_ids[attr].get(key, []),
+                "prior_values": sorted(set(prior_values)),
+                "prior_months_present": prior_present,
+            })
+    findings.sort(key=lambda f: (f["attribute"], f["account_item_id"] or 0, f["key_label"]))
     return findings
 
 
@@ -232,6 +308,15 @@ def resolve_finding_names(findings, account_item_names=None, partner_names=None)
     account_item_names = account_item_names or {}
     partner_names = partner_names or {}
     for finding in findings:
+        if finding["check"] == "missing_subaccount":
+            account_item_name = account_item_names.get(finding["account_item_id"])
+            if account_item_name:
+                finding["account_item_name"] = account_item_name
+            if finding["attribute"] == "partner_id":
+                names = [partner_names.get(v) for v in finding["prior_values"]]
+                if all(names):
+                    finding["prior_value_names"] = names
+            continue
         if finding["check"] != "recurring_missing":
             continue
         account_item_name = account_item_names.get(finding["account_item_id"])
@@ -260,6 +345,10 @@ def describe_finding(finding):
         return f"勘定科目「{finding['account_item_name']}」の増減"
     if check == "negative_balance":
         return f"「{finding['account_item_name']}」のマイナス残高"
+    if check == "missing_subaccount":
+        account_item = _name_or_id(finding.get("account_item_name"), finding["account_item_id"])
+        label = MISSING_ATTRIBUTE_LABELS[finding["attribute"]]
+        return f"「{account_item}」の{label}の付け忘れ候補"
     return check
 
 
@@ -324,6 +413,24 @@ def format_finding_detail(finding):
             "通常マイナスにならない科目がマイナス残高になっています。\n\n"
             "確認事項：\n"
             "消込先の誤りや二重計上・計上漏れがないか確認してください。"
+        )
+    if check == "missing_subaccount":
+        label = MISSING_ATTRIBUTE_LABELS[finding["attribute"]]
+        account_item = _name_or_id(finding.get("account_item_name"), finding["account_item_id"])
+        prior = "、".join(finding["prior_months_present"])
+        names = finding.get("prior_value_names")
+        values = "、".join(str(v) for v in (names or finding["prior_values"]))
+        deal_ids = ", ".join(str(i) for i in finding["deal_ids"])
+        return (
+            f"勘定科目：{account_item}\n"
+            f"摘要：{finding['key_label']}\n"
+            f"対象月の取引ID（{label}なし）：{deal_ids}\n"
+            f"過去に使われていた{label}：{values}（{prior}）\n\n"
+            "理由：\n"
+            f"同じ勘定科目・摘要の取引が直近では一貫して{label}付きで登録されていましたが、"
+            f"対象月は{label}なしで登録されています。\n\n"
+            "確認事項：\n"
+            f"{label}の付け忘れでないか確認し、必要なら{label}を設定してください。"
         )
     return ""
 
@@ -485,6 +592,7 @@ def run_monthly_check(api_call, token, company_id, company_name, target_month, c
     variance_materiality_floor = config.get(
         "variance_materiality_floor", DEFAULT_VARIANCE_MATERIALITY_FLOOR
     )
+    subaccount_lookback_months = config.get("subaccount_lookback_months", 2)
 
     findings = []
     errors = []
@@ -498,8 +606,10 @@ def run_monthly_check(api_call, token, company_id, company_name, target_month, c
         target_month_deals = [d for d in deals if d["issue_date"][:7] == target_month]
         findings += check_duplicates(target_month_deals)
         findings += check_recurring_missing(deals, target_month, recurring_min_months)
+        findings += check_missing_partner_or_item(
+            deals, target_month, lookback_months=subaccount_lookback_months)
     except Exception as e:
-        errors.append(f"重複取引チェック・定例取引漏れチェック: {e}")
+        errors.append(f"重複取引チェック・定例取引漏れチェック・取引先/品目の付け忘れチェック: {e}")
 
     try:
         months = month_range(target_month, variance_history_months + 1)
@@ -528,7 +638,9 @@ def run_monthly_check(api_call, token, company_id, company_name, target_month, c
     # 取引先名はdealsのレスポンスに入っていないため、IDを表示するfinding
     # （定例取引の計上漏れ）がある場合に限り、1回だけGETで引く。
     partner_names = {}
-    if any(f["check"] == "recurring_missing" for f in findings):
+    if any(f["check"] == "recurring_missing"
+           or (f["check"] == "missing_subaccount" and f["attribute"] == "partner_id")
+           for f in findings):
         try:
             partner_names = fetch_partner_names(api_call, token, company_id)
         except Exception as e:

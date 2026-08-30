@@ -20,13 +20,13 @@ def _journal(journal_id, transaction_date, value, debitor_name, creditor_name, r
 
 class TestFlattenJournalBranches(unittest.TestCase):
     def test_flattens_single_branch_journal(self):
-        journals = [_journal("J1", "2026-07-01", 50000, "通信費", "普通預金", "Zoom利用料")]
+        journals = [_journal("J1", "2026-07-01", 50000, "通信費", "普通預金", "通信サービス利用料")]
         lines = mf_monthly_check.flatten_journal_branches(journals)
         self.assertEqual(len(lines), 1)
         self.assertEqual(lines[0], {
             "journal_id": "J1", "transaction_date": "2026-07-01", "value": 50000,
             "debitor_account_name": "通信費", "creditor_account_name": "普通預金",
-            "remark": "Zoom利用料",
+            "remark": "通信サービス利用料",
         })
 
     def test_flattens_multiple_branches_into_separate_lines(self):
@@ -841,3 +841,120 @@ class TestCLIArgumentParsing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCheckMissingSubaccount(unittest.TestCase):
+    """monthly-closing-checklist.md 項目8の注記（2026-08-31）：定例取引の照合と同じ
+    走査で、以前は専用補助科目付きだった摘要が対象月「補助科目なし」のものを拾う。"""
+
+    @staticmethod
+    def _j(jid, date, account, sub, remark, partner=None, realized=True):
+        debitor = {"account_name": account, "value": 1000}
+        if sub is not None:
+            debitor["sub_account_name"] = sub
+        if partner is not None:
+            debitor["trade_partner_name"] = partner
+        return {
+            "id": jid, "transaction_date": date, "is_realized": realized,
+            "branches": [{
+                "debitor": debitor,
+                "creditor": {"account_name": "普通預金", "value": 1000},
+                "remark": remark,
+            }],
+        }
+
+    def test_flags_when_prior_months_had_subaccount_and_target_lacks_it(self):
+        journals = [
+            self._j("J1", "2026-05-31", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J2", "2026-06-30", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J3", "2026-07-31", "業務委託料", None, "外注先A"),
+        ]
+        findings = mf_monthly_check.check_missing_subaccount(journals, "2026-07", lookback_months=2)
+        self.assertEqual(len(findings), 1)
+        f = findings[0]
+        self.assertEqual(f["check"], "missing_subaccount")
+        self.assertEqual(f["severity"], "B")
+        self.assertEqual(f["account_name"], "業務委託料")
+        self.assertEqual(f["key_label"], "外注先A")
+        self.assertEqual(f["journal_ids"], ["J3"])
+        self.assertEqual(f["prior_sub_account_names"], ["補助科目A"])
+        self.assertEqual(f["prior_months_present"], ["2026-05", "2026-06"])
+
+    def test_does_not_flag_when_target_month_has_subaccount(self):
+        journals = [
+            self._j("J1", "2026-05-31", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J2", "2026-06-30", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J3", "2026-07-31", "業務委託料", "補助科目A", "外注先A"),
+        ]
+        self.assertEqual(mf_monthly_check.check_missing_subaccount(journals, "2026-07"), [])
+
+    def test_does_not_flag_when_prior_months_were_inconsistent(self):
+        journals = [
+            self._j("J1", "2026-05-31", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J2", "2026-06-30", "業務委託料", None, "外注先A"),
+            self._j("J3", "2026-07-31", "業務委託料", None, "外注先A"),
+        ]
+        self.assertEqual(mf_monthly_check.check_missing_subaccount(journals, "2026-07"), [])
+
+    def test_does_not_flag_when_no_prior_history_within_lookback(self):
+        journals = [
+            self._j("J1", "2026-03-31", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J3", "2026-07-31", "業務委託料", None, "外注先A"),
+        ]
+        self.assertEqual(mf_monthly_check.check_missing_subaccount(journals, "2026-07", lookback_months=2), [])
+
+    def test_treats_different_remark_as_different_key(self):
+        journals = [
+            self._j("J1", "2026-06-30", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J3", "2026-07-31", "業務委託料", None, "外注先B"),
+        ]
+        self.assertEqual(mf_monthly_check.check_missing_subaccount(journals, "2026-07"), [])
+
+    def test_normalizes_digits_and_spaces_in_remark(self):
+        journals = [
+            self._j("J1", "2026-05-31", "地代家賃", "本社", "家賃 5月分"),
+            self._j("J2", "2026-06-30", "地代家賃", "本社", "家賃　6月分"),
+            self._j("J3", "2026-07-31", "地代家賃", None, "家賃 7月分"),
+        ]
+        findings = mf_monthly_check.check_missing_subaccount(journals, "2026-07")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["account_name"], "地代家賃")
+
+    def test_falls_back_to_trade_partner_name_when_remark_empty(self):
+        journals = [
+            self._j("J1", "2026-05-31", "売掛金", "決済代行A", "", partner="決済代行A社"),
+            self._j("J2", "2026-06-30", "売掛金", "決済代行A", "", partner="決済代行A社"),
+            self._j("J3", "2026-07-31", "売掛金", None, "", partner="決済代行A社"),
+        ]
+        findings = mf_monthly_check.check_missing_subaccount(journals, "2026-07")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["key_label"], "決済代行A社")
+
+    def test_skips_lines_with_neither_remark_nor_partner(self):
+        journals = [
+            self._j("J1", "2026-05-31", "売掛金", "決済代行A", ""),
+            self._j("J2", "2026-06-30", "売掛金", "決済代行A", ""),
+            self._j("J3", "2026-07-31", "売掛金", None, ""),
+        ]
+        self.assertEqual(mf_monthly_check.check_missing_subaccount(journals, "2026-07"), [])
+
+    def test_ignores_unrealized_journals(self):
+        journals = [
+            self._j("J1", "2026-05-31", "売掛金", "A社", "請求"),
+            self._j("J2", "2026-06-30", "売掛金", "A社", "請求"),
+            self._j("J3", "2026-07-31", "売掛金", None, "請求", realized=False),
+        ]
+        self.assertEqual(mf_monthly_check.check_missing_subaccount(journals, "2026-07"), [])
+
+    def test_report_includes_missing_subaccount_section(self):
+        journals = [
+            self._j("J1", "2026-05-31", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J2", "2026-06-30", "業務委託料", "補助科目A", "外注先A"),
+            self._j("J3", "2026-07-31", "業務委託料", None, "外注先A"),
+        ]
+        report = mf_monthly_check.run_monthly_check({
+            "target_month": "2026-07", "company_name": "テスト社",
+            "journals": journals, "trial_pl_by_month": {}, "trial_bs": {},
+        })
+        self.assertIn("補助科目の付け忘れ候補", report)
+        self.assertIn("補助科目A", report)

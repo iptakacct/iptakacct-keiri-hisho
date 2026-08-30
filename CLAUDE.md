@@ -12,7 +12,7 @@
 
 ## 参照先（全インスタンス共通）
 
-- `.claude/rules/` — 文体・トーン（`communication.md`）、成果物の書式（`output-format.md`）、機密の扱い（`security.md`）、自動化スクリプトの型（`automation.md`）、月次締めチェックリスト（`monthly-closing-checklist.md`）、法人格・団体種別の略語（`company-name-abbreviations.md`）、ミス対応の原則（`error-handling.md`）。全クライアント共通のルール。
+- `.claude/rules/` — 文体・トーン（`communication.md`）、成果物の書式（`output-format.md`）、機密の扱い（`security.md`）、自動化スクリプトの型（`automation.md`）、月次締めチェックリスト（`monthly-closing-checklist.md`）、法人格・団体種別の略語（`company-name-abbreviations.md`）、ミス対応の原則（`error-handling.md`）、データ取り込みの二重取り込み防止（`data-import.md`）。全クライアント共通のルール。
 - 各インスタンス（クライアントフォルダ）は、この共通ルールに加えて、自分のフォルダ内の `.claude/rules/` にインスタンス固有の追加ルールを持つことができる。
 - `.claude/skills/`・`.claude/agents/` — 全インスタンス共通のスキル・エージェント。Claude Codeは起動ディレクトリからリポジトリルートまでの親ディレクトリのスキルを読み込むので、クライアントフォルダで起動しても使える。各インスタンスの `.claude/skills/` には**そのクライアント固有のもの**だけを置く。
 - **インスタンス用スキル内の相対パスの基準**：`work/daily/`・`context/` のような相対パスは、対象クライアントのインスタンスフォルダ基準。クライアントフォルダで起動していればその直下、`keiri-hisho/` ルートで起動している場合は対象クライアントを確認してから、そのフォルダ配下に読み書きする。
@@ -35,6 +35,14 @@
 
 - このリポジトリは自社のプライベートリポジトリにバックアップする（リモートURLは `.claude/hooks/guard-allowlist.txt` に登録した場所のみ push できる）。
 - **git commitするたびに、続けて`git push origin master`も必ず行う**。バックアップを常に最新に保つため。
+
+## テンプレート・共通への還流
+
+複数社のBPOで蓄積される知見は、会計システムに限らず周辺アプリ・メール・Slack・銀行・給与などすべて、次のクライアントで最初から使える形にする。
+
+- **その場で判定する**：インスタンスの `context/`・`CLAUDE.md`・`.claude/rules/`・固有スキルに新しい事実・手順・ツールの癖を書いたら、必ず「これは他社でも使えるか」を一言判定する。使えるなら同時に書く——振る舞い・手順は共通（`.claude/rules/`・`.claude/skills/`、既存インスタンスにも即時に効く）へ、骨組み・項目は `テンプレート/`（新規インスタンスに効く）へ。固有名詞（社名・ID・金額）はテンプレ側に入れず、一般形にする
+- **週次の安全網**：`.claude/scripts/weekly-template-review.sh` をスケジューラー（毎週1回）で実行すると、前週のインスタンス配下の変更から「テンプレ／共通へ入れるべき候補」を全体通知チャンネルに報告する。自動では書き換えない
+- **適用**：候補を反映するときは `/template-sync` を実行する（オーナーの承認後）
 
 ## 上流（開発元）からの更新取り込み
 

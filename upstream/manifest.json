@@ -1,6 +1,6 @@
 {
   "_comment": "開発元（上流）リポジトリからの取り込み管理。src=上流の相対パス、dst=このリポジトリの相対パス。last_synced_commitは /upstream-sync が更新する。上流のローカルパスは upstream/local.json（git管理外）に置く。",
-  "last_synced_commit": "5833693",
+  "last_synced_commit": "317de9b",
   "mappings": [
     { "src": "CLAUDE.md", "dst": "CLAUDE.md", "note": "インスタンス一覧・個人名・リポジトリURLは移植しない。構造・運用ルールのみ" },
     { "src": ".claude/rules/", "dst": ".claude/rules/", "note": "日付付きの経緯・クライアント名入りの実例は除去し、ルール本文のみ移植" },
@@ -28,6 +28,8 @@
     { "src": ".claude/skills/freee-monthly-check/", "dst": ".claude/skills/freee-monthly-check/", "note": "Python内のコメントの社名は置換" },
     { "src": ".claude/skills/freee-api-post/", "dst": ".claude/skills/freee-api-post/", "note": "companies.json→companies.example.json。setup-guideの個別事情は一般化" },
     { "src": ".claude/skills/invox-api/", "dst": ".claude/skills/invox-api/", "note": "accounts.json→accounts.example.json。setup-guideは書き直し" },
+    { "src": ".claude/scripts/weekly-template-review.sh", "dst": ".claude/scripts/weekly-template-review.sh", "note": "メンションIDは.envのSLACK_MENTION_USER_IDから。プロンプト内のインスタンス名・設計書パスは除去" },
+    { "src": ".claude/skills/template-sync/", "dst": ".claude/skills/template-sync/", "note": "呼称の置換、keiri-hisho還流への言及は除去" },
     { "src": "テンプレート/", "dst": "テンプレート/", "note": "" }
   ],
   "excluded": [
@@ -37,6 +39,7 @@
     { "src": ".claude/scripts/*.ps1", "reason": "Windows専用。automation.mdの方針（新規はクロスプラットフォーム）に沿ってbash版を作る際に移植" },
     { "src": "<クライアント>/.claude/scripts/ (Slack Bot)", "reason": "クライアント固有のBot設定。Bot方式の汎用化は次点候補" },
     { "src": "*/ (各インスタンスフォルダ)", "reason": "クライアント実データ。移植対象外" },
-    { "src": "docs/", "reason": "設計書は経緯にクライアント名を含む。必要な知見はSKILL.md側に反映済み" }
+    { "src": "docs/", "reason": "設計書は経緯にクライアント名を含む。必要な知見はSKILL.md側に反映済み" },
+    { "src": ".claude/skills/tax-return-prep/", "reason": "開発途中（フェーズ1）。安定したらmappingsへ追加して丸ごと移植する（2026-08-31保留）" }
   ]
 }

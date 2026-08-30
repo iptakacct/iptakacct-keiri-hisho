@@ -17,6 +17,8 @@ description: 「月次チェックして」「〇〇社の月次チェック」�
 6. **法人カード請求書取り込みの二重計上**（`check_upsider_billing_duplicate`）：カード利用明細のAPI連携で日々計上される未払金に対し、請求書取り込み（`entered_by: JOURNAL_TYPE_BILLING`）経由でカード会社宛の請求書が計上されるとA判定
 7. **前払費用の当月償却漏れ**（`check_prepaid_expense_amortization_missing`）：「前払費用」勘定の借方合計から貸方合計を差し引いた簡易残高が正なのに、対象月に貸方（償却）エントリが一件も無い場合にB判定。**既知の限界**：科目全体の粗い判定で、対象月に何か1件でも償却があれば他の未償却案件が漏れていても検出できない。補助科目単位の追跡は改善候補
 
+**補助科目の付け忘れチェック**：`monthly-closing-checklist.md`項目8の注記（定例取引の照合と同じ走査で補助科目の付け忘れを拾う）を`check_missing_subaccount`関数として実装。照合キーは（科目名, 摘要を正規化したもの〈空白・数字を除去〉。摘要が無ければ取引先名）。対象月に補助科目なしで計上された行のうち、直近`subaccount_lookback_months`（デフォルト2ヶ月）の同じキーの行が1ヶ月以上あり、かつ全て補助科目付きだったものを重要度Bで検出する。過去に補助科目なしが混在するキー（運用が揺れているだけ）、摘要も取引先名も無い行、`is_realized: false`の仕訳は対象外。定例取引チェックと同じjournalsを使うので追加のデータ取得は不要。
+
 ## 使い方
 
 1. オーナーが`/mcp`で対象会社に接続する（`mfc_ca_currentOffice`で確認）
@@ -66,6 +68,7 @@ description: 「月次チェックして」「〇〇社の月次チェック」�
   "fetch_errors": { "journals": null, "trial_pl": null, "trial_bs": null },
   "config": {
     "duplicate_known_safe_pairs": [ ["支払手数料", "普通預金"] ],
+    "subaccount_lookback_months": 2,
     "stale_lookback_months": 3
   }
 }

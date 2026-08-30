@@ -7,6 +7,7 @@
 しきい値は環境変数 LONG_TASK_NOTIFY_MINUTES（既定1分）。
 Webhook URLは .claude/scripts/.env の LONG_TASK_SLACK_WEBHOOK_URL（専用チャンネル用、任意）→
 GENERAL_SLACK_WEBHOOK_URL（全体通知チャンネル）の順で使う（hookプロセス自身が読むのでセキュリティhookの対象外）。
+デスクトップ通知は既定オフ（LONG_TASK_DESKTOP_NOTIFY=1 で有効）。Slackアプリの通知と2重になるため。
 失敗しても本体の動作を止めない（常にexit 0）。
 """
 import json
@@ -21,6 +22,9 @@ MENTION = ""  # .env の SLACK_MENTION_USER_ID から設定
 STATE_DIR = os.path.join(tempfile.gettempdir(), "claude-long-task")
 ENV_FILE = os.path.join(os.environ.get("CLAUDE_PROJECT_DIR", "."), ".claude", "scripts", ".env")
 THRESHOLD_SEC = float(os.environ.get("LONG_TASK_NOTIFY_MINUTES", "1")) * 60  # .env側の同名キーは main() で上書き
+# デスクトップ通知は既定でオフ：Slackデスクトップアプリがメンション通知を出すため、
+# トーストと重なってポップアップが2重になる。必要なら LONG_TASK_DESKTOP_NOTIFY=1 で再有効化
+DESKTOP_NOTIFY = os.environ.get("LONG_TASK_DESKTOP_NOTIFY", "0") == "1"
 
 
 def state_path(session_id):
@@ -125,7 +129,7 @@ def main():
         # 毎回、返答の冒頭で所要時間の目安を出すよう機械的にリマインドする（communication.md「長くなりそうな作業の予告」）
         sys.stdout.buffer.write(
             "【所要時間の予告】返答の1行目に必ず「所要目安：約N分」（1分未満なら「所要目安：すぐ」）と書いてから本題に入る。"
-            "ツール呼び出しより先に出すこと。1分以上の見込みなら、終わったらトースト/Slackで通知される旨も添える。\n".encode("utf-8")
+            "ツール呼び出しより先に出すこと。1分以上の見込みなら、終わったらSlackで通知される旨も添える。\n".encode("utf-8")
         )
         return
 
@@ -156,7 +160,8 @@ def main():
             with open(state_path(sid), "w", encoding="utf-8") as f:
                 json.dump(st, f, ensure_ascii=False)
         text = f"{mention()} Claude Code [{project}] {label}（{mins}分経過）\n> {st.get('prompt', '')}"
-        desktop_notify(f"Claude Code [{project}] {label}", f"{mins}分経過 / {st.get('prompt', '')}")
+        if DESKTOP_NOTIFY:
+            desktop_notify(f"Claude Code [{project}] {label}", f"{mins}分経過 / {st.get('prompt', '')}")
         post(text)
 
 

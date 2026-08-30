@@ -731,3 +731,78 @@ class TestRunMonthlyCheck(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCheckMissingPartnerOrItem(unittest.TestCase):
+    """monthly-closing-checklist.md 項目8の注記（2026-08-31）：freeeには補助科目が無いので、
+    取引先(partner_id)・品目(item_id)の付け忘れを同じ考え方で拾う。"""
+
+    @staticmethod
+    def _d(did, date, account, desc, partner=None, item=None):
+        return {
+            "id": did, "issue_date": date, "amount": 1000, "type": "expense",
+            "partner_id": partner,
+            "details": [{"account_item_id": account, "description": desc, "item_id": item}],
+        }
+
+    def test_flags_missing_partner(self):
+        deals = [
+            self._d(1, "2026-05-31", 500, "通信サービス利用料", partner=10),
+            self._d(2, "2026-06-30", 500, "通信サービス利用料", partner=10),
+            self._d(3, "2026-07-31", 500, "通信サービス利用料", partner=None),
+        ]
+        findings = monthly_check.check_missing_partner_or_item(deals, "2026-07", lookback_months=2)
+        self.assertEqual(len(findings), 1)
+        f = findings[0]
+        self.assertEqual(f["check"], "missing_subaccount")
+        self.assertEqual(f["severity"], "B")
+        self.assertEqual(f["attribute"], "partner_id")
+        self.assertEqual(f["account_item_id"], 500)
+        self.assertEqual(f["key_label"], "通信サービス利用料")
+        self.assertEqual(f["deal_ids"], [3])
+        self.assertEqual(f["prior_values"], [10])
+        self.assertEqual(f["prior_months_present"], ["2026-05", "2026-06"])
+
+    def test_flags_missing_item_independently(self):
+        deals = [
+            self._d(1, "2026-05-31", 500, "通信サービス利用料", partner=10, item=7),
+            self._d(2, "2026-06-30", 500, "通信サービス利用料", partner=10, item=7),
+            self._d(3, "2026-07-31", 500, "通信サービス利用料", partner=10, item=None),
+        ]
+        findings = monthly_check.check_missing_partner_or_item(deals, "2026-07")
+        self.assertEqual([f["attribute"] for f in findings], ["item_id"])
+
+    def test_does_not_flag_when_prior_months_inconsistent(self):
+        deals = [
+            self._d(1, "2026-05-31", 500, "通信サービス利用料", partner=10),
+            self._d(2, "2026-06-30", 500, "通信サービス利用料", partner=None),
+            self._d(3, "2026-07-31", 500, "通信サービス利用料", partner=None),
+        ]
+        self.assertEqual(monthly_check.check_missing_partner_or_item(deals, "2026-07"), [])
+
+    def test_does_not_flag_when_target_has_value(self):
+        deals = [
+            self._d(1, "2026-06-30", 500, "通信サービス利用料", partner=10),
+            self._d(3, "2026-07-31", 500, "通信サービス利用料", partner=10),
+        ]
+        self.assertEqual(monthly_check.check_missing_partner_or_item(deals, "2026-07"), [])
+
+    def test_skips_details_without_description(self):
+        deals = [
+            self._d(1, "2026-06-30", 500, "", partner=10),
+            self._d(3, "2026-07-31", 500, "", partner=None),
+        ]
+        self.assertEqual(monthly_check.check_missing_partner_or_item(deals, "2026-07"), [])
+
+    def test_resolve_and_format_use_names(self):
+        deals = [
+            self._d(1, "2026-05-31", 500, "通信サービス利用料", partner=10),
+            self._d(2, "2026-06-30", 500, "通信サービス利用料", partner=10),
+            self._d(3, "2026-07-31", 500, "通信サービス利用料", partner=None),
+        ]
+        findings = monthly_check.check_missing_partner_or_item(deals, "2026-07")
+        monthly_check.resolve_finding_names(findings, {500: "通信費"}, {10: "通信A社"})
+        self.assertEqual(monthly_check.describe_finding(findings[0]), "「通信費」の取引先の付け忘れ候補")
+        detail = monthly_check.format_finding_detail(findings[0])
+        self.assertIn("通信A社", detail)
+        self.assertIn("通信サービス利用料", detail)

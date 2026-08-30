@@ -4,6 +4,8 @@
 データ取得（mfc_ca MCPツールの呼び出し）はこのファイルの責務ではない——
 呼び出し側（Claude）が組み立てたJSONを読むだけ。"""
 
+import re
+
 
 def flatten_journal_branches(journals):
     """mfc_ca_getJournalsの'journals'配列を、branch単位のフラットなリストに
@@ -373,6 +375,97 @@ def check_stale_subaccounts(journals, target_month, target_account_names=TARGET_
     return findings
 
 
+def _normalize_remark(text):
+    """摘要の照合用に、空白・数字（「5月分」「2026/07」等の月替わりで変わる部分）を
+    取り除いた文字列を返す。全角数字・全角空白も対象。"""
+    if not text:
+        return ""
+    text = text.translate(str.maketrans("０１２３４５６７８９　", "0123456789 "))
+    return re.sub(r"[\s0-9/\-\.:]", "", text)
+
+
+def _prior_months(target_month, count):
+    year, month_num = (int(x) for x in target_month.split("-"))
+    months = []
+    y, m = year, month_num
+    for _ in range(count):
+        m -= 1
+        if m == 0:
+            m = 12
+            y -= 1
+        months.append(f"{y:04d}-{m:02d}")
+    return sorted(months)
+
+
+def check_missing_subaccount(journals, target_month, lookback_months=2):
+    """monthly-closing-checklist.mdの項目8の注記（2026-08-31、オーナーの指示）：
+    定例取引の計上漏れ照合と同じ取引履歴を使って、「補助科目の付け忘れ」を拾う。
+
+    照合キーは（科目名, 摘要を正規化したもの。摘要が無ければ取引先名）。対象月の
+    行で補助科目が空のものについて、直近lookback_months分の同じキーの行が
+    **1ヶ月以上存在し、かつ全て補助科目付き**（一貫して専用補助科目を使っていた）
+    なら、入力漏れ候補（重要度B）として返す。過去に補助科目なしの計上が混在して
+    いるキーは、運用が揺れているだけの可能性が高いので対象にしない。
+    摘要も取引先名も無い行は照合のしようが無いので除外。`is_realized: false`の
+    仕訳は`check_stale_subaccounts`と同じ理由で除外する。
+    厳密な判定ではなく、月次チェックで人が確認する候補を出すためのヒューリスティック。"""
+    prior_months = _prior_months(target_month, lookback_months)
+    window = set(prior_months) | {target_month}
+
+    # (account_name, key) -> {month: [sub_account_name or None, ...]}, and label/journal ids
+    seen = {}
+    labels = {}
+    target_journal_ids = {}
+    for journal in journals:
+        if journal.get("is_realized") is False:
+            continue
+        month = (journal.get("transaction_date") or "")[:7]
+        if month not in window:
+            continue
+        for branch in journal.get("branches", []) or []:
+            remark = branch.get("remark") or ""
+            for side in (branch.get("debitor"), branch.get("creditor")):
+                if not side or not side.get("account_name"):
+                    continue
+                partner = side.get("trade_partner_name") or ""
+                label = remark.strip() or partner.strip()
+                key_text = _normalize_remark(remark) or partner.strip()
+                if not key_text:
+                    continue
+                key = (side["account_name"], key_text)
+                sub = side.get("sub_account_name") or None
+                seen.setdefault(key, {}).setdefault(month, []).append(sub)
+                labels.setdefault(key, label)
+                if month == target_month and sub is None:
+                    target_journal_ids.setdefault(key, [])
+                    if journal.get("id") not in target_journal_ids[key]:
+                        target_journal_ids[key].append(journal.get("id"))
+
+    findings = []
+    for key, by_month in seen.items():
+        target_subs = by_month.get(target_month)
+        if not target_subs or all(target_subs):
+            continue  # 対象月に出現しない、または全て補助科目付き
+        prior_present = [m for m in prior_months if m in by_month]
+        if not prior_present:
+            continue
+        prior_subs = [sub for m in prior_present for sub in by_month[m]]
+        if not all(prior_subs):
+            continue  # 過去にも補助科目なしが混在＝運用が揺れているだけ
+        account_name, _ = key
+        findings.append({
+            "check": "missing_subaccount",
+            "severity": "B",
+            "account_name": account_name,
+            "key_label": labels[key],
+            "journal_ids": target_journal_ids.get(key, []),
+            "prior_sub_account_names": sorted(set(prior_subs)),
+            "prior_months_present": prior_present,
+        })
+    findings.sort(key=lambda f: (f["account_name"], f["key_label"]))
+    return findings
+
+
 def check_upsider_billing_duplicate(journals, target_month):
     """UPSIDERの未払金は、カード利用明細のAPI連携により日々`postTransactionJournalize`
     （entered_by: JOURNAL_TYPE_NORMALまたはJOURNAL_TYPE_EXTERNAL）で計上されていく
@@ -494,6 +587,8 @@ def describe_finding(finding):
         return "UPSIDER請求書取り込みによる二重計上候補"
     if check == "prepaid_expense_amortization_missing":
         return "前払費用の当月償却漏れ候補"
+    if check == "missing_subaccount":
+        return f"「{finding['account_name']}」の補助科目の付け忘れ候補"
     return check
 
 
@@ -592,6 +687,21 @@ def format_finding_detail(finding):
             "当月分の前払費用の振替仕訳が漏れていないか確認してください（簡易判定のため、"
             "取得ウィンドウ外の期間の残高は見えていない可能性がある点に注意）。"
         )
+    if check == "missing_subaccount":
+        prior = "、".join(finding["prior_months_present"])
+        subs = "、".join(finding["prior_sub_account_names"])
+        journal_ids = ", ".join(str(i) for i in finding["journal_ids"])
+        return (
+            f"科目：{finding['account_name']}\n"
+            f"摘要／取引先：{finding['key_label']}\n"
+            f"対象月の仕訳ID（補助科目なし）：{journal_ids}\n"
+            f"過去に使われていた補助科目：{subs}（{prior}）\n\n"
+            "理由：\n"
+            "同じ科目・摘要の仕訳が直近では一貫して補助科目付きで計上されていましたが、"
+            "対象月は補助科目なしで計上されています。\n\n"
+            "確認事項：\n"
+            "補助科目の付け忘れでないか確認し、必要なら補助科目を付けてください。"
+        )
     return ""
 
 
@@ -664,12 +774,14 @@ def run_monthly_check(input_data, config=None):
     errors = []
 
     stale_lookback_months = config.get("stale_lookback_months", 3)
+    subaccount_lookback_months = config.get("subaccount_lookback_months", 2)
 
     if fetch_errors.get("journals"):
         errors.append(f"重複取引チェック・定例取引漏れチェック: {fetch_errors['journals']}")
         errors.append(f"BS科目の滞留チェック: {fetch_errors['journals']}")
         errors.append(f"UPSIDER請求書取り込み二重計上チェック: {fetch_errors['journals']}")
         errors.append(f"前払費用の当月償却漏れチェック: {fetch_errors['journals']}")
+        errors.append(f"補助科目の付け忘れチェック: {fetch_errors['journals']}")
     else:
         try:
             journals = input_data.get("journals") or []
@@ -679,6 +791,13 @@ def run_monthly_check(input_data, config=None):
             findings += check_recurring_missing(lines, target_month, recurring_min_months)
         except Exception as e:
             errors.append(f"重複取引チェック・定例取引漏れチェック: {e}")
+
+        try:
+            journals = input_data.get("journals") or []
+            findings += check_missing_subaccount(
+                journals, target_month, lookback_months=subaccount_lookback_months)
+        except Exception as e:
+            errors.append(f"補助科目の付け忘れチェック: {e}")
 
         try:
             journals = input_data.get("journals") or []

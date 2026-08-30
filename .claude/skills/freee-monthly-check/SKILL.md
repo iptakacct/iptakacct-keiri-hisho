@@ -27,6 +27,7 @@ python .claude/skills/freee-monthly-check/lib/monthly_check_cli.py \
 | `variance_threshold` | 0.30 | 増減チェックの検出閾値（±30%） |
 | `recurring_min_months` | 6 | 「定例取引」とみなすのに必要な過去の連続発生月数。dealsの取得範囲もこれに連動する |
 | `variance_history_months` | 6 | 増減チェックの過去平均を取る月数 |
+| `subaccount_lookback_months` | 2 | 取引先・品目の付け忘れチェック（`check_missing_partner_or_item`）で遡る月数。freeeには補助科目が無いため、`monthly-closing-checklist.md`項目8注記の「補助科目の付け忘れ」を取引先(partner_id)・品目(item_id)で判定する。対象月に属性なしの明細のうち、直近この月数の同じ（勘定科目, 正規化した摘要）の明細が1ヶ月以上あり全て属性付きだったものを重要度Bで検出。摘要の無い明細は対象外 |
 | `variance_materiality_floor` | 10000 | 増減チェックの重要性の基準（円）。当月・過去平均の絶対値がどちらもこの額未満の科目は検出しない（少額・散発的な科目のノイズを抑えるため） |
 
 ## レポートを読む際の前提

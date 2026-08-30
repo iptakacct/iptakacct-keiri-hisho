@@ -134,9 +134,19 @@ def api_call(access_token: str, company_id: int, method: str, path: str, json_bo
         raise FreeeApiError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')}") from e
 
 
-def verify_single_company(companies_response: list, expected_company_id: int) -> None:
+def verify_single_company(companies_response: list, expected_company_id: int,
+                          ignored_company_ids=None) -> None:
+    """トークンで見える事業所が対象1社だけであることを確かめる。
+
+    ignored_company_ids には、対象社と同じfreeeアカウントに紐づいていて自分では
+    削除できない事業所（例：freeeの「開発用テスト事業所」。アプリ0件で3ヶ月放置後に
+    freee側が自動削除するまで残る）を列挙できる。列挙した事業所は「想定外」と
+    みなさない。それ以外の事業所が混ざっていれば従来通りエラーにする。
+    """
+    ignored = set(ignored_company_ids or [])
     ids = [c["id"] for c in companies_response]
-    if ids != [expected_company_id]:
+    remaining = [i for i in ids if i not in ignored]
+    if remaining != [expected_company_id]:
         raise FreeeApiError(
             f"想定外の事業所が含まれています（期待: {expected_company_id}, 実際: {ids}）。"
             "事業所選択をやり直してください。"

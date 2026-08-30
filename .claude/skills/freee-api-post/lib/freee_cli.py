@@ -67,7 +67,8 @@ def cmd_authorize_finish(args: argparse.Namespace) -> int:
     result = freee_api.api_call(
         creds["access_token"], company["company_id"], "GET", "/api/1/companies"
     )
-    freee_api.verify_single_company(result["companies"], company["company_id"])
+    freee_api.verify_single_company(result["companies"], company["company_id"],
+                                            company.get("ignored_company_ids"))
 
     append_log(args.repo_root, company["instance"],
                f"authorize-finish 成功: {company['name']}（company_id: {company['company_id']}）")
@@ -87,7 +88,8 @@ def cmd_healthcheck(args: argparse.Namespace) -> int:
             # トークンが有効なだけでなく、そのトークンで見える事業所が対象1社だけであることまで
             # 毎回確かめる（authorize-finishと同じ検証）。想定外の事業所が混ざっていれば
             # FreeeApiErrorが送出され、下のexceptでNGとして記録される。
-            freee_api.verify_single_company(result["companies"], company["company_id"])
+            freee_api.verify_single_company(result["companies"], company["company_id"],
+                                            company.get("ignored_company_ids"))
             append_log(args.repo_root, company["instance"],
                        f"healthcheck OK: {company['name']}（company_id: {company['company_id']}）")
             print(f"OK: {company['name']}")

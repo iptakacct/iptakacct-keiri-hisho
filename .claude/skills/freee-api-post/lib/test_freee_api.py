@@ -208,6 +208,21 @@ class TestVerifySingleCompany(unittest.TestCase):
         with self.assertRaises(FreeeApiError):
             verify_single_company([{"id": 999}], 100001)
 
+    def test_passes_when_extra_company_is_ignored(self):
+        # freeeの「開発用テスト事業所」など、自己削除できない事業所を無視できる
+        verify_single_company([{"id": 100001}, {"id": 100002}], 100001,
+                              ignored_company_ids=[100002])
+
+    def test_raises_when_extra_company_not_in_ignore_list(self):
+        with self.assertRaises(FreeeApiError):
+            verify_single_company([{"id": 100001}, {"id": 999}], 100001,
+                                  ignored_company_ids=[100002])
+
+    def test_raises_when_expected_missing_even_if_ignored_present(self):
+        with self.assertRaises(FreeeApiError):
+            verify_single_company([{"id": 100002}], 100001,
+                                  ignored_company_ids=[100002])
+
 
 class TestApiCall(unittest.TestCase):
     @mock.patch("freee_api.urllib.request.urlopen")
