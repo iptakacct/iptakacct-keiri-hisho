@@ -38,3 +38,7 @@ python .claude/skills/freee-monthly-check/lib/monthly_check_cli.py \
 ## テスト
 
 `pytest .claude/skills/freee-monthly-check/tests/`
+
+## 既知の制約：`/reports/trial_pl`の`closing_balance`は期間指定に関係なく期首からの累計
+
+`start_date`/`end_date`で1ヶ月を指定しても、`closing_balance`は**期首からその月末までの累計**で返る（期間指定は`opening_balance`・`debit_amount`・`credit_amount`の区切りにのみ効く。`fiscal_year`+`start_month`/`end_month`指定でも同じ）。当月発生額は`closing_balance - opening_balance`で求める（`_period_amount`関数。増減チェックはこの値を使う）。発覚の経緯：ある会社の定額家賃が3ヶ月連続で毎月同額ずつ増えて見えた＝累計だった。前期末月をまたぐ比較では累計がリセットされるため「-100%」が多発する。試算表の数字を目視で読むときも同じ罠がある。

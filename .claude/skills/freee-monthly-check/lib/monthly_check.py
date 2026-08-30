@@ -159,10 +159,24 @@ def check_missing_partner_or_item(deals, target_month, lookback_months=2):
 DEFAULT_VARIANCE_MATERIALITY_FLOOR = 10000
 
 
+def _period_amount(row):
+    """試算表の行から「その期間（当月）の発生額」を返す。
+    freeeの/reports/trial_plは、start_date/end_dateで期間を指定しても
+    closing_balanceが**期首からの累計**で返る（2026-08-31、実データ検証で判明。
+    start_date/end_dateはopening_balance・debit_amount・credit_amountの区切りにのみ効く）。
+    当月発生額は closing_balance - opening_balance で求める。
+    opening_balanceが無い行（テスト用の簡易データ等）はclosing_balanceをそのまま使う。"""
+    closing = row.get("closing_balance", 0) or 0
+    opening = row.get("opening_balance")
+    if opening is None:
+        return closing
+    return closing - opening
+
+
 def check_variance(balances_by_month, target_month, variance_threshold=0.30,
                    variance_materiality_floor=DEFAULT_VARIANCE_MATERIALITY_FLOOR):
-    """勘定科目ごとに、対象月の金額(closing_balance)と、対象月以外の月の平均との
-    乖離率をチェックする。abs(乖離率) >= variance_thresholdなら検出する。
+    """勘定科目ごとに、対象月の発生額(_period_amount＝closing-opening)と、
+    対象月以外の月の平均との乖離率をチェックする。abs(乖離率) >= variance_thresholdなら検出する。
     過去平均が0で当月に金額がある場合は「新規発生」として個別に検出する
     （ゼロ除算回避）。過去データが全く無い勘定科目は対象外。
     balances_by_month: {"YYYY-MM": trial_plの"balances"配列}。
@@ -191,7 +205,7 @@ def check_variance(balances_by_month, target_month, variance_threshold=0.30,
             if account_item_id is None:
                 continue
             history_by_account.setdefault(account_item_id, []).append(
-                row["closing_balance"]
+                _period_amount(row)
             )
             name = row.get("account_item_name")
             if name is not None:
@@ -200,7 +214,7 @@ def check_variance(balances_by_month, target_month, variance_threshold=0.30,
     findings = []
     for account_item_id, history_amounts in history_by_account.items():
         current_row = target_by_account.get(account_item_id)
-        current_amount = current_row["closing_balance"] if current_row else 0
+        current_amount = _period_amount(current_row) if current_row else 0
         # 対象月にその科目の行が無い場合でも、過去月の同じaccount_item_idの行から
         # 科目名を復元する（対象月に行が無い＝ゼロ発生というだけで、科目自体は
         # 存在するため、名前が分からない理由は無い）。

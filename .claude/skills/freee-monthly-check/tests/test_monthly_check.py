@@ -144,6 +144,33 @@ class TestCheckVariance(unittest.TestCase):
         self.assertAlmostEqual(findings[0]["historical_avg"], 50333.33, places=1)
         self.assertGreater(findings[0]["variance_pct"], 0.30)
 
+    def test_uses_period_amount_when_balances_are_cumulative(self):
+        # freeeのtrial_plはclosing_balanceが期首からの累計で返る（2026-08-31判明）。
+        # 毎月22,000円の定額家賃が累計で返ってきても、増減チェックが誤検知しないこと。
+        def cum_row(opening, closing):
+            return {"account_item_id": 400, "account_item_name": "地代家賃",
+                    "opening_balance": opening, "closing_balance": closing}
+        balances_by_month = {
+            "2026-05": [cum_row(110000, 132000)],
+            "2026-06": [cum_row(132000, 154000)],
+            "2026-07": [cum_row(154000, 176000)],
+        }
+        self.assertEqual(monthly_check.check_variance(balances_by_month, "2026-07"), [])
+
+    def test_flags_cumulative_month_with_no_activity(self):
+        # 累計が横ばい＝当月発生ゼロは、-100%として検出される（計上漏れの兆候）
+        def cum_row(opening, closing):
+            return {"account_item_id": 401, "account_item_name": "役員報酬",
+                    "opening_balance": opening, "closing_balance": closing}
+        balances_by_month = {
+            "2026-05": [cum_row(315000, 378000)],
+            "2026-06": [cum_row(378000, 441000)],
+            "2026-07": [cum_row(441000, 441000)],
+        }
+        findings = monthly_check.check_variance(balances_by_month, "2026-07")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["current_amount"], 0)
+
     def test_does_not_flag_within_threshold(self):
         balances_by_month = {
             "2026-01": [_pl_row(300, "通信費", 50000)],
