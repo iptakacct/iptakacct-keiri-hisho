@@ -156,9 +156,20 @@ if ! "$CLAUDE_BIN" -p "$PROMPT" --model "$MODEL" --permission-mode bypassPermiss
 fi
 rm -f "$DIFF_FILE"
 
-MENTION_LINE="$(head -n 1 "$OUTPUT_FILE" | tr -d '\r')"
-BODY="$(tail -n +2 "$OUTPUT_FILE")"
+# claude -pが前置き（「わかりました、確認します」等）を付けてMENTION行が1行目に来ないことがある
+# （2026-08-31判明：実運用で1回発生し、その前置きが誤ってSlack本文に混入した）。
+# 1行目決め打ちではなく、"MENTION: yes"/"MENTION: no"の行を全体から探し、その行より前は
+# 前置きとして捨て、その行より後をBODYとする。
+CLEAN_OUTPUT="$(tr -d '\r' < "$OUTPUT_FILE")"
 rm -f "$OUTPUT_FILE"
+MENTION_LINENO="$(printf '%s\n' "$CLEAN_OUTPUT" | grep -n -m1 -E '^MENTION: (yes|no)$' | cut -d: -f1)"
+if [ -z "$MENTION_LINENO" ]; then
+  log "ERROR: claude -p の出力にMENTION行が見つかりません（前置き混入の疑い）: $(printf '%s' "$CLEAN_OUTPUT" | head -c 200)"
+  [ "$MODE" = "run" ] && notify_general "<@${SLACK_USER_ID}> テンプレ還流レビューが失敗しました（出力形式が不正）。.claude/scripts/work/weekly-template-review.log を確認してください。" || true
+  exit 1
+fi
+MENTION_LINE="$(printf '%s\n' "$CLEAN_OUTPUT" | sed -n "${MENTION_LINENO}p")"
+BODY="$(printf '%s\n' "$CLEAN_OUTPUT" | tail -n "+$((MENTION_LINENO + 1))")"
 
 if [ -z "$BODY" ]; then
   log "ERROR: claude -p の出力が空です（1行目: $MENTION_LINE）"
