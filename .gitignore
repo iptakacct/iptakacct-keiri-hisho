@@ -18,3 +18,4 @@ __pycache__/
 # 実データ（各インスタンスで生成される生データ）
 */work/mf-monthly-check/raw/
 */work/monthly-check/raw/
+*/work/kessan/*/inbox/
