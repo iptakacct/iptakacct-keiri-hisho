@@ -3,11 +3,13 @@
 - 預金側の科目だけを埋め、相手科目は空のまま「要確認」にする（相手科目は段階2でAIが候補を付ける）
 - 取り込み元ID（明細の内容から作るハッシュ）で、登録済み・取り込み済みの行を二重に取り込まない
 - 明細に残高があれば statement-balances.csv に記録する（検算で帳簿残高と照合する）
+- 新しい順に並んだ明細は、残高の連続から判定して古い順に並べ替えてから取り込む
 """
 import csv
 import hashlib
-from collections import Counter
-from dataclasses import dataclass
+import unicodedata
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +20,8 @@ from common import (
     KessanError, append_rows, load_period, read_rows, to_int,
 )
 
+SUSPECTED_DOUBLE_IMPORT = "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）"
+
 
 @dataclass(frozen=True)
 class ImportResult:
@@ -25,13 +29,33 @@ class ImportResult:
     duplicates: int
     zero_amount: int
     out_of_period: int = 0
+    overlapping_imports: list = field(default_factory=list)
 
 
 def load_sources(path):
     path = Path(path)
     if not path.exists():
         raise KessanError(f"口座・明細形式の設定ファイルがありません: {path}")
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        raise KessanError(f"口座・明細形式の設定ファイルを読めません（{path.name}）: {e}") from None
+    if not isinstance(data, dict):
+        raise KessanError(f"口座・明細形式の設定ファイルの形式が不正です（{path.name}）")
+    return data
+
+
+def _check_format(name, fmt):
+    if not isinstance(fmt, dict):
+        raise KessanError(f"明細形式「{name}」の書き方が不正です")
+    for key in ("columns", "date_format"):
+        if key not in fmt:
+            raise KessanError(f"明細形式「{name}」に {key} がありません（kessan-sources.yaml を確認）")
+    columns = fmt["columns"]
+    if not isinstance(columns, dict) or "日付" not in columns:
+        raise KessanError(f"明細形式「{name}」の columns に 日付 がありません")
+    if "入金" not in columns and "出金" not in columns:
+        raise KessanError(f"明細形式「{name}」の columns に 入金・出金 のどちらもありません")
 
 
 def parse_statement(file_path, fmt):
@@ -94,11 +118,40 @@ def parse_statement(file_path, fmt):
             "日付": date,
             "入金": deposit,
             "出金": withdrawal,
-            "摘要": get("摘要"),
+            # 半角カナ・全角英数などの表記ゆれで同じ明細が別物と判定されないよう正規化する
+            "摘要": unicodedata.normalize("NFKC", get("摘要")).strip(),
             "残高": balance,
             "行番号": number,
         })
     return rows
+
+
+def _chains(seq):
+    return all(
+        seq[i]["残高"] == seq[i - 1]["残高"] + seq[i]["入金"] - seq[i]["出金"]
+        for i in range(1, len(seq))
+    )
+
+
+def order_oldest_first(rows, file_name):
+    """全ての金額行に残高があれば、残高の連続から並び順を判定し、古い順にして返す。"""
+    moving = [r for r in rows if r["入金"] or r["出金"]]
+    if len(moving) < 2 or any(r["残高"] is None for r in moving):
+        return rows
+    if _chains(moving):
+        return rows
+    if _chains(moving[::-1]):
+        return rows[::-1]
+    number = None
+    for prev, cur in zip(moving, moving[1:]):
+        ascending = cur["残高"] == prev["残高"] + cur["入金"] - cur["出金"]
+        descending = prev["残高"] == cur["残高"] + prev["入金"] - prev["出金"]
+        if not ascending and not descending:
+            number = cur["行番号"]
+            break
+    if number is None:  # 隣同士はどちらかの順で合うが、全体としてはどちらの順でも合わない（順序が混在）
+        number = next(cur["行番号"] for prev, cur in zip(moving, moving[1:]) if not _chains([prev, cur]))
+    raise KessanError(f"{file_name} {number}行目: 残高の連続が合いません（行の欠落・並び順を確認）")
 
 
 def make_source_id(account_id, row, occurrence):
@@ -123,25 +176,55 @@ def _staging_row(account, file_name, row, source_id):
     return staged
 
 
+def _existing_bank_lines(lines):
+    """登録済み・取り込み済みの行を (側, 科目, 補助, 日付, 金額) → 取り込み元IDの集合 にする。"""
+    index = defaultdict(set)
+    for r in lines:
+        for side in ("借方", "貸方"):
+            name = r[f"{side}科目"].strip()
+            if name:
+                key = (side, name, r[f"{side}補助"].strip(), r["日付"].strip(), to_int(r[f"{side}金額"]))
+                index[key].add(r["取り込み元ID"].strip())
+    return index
+
+
+def _overlapping_imports(log, account_id, rows):
+    dates = [r["日付"] for r in rows if r["入金"] or r["出金"]]
+    if not dates:
+        return []
+    low, high = min(dates), max(dates)
+    found = []
+    for r in log:
+        if r["口座ID"] != account_id:
+            continue
+        period = r["対象期間"].split("〜")
+        if len(period) != 2:
+            continue
+        if period[0] <= high and low <= period[1]:
+            found.append(f"{r['ファイル名']} {r['対象期間']}")
+    return found
+
+
 def import_bank(year_dir, sources_path, account_id, file_path, now=None):
     year_dir = Path(year_dir)
     sources = load_sources(sources_path)
-    accounts_cfg = {a["id"]: a for a in sources.get("accounts", [])}
+    accounts_cfg = {a["id"]: a for a in sources.get("accounts") or []}
     if account_id not in accounts_cfg:
         raise KessanError(f"口座IDが設定ファイルにありません: {account_id}（登録済み: {list(accounts_cfg)}）")
     account = accounts_cfg[account_id]
-    fmt = sources.get("formats", {}).get(account.get("format"))
+    fmt = (sources.get("formats") or {}).get(account.get("format"))
     if fmt is None:
         raise KessanError(f"口座ID {account_id} の明細形式「{account.get('format')}」が設定ファイルにありません")
+    _check_format(account.get("format"), fmt)
 
     start, end = load_period(year_dir)
-    rows = parse_statement(file_path, fmt)
     file_name = Path(file_path).name
-    existing = {
-        r["取り込み元ID"]
-        for r in read_rows(year_dir / "journal.csv") + read_rows(year_dir / "staging.csv")
-        if r.get("取り込み元ID")
-    }
+    rows = order_oldest_first(parse_statement(file_path, fmt), file_name)
+    existing_lines = read_rows(year_dir / "journal.csv") + read_rows(year_dir / "staging.csv")
+    existing = {r["取り込み元ID"] for r in existing_lines if r.get("取り込み元ID")}
+    bank_lines = _existing_bank_lines(existing_lines)
+    overlapping = _overlapping_imports(read_rows(year_dir / "import-log.csv"), account_id, rows)
+    subject, sub = account["科目"], account.get("補助", "")
 
     seen = Counter()
     new_rows, new_balances = [], []
@@ -160,10 +243,15 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
         if source_id in existing:
             duplicate += 1
             continue
-        new_rows.append((row, _staging_row(account, file_name, row, source_id)))
+        staged = _staging_row(account, file_name, row, source_id)
+        side = "借方" if row["入金"] else "貸方"
+        match = bank_lines.get((side, subject, sub, row["日付"], row["入金"] or row["出金"]), set())
+        if match - {source_id}:
+            staged["要確認理由"] = SUSPECTED_DOUBLE_IMPORT
+        new_rows.append((row, staged))
         if row["残高"] is not None:
             new_balances.append({
-                "科目": account["科目"], "補助": account.get("補助", ""),
+                "科目": subject, "補助": sub,
                 "日付": row["日付"], "残高": str(row["残高"]), "ファイル名": file_name,
             })
 
@@ -181,4 +269,5 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
             "出金合計": str(sum(row["出金"] for row, _ in new_rows)),
             "登録伝票番号範囲": "",
         }])
-    return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period)
+    return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero,
+                        out_of_period=out_of_period, overlapping_imports=overlapping)

@@ -84,3 +84,14 @@ def test_init_requires_period(tmp_path):
     import pytest
     with pytest.raises(SystemExit):
         main(["init", "--year-dir", str(tmp_path / "y")])
+
+
+def test_import_warns_about_overlapping_period(tmp_path, capsys):
+    year = tmp_path / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    base = ["import-bank", "--year-dir", str(year), "--sources", str(write_sources(tmp_path)), "--account-id", "main"]
+    assert main([*base, "--file", str(write_bank_csv(tmp_path))]) == 0
+    capsys.readouterr()
+    text = "x\n取引日,お引出し,お預入れ,お取引内容,残高\n2025/04/03,500,,ATM,\n"
+    assert main([*base, "--file", str(write_bank_csv(tmp_path, "re.csv", text))]) == 0
+    assert "警告: 同じ口座で期間が重なる取り込み済みファイルがあります: 2025-04.csv 2025-04-01〜2025-04-05" in capsys.readouterr().out

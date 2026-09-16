@@ -16,7 +16,9 @@ formats:
       残高: 残高             # 残高列が無い形式はこの行を消す
 
 accounts: []
-  # - id: main               # import-bank の --account-id に指定する名前
-  #   format: example-bank
-  #   科目: 普通預金
-  #   補助: ○○銀行 ○○支店
+# 口座を登録するときは、上の「accounts: []」の行を消し、次の行から下のコメント記号「# 」を外して書き換える。
+# accounts:
+#   - id: main               # import-bank の --account-id に指定する名前
+#     format: example-bank   # 上の formats に書いた明細形式の名前
+#     科目: 普通預金
+#     補助: ○○銀行 ○○支店

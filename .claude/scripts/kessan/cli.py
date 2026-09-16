@@ -62,6 +62,10 @@ def main(argv=None):
             r = import_bank(year_dir, sources, args.account_id, args.file)
             print(f"取り込み: 追加 {r.added}件 / 取り込み済みのためスキップ {r.duplicates}件 / 金額0のためスキップ {r.zero_amount}件"
                   f" / 期間外のためスキップ {r.out_of_period}件")
+            if r.overlapping_imports:
+                print("警告: 同じ口座で期間が重なる取り込み済みファイルがあります: "
+                      + "、".join(r.overlapping_imports)
+                      + "（別名で保存し直した同じ明細でないか、staging.csv の要確認理由を確認）")
             return 0
         if args.command == "post":
             r = post_approved(year_dir, accounts)

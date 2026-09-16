@@ -3,8 +3,22 @@ from datetime import datetime
 import pytest
 
 from bank_import import import_bank
-from common import KessanError, read_rows
+from check import run_checks
+from common import OPENING_COLUMNS, STAGING_COLUMNS, KessanError, init_year_dir, read_rows, write_rows
 from helpers import write_bank_csv, write_sources
+from post import post_approved
+
+HEADER = "入出金明細,\n取引日,お引出し,お預入れ,お取引内容,残高\n"
+OLDEST_FIRST = HEADER + (
+    '2025/04/01,,"100,000",フリコミ,"1,100,000"\n'
+    '2025/04/05,3300,,テスウリヨウ,"1,096,700"\n'
+    '2025/04/05,1000,,ATM,"1,095,700"\n'
+)
+NEWEST_FIRST = HEADER + (
+    '2025/04/05,1000,,ATM,"1,095,700"\n'
+    '2025/04/05,3300,,テスウリヨウ,"1,096,700"\n'
+    '2025/04/01,,"100,000",フリコミ,"1,100,000"\n'
+)
 
 NOW = datetime(2026, 9, 16, 10, 0, 0)
 
@@ -18,7 +32,7 @@ def test_import_creates_staging_rows(year_dir, tmp_path):
     assert (deposit["貸方科目"], deposit["貸方金額"]) == ("", "100000")
     assert (fee["貸方科目"], fee["貸方補助"], fee["貸方金額"]) == ("普通預金", "サンプル銀行", "3300")
     assert (fee["借方科目"], fee["借方金額"]) == ("", "3300")
-    assert deposit["摘要"] == "フリコミ カ）テストシヨウジ"
+    assert deposit["摘要"] == "フリコミ カ)テストシヨウジ"  # NFKC で全角括弧は半角になる
     assert deposit["証憑ファイル"] == "2025-04.csv"
     assert deposit["取り込み元ID"].startswith("bank:")
     assert (deposit["読み取り信頼度"], deposit["判定"], deposit["要確認理由"], deposit["承認"]) == ("高", "要確認", "相手科目未設定", "")
@@ -118,3 +132,130 @@ def test_rows_outside_period_are_not_staged(year_dir, tmp_path):
     result = import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "p.csv", text), now=NOW)
     assert (result.added, result.out_of_period) == (1, 2)
     assert [r["摘要"] for r in read_rows(year_dir / "staging.csv")] == ["期中"]
+
+
+# --- 並び順（新しい順のCSV） ---
+
+def test_newest_first_file_is_stored_oldest_first(year_dir, tmp_path, accounts):
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "new.csv", NEWEST_FIRST), now=NOW)
+    staged = read_rows(year_dir / "staging.csv")
+    assert [r["摘要"] for r in staged] == ["フリコミ", "テスウリヨウ", "ATM"]
+    balances = read_rows(year_dir / "statement-balances.csv")
+    assert [(b["日付"], b["残高"]) for b in balances] == [
+        ("2025-04-01", "1100000"), ("2025-04-05", "1096700"), ("2025-04-05", "1095700"),
+    ]
+    write_rows(year_dir / "opening-balances.csv", OPENING_COLUMNS, [
+        {"科目": "普通預金", "補助": "サンプル銀行", "残高": "1000000"},
+        {"科目": "資本金", "補助": "", "残高": "1000000"},
+    ])
+    staged[0].update({"貸方科目": "売上高", "承認": "済"})
+    staged[1].update({"借方科目": "支払手数料", "承認": "済"})
+    staged[2].update({"借方科目": "雑費", "承認": "済"})
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, staged)
+    post_approved(year_dir, accounts, now=NOW)
+    assert [f for f in run_checks(year_dir, accounts) if f.level == "NG"] == []
+
+
+def test_broken_balance_chain_raises_and_writes_nothing(year_dir, tmp_path):
+    text = HEADER + (
+        '2025/04/01,,"100,000",フリコミ,"1,100,000"\n'
+        '2025/04/05,3300,,テスウリヨウ,"1,090,000"\n'
+        '2025/04/06,1000,,ATM,"1,089,000"\n'
+    )
+    with pytest.raises(KessanError, match=r"broken\.csv 4行目: 残高の連続が合いません"):
+        import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "broken.csv", text), now=NOW)
+    for name in ("staging.csv", "statement-balances.csv", "import-log.csv"):
+        assert read_rows(year_dir / name) == []
+
+
+def test_source_ids_do_not_depend_on_export_order(tmp_path):
+    ids = []
+    for name, text in (("old.csv", OLDEST_FIRST), ("new.csv", NEWEST_FIRST)):
+        d = tmp_path / ("year-" + name) / "2026-03期"
+        init_year_dir(d, "2025-04-01", "2026-03-31")
+        import_bank(d, write_sources(tmp_path), "main", write_bank_csv(tmp_path, name, text), now=NOW)
+        ids.append({r["取り込み元ID"] for r in read_rows(d / "staging.csv")})
+    assert len(ids[0]) == 3 and ids[0] == ids[1]
+
+
+def test_rows_without_some_balances_keep_file_order(year_dir, tmp_path):
+    text = HEADER + '2025/04/05,1000,,ATM,\n2025/04/01,,"100,000",フリコミ,"1,100,000"\n'
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "part.csv", text), now=NOW)
+    assert [r["摘要"] for r in read_rows(year_dir / "staging.csv")] == ["ATM", "フリコミ"]
+
+
+# --- 二重取り込みの検知（摘要の表記ゆれ・期間の重なり） ---
+
+def test_half_width_kana_reexport_is_same_id(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    import_bank(year_dir, sources, "main", write_bank_csv(tmp_path), now=NOW)
+    half = (
+        "入出金明細,\n取引日,お引出し,お預入れ,お取引内容,残高\n"
+        '2025/04/01,,"100,000",ﾌﾘｺﾐ ｶ)ﾃｽﾄｼﾖｳｼﾞ,"1,100,000"\n'
+        '2025/04/05,3300,,ﾃｽｳﾘﾖｳ,"1,096,700"\n'
+    )
+    result = import_bank(year_dir, sources, "main", write_bank_csv(tmp_path, "half.csv", half), now=NOW)
+    assert (result.added, result.duplicates) == (0, 2)
+
+
+def test_same_date_and_amount_with_different_description_is_flagged(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    import_bank(year_dir, sources, "main", write_bank_csv(tmp_path), now=NOW)
+    other = HEADER + '2025/04/05,3300,,フリコミテスウリヨウ,"1,096,700"\n'
+    result = import_bank(year_dir, sources, "main", write_bank_csv(tmp_path, "other.csv", other), now=NOW)
+    assert result.added == 1
+    rows = read_rows(year_dir / "staging.csv")
+    assert rows[-1]["要確認理由"] == "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）"
+    assert rows[0]["要確認理由"] == "相手科目未設定"
+
+
+def test_overlapping_import_period_is_reported(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    first = import_bank(year_dir, sources, "main", write_bank_csv(tmp_path), now=NOW)
+    assert first.overlapping_imports == []
+    later = HEADER + "2025/04/03,500,,ATM,\n2025/04/10,700,,ATM,\n"
+    result = import_bank(year_dir, sources, "main", write_bank_csv(tmp_path, "later.csv", later), now=NOW)
+    assert result.overlapping_imports == ["2025-04.csv 2025-04-01〜2025-04-05"]
+
+
+# --- 設定ファイル（kessan-sources.yaml）の不備 ---
+
+def write_yaml(tmp_path, text):
+    path = tmp_path / "sources.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_broken_yaml_raises(year_dir, tmp_path):
+    with pytest.raises(KessanError, match="設定ファイル"):
+        import_bank(year_dir, write_yaml(tmp_path, "formats: [\n"), "main", write_bank_csv(tmp_path))
+
+
+@pytest.mark.parametrize("fmt, message", [
+    ("    columns:\n      日付: 取引日\n      出金: お引出し\n", "date_format"),
+    ('    date_format: "%Y/%m/%d"\n', "columns"),
+    ('    date_format: "%Y/%m/%d"\n    columns:\n      日付: 取引日\n      摘要: お取引内容\n', "入金・出金"),
+])
+def test_incomplete_format_raises(year_dir, tmp_path, fmt, message):
+    text = "formats:\n  f:\n" + fmt + "accounts:\n  - id: main\n    format: f\n    科目: 普通預金\n"
+    with pytest.raises(KessanError, match=message):
+        import_bank(year_dir, write_yaml(tmp_path, text), "main", write_bank_csv(tmp_path))
+
+
+def test_template_accounts_example_parses_when_uncommented():
+    import yaml
+    from pathlib import Path
+    template = Path(__file__).resolve().parents[4] / "テンプレート" / "context" / "company" / "kessan-sources.yaml"
+    lines = template.read_text(encoding="utf-8").split("\n")
+    assert yaml.safe_load("\n".join(lines))["accounts"] == []
+    start = lines.index("# accounts:")
+    block = []
+    for text in lines[start:]:
+        if not text.startswith("#"):
+            break
+        block.append(text[2:])
+    uncommented = [t for t in lines[:start] if t != "accounts: []"] + block
+    data = yaml.safe_load("\n".join(uncommented))
+    (account,) = data["accounts"]
+    assert account["format"] in data["formats"]
+    assert account["科目"] == "普通預金"
