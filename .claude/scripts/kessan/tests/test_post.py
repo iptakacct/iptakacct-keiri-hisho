@@ -103,3 +103,44 @@ def test_post_updates_import_log_range(year_dir, accounts):
     post_approved(year_dir, accounts, now=NOW)
     (log,) = read_rows(year_dir / "import-log.csv")
     assert log["登録伝票番号範囲"] == "1-3"
+
+
+def test_crash_during_staging_write_leaves_journal_written(year_dir, accounts, monkeypatch):
+    """Simulate failure during staging.csv write; journal should be atomically updated."""
+    write_staging(year_dir, [capital()])
+    import post
+    original_replace_rows = post.replace_rows
+
+    def replace_rows_with_failure(path, columns, rows):
+        if path.name == "staging.csv":
+            raise OSError("Simulated disk failure during staging.csv write")
+        return original_replace_rows(path, columns, rows)
+
+    monkeypatch.setattr(post, "replace_rows", replace_rows_with_failure)
+
+    with pytest.raises(OSError, match="Simulated disk failure"):
+        post_approved(year_dir, accounts, now=NOW)
+
+    # Journal should be fully written with the new voucher
+    journal = read_rows(year_dir / "journal.csv")
+    assert len(journal) == 1
+    assert journal[0]["伝票番号"] == "1"
+    # Staging should be unchanged (still has the approved row)
+    staging = read_rows(year_dir / "staging.csv")
+    assert len(staging) == 1
+    assert staging[0]["承認"] == "済"
+
+
+def test_malformed_import_log_range_raises_kessan_error_but_posts_voucher(year_dir, accounts):
+    """Malformed 登録伝票番号範囲 should raise KessanError, but journal is already written."""
+    write_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS,
+               [dict(dict.fromkeys(IMPORT_LOG_COLUMNS, ""), ファイル名="2025-04.csv", 登録伝票番号範囲="abc")])
+    write_staging(year_dir, [capital(証憑ファイル="2025-04.csv")])
+
+    with pytest.raises(KessanError, match="登録伝票番号範囲が不正"):
+        post_approved(year_dir, accounts, now=NOW)
+
+    # Journal should contain the posted voucher (write happens before import log update)
+    journal = read_rows(year_dir / "journal.csv")
+    assert len(journal) == 1
+    assert journal[0]["伝票番号"] == "1"

@@ -1,4 +1,4 @@
-from common import JOURNAL_COLUMNS, append_rows, init_year_dir, project, read_rows, to_int, write_rows
+from common import JOURNAL_COLUMNS, append_rows, init_year_dir, project, read_rows, replace_rows, to_int, write_rows
 
 
 def test_to_int_handles_commas_yen_and_blank():
@@ -41,3 +41,13 @@ def test_init_year_dir_creates_files_and_is_idempotent(tmp_path):
     assert (d / "inbox").is_dir()
     assert (d / "output").is_dir()
     assert len(read_rows(d / "journal.csv")) == 1
+
+
+def test_replace_rows_writes_content_and_leaves_no_tmp(tmp_path):
+    path = tmp_path / "a.csv"
+    columns = ["x", "y"]
+    rows = [{"x": "1", "y": "あ"}]
+    replace_rows(path, columns, rows)
+    assert path.read_bytes().count(b"\xef\xbb\xbf") == 1
+    assert read_rows(path) == rows
+    assert not path.with_name(path.name + ".tmp").exists()

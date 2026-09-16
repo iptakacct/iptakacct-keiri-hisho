@@ -9,7 +9,7 @@ from pathlib import Path
 
 from common import (
     IMPORT_LOG_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS,
-    KessanError, append_rows, project, read_rows, to_int, write_rows,
+    KessanError, project, read_rows, replace_rows, to_int,
 )
 
 
@@ -75,12 +75,15 @@ def _update_import_log(year_dir, numbers_by_file):
             continue
         low, high = min(numbers), max(numbers)
         if r["登録伝票番号範囲"]:
-            old_low, old_high = (int(x) for x in r["登録伝票番号範囲"].split("-"))
+            try:
+                old_low, old_high = (int(x) for x in r["登録伝票番号範囲"].split("-"))
+            except ValueError as e:
+                raise KessanError(f"import-log.csv の登録伝票番号範囲が不正です: {r['登録伝票番号範囲']}（帳簿への登録は完了済み）") from None
             low, high = min(low, old_low), max(high, old_high)
         r["登録伝票番号範囲"] = f"{low}-{high}"
         changed = True
     if changed:
-        write_rows(path, IMPORT_LOG_COLUMNS, [project(r, IMPORT_LOG_COLUMNS) for r in log])
+        replace_rows(path, IMPORT_LOG_COLUMNS, [project(r, IMPORT_LOG_COLUMNS) for r in log])
 
 
 def post_approved(year_dir, accounts, now=None):
@@ -116,7 +119,11 @@ def post_approved(year_dir, accounts, now=None):
             if r["証憑ファイル"]:
                 numbers_by_file[r["証憑ファイル"]].append(int(no))
 
-    append_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, new_rows)
-    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in remaining])
+    # Write journal first (atomic operation)
+    full_journal = [project(r, JOURNAL_COLUMNS) for r in journal] + new_rows
+    replace_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, full_journal)
+    # Then write staging (remaining rows)
+    replace_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in remaining])
+    # Finally update import log
     _update_import_log(year_dir, numbers_by_file)
     return PostResult(vouchers=vouchers, remaining=len(remaining))

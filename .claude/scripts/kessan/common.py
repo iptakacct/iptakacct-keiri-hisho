@@ -3,6 +3,7 @@
 CSVはExcelでそのまま開けるよう、BOM付きUTF-8で保存する。
 """
 import csv
+import os
 from pathlib import Path
 
 
@@ -53,6 +54,18 @@ def append_rows(path, columns, rows):
         return
     with path.open("a", encoding="utf-8", newline="") as f:
         csv.DictWriter(f, fieldnames=columns).writerows(rows)
+
+
+def replace_rows(path, columns, rows):
+    """Atomically write rows to path via temporary file and os.replace."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    with tmp_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(str(tmp_path), str(path))
 
 
 def project(row, columns):
