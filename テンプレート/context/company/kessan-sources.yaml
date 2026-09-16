@@ -1,0 +1,22 @@
+# 会計システムを使わない会社の帳簿づくり（kessan）で使う、口座と明細CSVの形式。
+# 使い方：../../.claude/scripts/kessan/README.md
+# 口座番号・ID・パスワードは書かない。
+
+formats:
+  # 例：ネットバンキングの入出金明細CSV（列見出しは実際のファイルに合わせて書き換える）
+  example-bank:
+    encoding: cp932          # Shift-JIS のCSVは cp932、UTF-8 は utf-8-sig
+    header_row: 1            # 列見出しがある行（1始まり）
+    date_format: "%Y/%m/%d"
+    columns:                 # 左は固定、右を実際のCSVの列見出しにする
+      日付: 取引日
+      出金: お引出し
+      入金: お預入れ
+      摘要: お取引内容
+      残高: 残高             # 残高列が無い形式はこの行を消す
+
+accounts: []
+  # - id: main               # import-bank の --account-id に指定する名前
+  #   format: example-bank
+  #   科目: 普通預金
+  #   補助: ○○銀行 ○○支店
