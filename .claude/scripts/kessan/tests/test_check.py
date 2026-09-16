@@ -169,3 +169,59 @@ def test_unreadable_amount_in_journal_names_file_and_voucher(year_dir, accounts)
     setup_clean(year_dir, extra_lines=[line("3", "2025-04-10", debit=("雑費", "", "5千"), credit=("現金", "", 5000))])
     with pytest.raises(KessanError, match="journal.csv 伝票3: 金額「5千」を読めません"):
         run_checks(year_dir, accounts)
+
+
+# --- 伝票番号（journal は数字、adjustments は A で始まる） ---
+
+def write_adjustments(year_dir, rows):
+    write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS, rows)
+
+
+def test_adjustments_with_a_numbers_are_clean(year_dir, accounts):
+    setup_clean(year_dir)
+    write_adjustments(year_dir, [line("A1", "2026-03-31", debit=("法人税等", "", 70000), credit=("未払法人税等", "", 70000))])
+    assert run_checks(year_dir, accounts) == []
+
+
+def test_same_number_in_both_files_is_not_merged(year_dir, accounts):
+    setup_clean(year_dir, extra_lines=[line("3", "2025-04-10", debit=("雑費", "", 500))])
+    write_adjustments(year_dir, [line("3", "2026-03-31", credit=("未払金", "", 500))])
+    findings = run_checks(year_dir, accounts)
+    assert messages(findings, "貸借一致") == ["伝票3: 借方500≠貸方0", "adjustments.csv 伝票3: 借方0≠貸方500"]
+    assert messages(findings, "伝票番号") == [
+        "adjustments.csv: 伝票番号「3」がAで始まっていない（決算整理仕訳は A1, A2…）",
+        "伝票番号「3」が journal.csv と adjustments.csv の両方にある",
+    ]
+
+
+def test_non_numeric_journal_voucher_number(year_dir, accounts):
+    setup_clean(year_dir, extra_lines=[line("T1", "2025-04-10", debit=("雑費", "", 500), credit=("未払金", "", 500))])
+    findings = run_checks(year_dir, accounts)
+    assert ng_items(findings) == ["伝票番号"]
+    assert messages(findings, "伝票番号") == ["journal.csv: 伝票番号「T1」が数字ではない"]
+
+
+# --- 期首残高に貸方残高の資産（減価償却累計額）がある場合 ---
+
+def write_opening_with_depreciation(year_dir):
+    write_rows(year_dir / "opening-balances.csv", OPENING_COLUMNS, [
+        {"科目": "普通預金", "補助": "サンプル銀行", "残高": "1000000"},
+        {"科目": "工具器具備品", "補助": "", "残高": "500000"},
+        {"科目": "減価償却累計額", "補助": "", "残高": "200000"},
+        {"科目": "資本金", "補助": "", "残高": "1300000"},
+    ])
+
+
+def test_opening_with_accumulated_depreciation_is_balanced(year_dir, accounts):
+    setup_clean(year_dir)
+    write_opening_with_depreciation(year_dir)
+    assert run_checks(year_dir, accounts) == []
+
+
+def test_negative_accumulated_depreciation_is_flagged(year_dir, accounts):
+    setup_clean(year_dir, extra_lines=[
+        line("3", "2025-04-10", debit=("減価償却累計額", "", 300000), credit=("雑収入", "", 300000)),
+    ])
+    write_opening_with_depreciation(year_dir)
+    findings = run_checks(year_dir, accounts)
+    assert messages(findings, "マイナス残高") == ["減価償却累計額（補助なし）: 期末残高-100000"]

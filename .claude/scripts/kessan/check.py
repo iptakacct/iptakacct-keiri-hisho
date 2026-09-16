@@ -21,15 +21,43 @@ def _sub_label(sub):
     return sub or "補助なし"
 
 
+def _voucher_label(file, no):
+    return f"伝票{no}" if file == "journal.csv" else f"{file} 伝票{no}"
+
+
 def check_voucher_balance(entries):
     totals = defaultdict(lambda: [0, 0])
     for r in entries:
-        totals[r["伝票番号"]][0] += parse_amount(r["借方金額"], entry_where(r))
-        totals[r["伝票番号"]][1] += parse_amount(r["貸方金額"], entry_where(r))
+        key = (r.get("_file", "journal.csv"), r["伝票番号"])
+        totals[key][0] += parse_amount(r["借方金額"], entry_where(r))
+        totals[key][1] += parse_amount(r["貸方金額"], entry_where(r))
     return [
-        Finding("NG", "貸借一致", f"伝票{no}: 借方{debit}≠貸方{credit}")
-        for no, (debit, credit) in totals.items() if debit != credit
+        Finding("NG", "貸借一致", f"{_voucher_label(file, no)}: 借方{debit}≠貸方{credit}")
+        for (file, no), (debit, credit) in totals.items() if debit != credit
     ]
+
+
+def check_voucher_numbers(entries):
+    """journal.csv は数字の連番、adjustments.csv は A1, A2… とし、両方で同じ番号を使わない。"""
+    numbers = defaultdict(list)
+    for r in entries:
+        no = r["伝票番号"].strip()
+        file = r.get("_file", "journal.csv")
+        if no not in numbers[file]:
+            numbers[file].append(no)
+    findings = [
+        Finding("NG", "伝票番号", f"journal.csv: 伝票番号「{no}」が数字ではない")
+        for no in numbers["journal.csv"] if not no.isdigit()
+    ]
+    findings += [
+        Finding("NG", "伝票番号", f"adjustments.csv: 伝票番号「{no}」がAで始まっていない（決算整理仕訳は A1, A2…）")
+        for no in numbers["adjustments.csv"] if not no.startswith("A")
+    ]
+    findings += [
+        Finding("NG", "伝票番号", f"伝票番号「{no}」が journal.csv と adjustments.csv の両方にある")
+        for no in numbers["adjustments.csv"] if no in numbers["journal.csv"]
+    ]
+    return findings
 
 
 def check_accounts_exist(year_dir, entries, accounts):
@@ -128,6 +156,7 @@ def run_checks(year_dir, accounts, prev_year_dir=None):
     entries = entry_rows(year_dir)
     return (
         check_voucher_balance(entries)
+        + check_voucher_numbers(entries)
         + check_accounts_exist(year_dir, entries, accounts)
         + check_statement_balances(year_dir, accounts)
         + check_duplicates(entries)
