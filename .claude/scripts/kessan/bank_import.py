@@ -17,7 +17,7 @@ import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, append_rows, load_period, read_rows, to_int,
+    KessanError, append_rows, load_period, parse_amount, read_rows,
 )
 
 SUSPECTED_DOUBLE_IMPORT = "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）"
@@ -92,27 +92,17 @@ def parse_statement(file_path, fmt):
         except ValueError:
             raise KessanError(f"{file_path.name} {number}行目: 日付「{get('日付')}」を読めません") from None
 
-        # Parse deposit and withdrawal amounts
-        deposit_str = get("入金")
-        withdrawal_str = get("出金")
-        try:
-            deposit = to_int(deposit_str)
-        except ValueError:
-            raise KessanError(f"{file_path.name} {number}行目: 金額「{deposit_str}」を読めません") from None
-        try:
-            withdrawal = to_int(withdrawal_str)
-        except ValueError:
-            raise KessanError(f"{file_path.name} {number}行目: 金額「{withdrawal_str}」を読めません") from None
-
-        # Check for both deposit and withdrawal being nonzero
+        where = f"{file_path.name} {number}行目"
+        deposit = parse_amount(get("入金"), where)
+        withdrawal = parse_amount(get("出金"), where)
+        # 入金・出金の両方の欄に金額がある行は読めない（符号の入れ替え前に判定する）
         if deposit and withdrawal:
-            raise KessanError(f"{file_path.name} {number}行目: 入金と出金の両方に金額があります（入金{deposit} 出金{withdrawal}）")
+            raise KessanError(f"{where}: 入金と出金の両方に金額があります（入金{deposit} 出金{withdrawal}）")
+        # マイナスの入金は出金、マイナスの出金は入金として扱う（取消・返金の表記）
+        deposit, withdrawal = max(deposit, 0) + max(-withdrawal, 0), max(withdrawal, 0) + max(-deposit, 0)
 
         balance_str = get("残高")
-        try:
-            balance = to_int(balance_str) if balance_str else None
-        except ValueError:
-            raise KessanError(f"{file_path.name} {number}行目: 金額「{balance_str}」を読めません") from None
+        balance = parse_amount(balance_str, where) if balance_str else None
 
         rows.append({
             "日付": date,
@@ -183,7 +173,8 @@ def _existing_bank_lines(lines):
         for side in ("借方", "貸方"):
             name = r[f"{side}科目"].strip()
             if name:
-                key = (side, name, r[f"{side}補助"].strip(), r["日付"].strip(), to_int(r[f"{side}金額"]))
+                key = (side, name, r[f"{side}補助"].strip(), r["日付"].strip(),
+                       parse_amount(r[f"{side}金額"], f"{r['_file']} {r['伝票番号'] or r['日付']}"))
                 index[key].add(r["取り込み元ID"].strip())
     return index
 
@@ -220,7 +211,7 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
     start, end = load_period(year_dir)
     file_name = Path(file_path).name
     rows = order_oldest_first(parse_statement(file_path, fmt), file_name)
-    existing_lines = read_rows(year_dir / "journal.csv") + read_rows(year_dir / "staging.csv")
+    existing_lines = [{**r, "_file": name} for name in ("journal.csv", "staging.csv") for r in read_rows(year_dir / name)]
     existing = {r["取り込み元ID"] for r in existing_lines if r.get("取り込み元ID")}
     bank_lines = _existing_bank_lines(existing_lines)
     overlapping = _overlapping_imports(read_rows(year_dir / "import-log.csv"), account_id, rows)

@@ -161,3 +161,11 @@ def test_write_report(year_dir, accounts):
 
 def test_has_ng_false_for_warnings_only(year_dir, accounts):
     assert has_ng(run_checks(year_dir, accounts)) is False
+
+
+def test_unreadable_amount_in_journal_names_file_and_voucher(year_dir, accounts):
+    import pytest
+    from common import KessanError
+    setup_clean(year_dir, extra_lines=[line("3", "2025-04-10", debit=("雑費", "", "5千"), credit=("現金", "", 5000))])
+    with pytest.raises(KessanError, match="journal.csv 伝票3: 金額「5千」を読めません"):
+        run_checks(year_dir, accounts)

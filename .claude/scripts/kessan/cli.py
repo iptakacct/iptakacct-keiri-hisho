@@ -73,7 +73,7 @@ def main(argv=None):
             findings = _run_check(year_dir, accounts, args.prev_year_dir)
             if has_ng(findings):
                 print("登録は完了済みですが、検算でNGがあります（check-result.md を確認）")
-                return 1
+                return 2  # 1（エラーで何も登録していない）と区別する
             return 0
         if args.command == "check":
             return 1 if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)) else 0

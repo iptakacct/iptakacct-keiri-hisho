@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from common import read_rows, to_int
-from ledger import compute_balances, entry_rows, load_opening
+from common import parse_amount, read_rows
+from ledger import compute_balances, entry_rows, entry_where, load_opening
 
 BS_CATEGORIES = ("資産", "負債", "純資産")
 
@@ -24,8 +24,8 @@ def _sub_label(sub):
 def check_voucher_balance(entries):
     totals = defaultdict(lambda: [0, 0])
     for r in entries:
-        totals[r["伝票番号"]][0] += to_int(r["借方金額"])
-        totals[r["伝票番号"]][1] += to_int(r["貸方金額"])
+        totals[r["伝票番号"]][0] += parse_amount(r["借方金額"], entry_where(r))
+        totals[r["伝票番号"]][1] += parse_amount(r["貸方金額"], entry_where(r))
     return [
         Finding("NG", "貸借一致", f"伝票{no}: 借方{debit}≠貸方{credit}")
         for no, (debit, credit) in totals.items() if debit != credit
@@ -37,7 +37,7 @@ def check_accounts_exist(year_dir, entries, accounts):
     for r in entries:
         for side in ("借方", "貸方"):
             name = r[f"{side}科目"].strip()
-            if (name or to_int(r[f"{side}金額"])) and name not in accounts:
+            if (name or parse_amount(r[f"{side}金額"], entry_where(r))) and name not in accounts:
                 findings.append(Finding("NG", "科目マスタ", f"伝票{r['伝票番号']}: {side}科目「{name}」が科目マスタに無い"))
     for r in read_rows(Path(year_dir) / "opening-balances.csv"):
         if r["科目"].strip() not in accounts:
@@ -48,7 +48,8 @@ def check_accounts_exist(year_dir, entries, accounts):
 def check_statement_balances(year_dir, accounts):
     last = {}
     for r in read_rows(Path(year_dir) / "statement-balances.csv"):
-        last[(r["科目"], r["補助"], r["日付"])] = to_int(r["残高"])
+        last[(r["科目"], r["補助"], r["日付"])] = parse_amount(
+            r["残高"], f"statement-balances.csv {r['科目']}（{_sub_label(r['補助'])}） {r['日付']}")
     mismatches = defaultdict(list)
     for (name, sub, date), expected in sorted(last.items(), key=lambda kv: kv[0][2]):
         book = compute_balances(year_dir, accounts, until=date).get((name, sub), {}).get("期末残高", 0)
@@ -72,7 +73,7 @@ def check_duplicates(entries):
         if r["取り込み元ID"]:
             by_id[r["取り込み元ID"]].add(r["伝票番号"])
         who = r["取引先"].strip() or r["摘要"].strip()
-        amount = to_int(r["借方金額"]) or to_int(r["貸方金額"])
+        amount = parse_amount(r["借方金額"], entry_where(r)) or parse_amount(r["貸方金額"], entry_where(r))
         if who and amount:
             by_key[(r["日付"], amount, who)].add(r["伝票番号"])
     findings = [

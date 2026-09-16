@@ -34,12 +34,19 @@ YEAR_FILES = {
 }
 
 
+def _utf8_error(path):
+    return KessanError(f"{Path(path).name}: UTF-8で読めません（Excelでは『CSV UTF-8』で保存）")
+
+
 def read_rows(path):
     path = Path(path)
     if not path.exists():
         return []
-    with path.open(encoding="utf-8-sig", newline="") as f:
-        return list(csv.DictReader(f))
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            return list(csv.DictReader(f))
+    except UnicodeDecodeError:
+        raise _utf8_error(path) from None
 
 
 def write_rows(path, columns, rows):
@@ -53,32 +60,63 @@ def write_rows(path, columns, rows):
 
 def append_rows(path, columns, rows):
     path = Path(path)
-    if not path.exists():
+    if not path.exists() or path.stat().st_size == 0:
         write_rows(path, columns, rows)
         return
+    try:
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            header = next(csv.reader(f), [])
+    except UnicodeDecodeError:
+        raise _utf8_error(path) from None
+    if header != list(columns):
+        raise KessanError(f"{path.name} の列が想定と違います（期待: {'、'.join(columns)}／実際: {'、'.join(header)}）")
+    with path.open("rb") as f:
+        f.seek(-1, os.SEEK_END)
+        ends_with_newline = f.read(1) == b"\n"
     with path.open("a", encoding="utf-8", newline="") as f:
+        if not ends_with_newline:
+            f.write("\r\n")
         csv.DictWriter(f, fieldnames=columns).writerows(rows)
 
 
 def replace_rows(path, columns, rows):
-    """Atomically write rows to path via temporary file and os.replace."""
+    """一時ファイルに書いてから os.replace で置き換える（途中で止まっても元のファイルは壊れない）。"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(path.name + ".tmp")
-    with tmp_path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=columns)
-        writer.writeheader()
-        writer.writerows(rows)
-    os.replace(str(tmp_path), str(path))
+    try:
+        with tmp_path.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(str(tmp_path), str(path))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def project(row, columns):
     return {c: row.get(c, "") for c in columns}
 
 
+_AMOUNT_NOISE = str.maketrans("", "", ",，¥￥\\円 　")
+
+
+def parse_amount(value, where):
+    """CSVの金額欄を整数にする。桁区切り・円記号・空白は無視し、空欄は0。読めなければ KessanError。"""
+    s = str(value if value is not None else "").translate(_AMOUNT_NOISE)
+    if not s:
+        return 0
+    if not re.fullmatch(r"-?[0-9]+", s):
+        raise KessanError(f"{where}: 金額「{value}」を読めません")
+    return int(s)
+
+
 def to_int(value):
-    s = str(value or "").replace(",", "").replace("¥", "").replace("\\", "").strip()
-    return int(s) if s else 0
+    return parse_amount(value, "金額")
 
 
 PERIOD_FILE = "period.yaml"

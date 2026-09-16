@@ -259,3 +259,19 @@ def test_template_accounts_example_parses_when_uncommented():
     (account,) = data["accounts"]
     assert account["format"] in data["formats"]
     assert account["科目"] == "普通預金"
+
+
+# --- マイナスの金額 ---
+
+def test_negative_deposit_is_withdrawal_and_negative_withdrawal_is_deposit(year_dir, tmp_path):
+    text = HEADER + "2025/04/10,,-500,返金取消,\n2025/04/11,-700,,出金取消,\n"
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "neg.csv", text), now=NOW)
+    first, second = read_rows(year_dir / "staging.csv")
+    assert (first["貸方科目"], first["貸方金額"], first["借方科目"], first["借方金額"]) == ("普通預金", "500", "", "500")
+    assert (second["借方科目"], second["借方金額"], second["貸方科目"], second["貸方金額"]) == ("普通預金", "700", "", "700")
+
+
+def test_negative_deposit_with_withdrawal_is_both_sides(year_dir, tmp_path):
+    text = HEADER + "2025/04/10,300,-500,両方,\n"
+    with pytest.raises(KessanError, match="入金と出金の両方"):
+        import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "neg.csv", text), now=NOW)

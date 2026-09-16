@@ -1,8 +1,8 @@
 import pytest
 
 from common import (
-    JOURNAL_COLUMNS, KessanError, append_rows, init_year_dir, load_period, project, read_rows, replace_rows, to_int,
-    write_rows,
+    JOURNAL_COLUMNS, KessanError, append_rows, init_year_dir, load_period, parse_amount, project, read_rows,
+    replace_rows, to_int, write_rows,
 )
 
 
@@ -87,3 +87,53 @@ def test_init_rejects_invalid_period(tmp_path, start, end):
 def test_load_period_missing_file(tmp_path):
     with pytest.raises(KessanError, match="period.yaml がありません"):
         load_period(tmp_path)
+
+
+def test_parse_amount_strips_symbols():
+    assert parse_amount("1,234", "x") == 1234
+    assert parse_amount("￥5，000円", "x") == 5000
+    assert parse_amount(" 300 ", "x") == 300
+    assert parse_amount("-200000", "x") == -200000
+    assert parse_amount("", "x") == 0
+    assert parse_amount(None, "x") == 0
+
+
+@pytest.mark.parametrize("value", ["abc", "1.5", "12-3", "1万"])
+def test_parse_amount_rejects_non_integer(value):
+    with pytest.raises(KessanError, match=f"journal.csv 伝票1: 金額「{value}」を読めません"):
+        parse_amount(value, "journal.csv 伝票1")
+
+
+def test_read_rows_non_utf8_raises(tmp_path):
+    path = tmp_path / "staging.csv"
+    path.write_bytes("日付,摘要\n2025-04-01,テスト\n".encode("cp932"))
+    with pytest.raises(KessanError, match="staging.csv: UTF-8で読めません"):
+        read_rows(path)
+
+
+def test_append_rows_rejects_different_header(tmp_path):
+    path = tmp_path / "a.csv"
+    write_rows(path, ["x", "z"], [{"x": "1", "z": "2"}])
+    with pytest.raises(KessanError, match="a.csv の列が想定と違います"):
+        append_rows(path, ["x", "y"], [{"x": "2", "y": "い"}])
+    assert read_rows(path) == [{"x": "1", "z": "2"}]
+
+
+def test_append_rows_adds_missing_final_newline(tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_bytes("﻿x,y\r\n1,あ".encode("utf-8"))
+    append_rows(path, ["x", "y"], [{"x": "2", "y": "い"}])
+    assert read_rows(path) == [{"x": "1", "y": "あ"}, {"x": "2", "y": "い"}]
+
+
+def test_replace_rows_removes_tmp_on_failure(tmp_path, monkeypatch):
+    import common
+    path = tmp_path / "a.csv"
+
+    def fail(src, dst):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(common.os, "replace", fail)
+    with pytest.raises(PermissionError):
+        replace_rows(path, ["x"], [{"x": "1"}])
+    assert not path.with_name(path.name + ".tmp").exists()
