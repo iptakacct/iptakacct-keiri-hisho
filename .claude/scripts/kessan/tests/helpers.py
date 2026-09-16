@@ -39,3 +39,20 @@ def write_bank_csv(directory, name="2025-04.csv", text=BANK_CSV):
     path = directory / name
     path.write_text(text, encoding="cp932")
     return path
+
+
+def staging_row(**values):
+    row = dict.fromkeys(STAGING_COLUMNS, "")
+    row.update(values)
+    return row
+
+
+def line(no, date, debit=None, credit=None, **extra):
+    row = dict.fromkeys(JOURNAL_COLUMNS, "")
+    row.update({"伝票番号": no, "日付": date})
+    row.update(extra)
+    if debit:
+        row.update({"借方科目": debit[0], "借方補助": debit[1], "借方金額": str(debit[2])})
+    if credit:
+        row.update({"貸方科目": credit[0], "貸方補助": credit[1], "貸方金額": str(credit[2])})
+    return row
