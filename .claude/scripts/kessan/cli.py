@@ -62,7 +62,10 @@ def main(argv=None):
         if args.command == "post":
             r = post_approved(year_dir, accounts)
             print(f"登録: 伝票 {len(r.vouchers)}件（{', '.join(r.vouchers) or 'なし'}） / 未承認で残った行 {r.remaining}件")
-            _run_check(year_dir, accounts, args.prev_year_dir)
+            findings = _run_check(year_dir, accounts, args.prev_year_dir)
+            if has_ng(findings):
+                print("登録は完了済みですが、検算でNGがあります（check-result.md を確認）")
+                return 1
             return 0
         if args.command == "check":
             return 1 if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)) else 0

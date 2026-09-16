@@ -1,6 +1,6 @@
 from cli import main
 from common import OPENING_COLUMNS, STAGING_COLUMNS, read_rows, write_rows
-from helpers import write_bank_csv, write_sources
+from helpers import staging_row, write_bank_csv, write_sources
 
 
 def opening(year_dir, rows):
@@ -54,3 +54,15 @@ def test_error_is_reported_with_exit_1(tmp_path, capsys):
 def test_uninitialized_year_dir(tmp_path, capsys):
     assert main(["check", "--year-dir", str(tmp_path / "none")]) == 1
     assert "init" in capsys.readouterr().err
+
+
+def test_post_returns_1_when_check_finds_ng(tmp_path, capsys):
+    year = tmp_path / "2026-03期"
+    main(["init", "--year-dir", str(year)])
+    opening(year, [{"科目": "普通預金", "補助": "サンプル銀行", "残高": "1000000"}])
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [
+        staging_row(日付="2025-04-01", 借方科目="現金", 借方金額="1", 貸方科目="資本金", 貸方金額="1", 承認="済"),
+    ])
+    assert main(["post", "--year-dir", str(year)]) == 1
+    assert len(read_rows(year / "journal.csv")) == 1
+    assert "登録は完了済み" in capsys.readouterr().out

@@ -1,5 +1,5 @@
 # 会計システムを使わない会社の帳簿づくり（kessan）で使う、口座と明細CSVの形式。
-# 使い方：../../.claude/scripts/kessan/README.md
+# 使い方：../../../.claude/scripts/kessan/README.md
 # 口座番号・ID・パスワードは書かない。
 
 formats:
