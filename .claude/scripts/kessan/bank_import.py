@@ -37,8 +37,12 @@ def parse_statement(file_path, fmt):
     file_path = Path(file_path)
     if not file_path.exists():
         raise KessanError(f"明細ファイルがありません: {file_path}")
-    with file_path.open(encoding=fmt.get("encoding", "utf-8-sig"), newline="") as f:
-        lines = list(csv.reader(f))
+    encoding = fmt.get("encoding", "utf-8-sig")
+    try:
+        with file_path.open(encoding=encoding, newline="") as f:
+            lines = list(csv.reader(f))
+    except UnicodeDecodeError:
+        raise KessanError(f"{file_path.name}: 文字コード {encoding} として読めません（kessan-sources.yaml の encoding を確認）") from None
     header_index = fmt.get("header_row", 1) - 1
     if header_index >= len(lines):
         raise KessanError(f"{file_path.name}: 列見出しの行（{header_index + 1}行目）がありません")
@@ -62,13 +66,35 @@ def parse_statement(file_path, fmt):
             date = datetime.strptime(get("日付"), fmt["date_format"]).strftime("%Y-%m-%d")
         except ValueError:
             raise KessanError(f"{file_path.name} {number}行目: 日付「{get('日付')}」を読めません") from None
-        balance = get("残高")
+
+        # Parse deposit and withdrawal amounts
+        deposit_str = get("入金")
+        withdrawal_str = get("出金")
+        try:
+            deposit = to_int(deposit_str)
+        except ValueError:
+            raise KessanError(f"{file_path.name} {number}行目: 金額「{deposit_str}」を読めません") from None
+        try:
+            withdrawal = to_int(withdrawal_str)
+        except ValueError:
+            raise KessanError(f"{file_path.name} {number}行目: 金額「{withdrawal_str}」を読めません") from None
+
+        # Check for both deposit and withdrawal being nonzero
+        if deposit and withdrawal:
+            raise KessanError(f"{file_path.name} {number}行目: 入金と出金の両方に金額があります（入金{deposit} 出金{withdrawal}）")
+
+        balance_str = get("残高")
+        try:
+            balance = to_int(balance_str) if balance_str else None
+        except ValueError:
+            raise KessanError(f"{file_path.name} {number}行目: 金額「{balance_str}」を読めません") from None
+
         rows.append({
             "日付": date,
-            "入金": to_int(get("入金")),
-            "出金": to_int(get("出金")),
+            "入金": deposit,
+            "出金": withdrawal,
             "摘要": get("摘要"),
-            "残高": to_int(balance) if balance else None,
+            "残高": balance,
             "行番号": number,
         })
     return rows

@@ -85,3 +85,28 @@ def test_bad_date(year_dir, tmp_path):
 def test_missing_sources_file(year_dir, tmp_path):
     with pytest.raises(KessanError, match="設定ファイル"):
         import_bank(year_dir, tmp_path / "none.yaml", "main", write_bank_csv(tmp_path))
+
+
+def test_both_debit_and_credit_nonzero_raises(year_dir, tmp_path):
+    """Row with both 入金 and 出金 nonzero should raise error during parsing."""
+    bad = write_bank_csv(tmp_path, "bad.csv", "x\n取引日,お引出し,お預入れ,お取引内容,残高\n2025/04/01,500,1000,両方ある,\n")
+    with pytest.raises(KessanError, match="入金と出金の両方"):
+        import_bank(year_dir, write_sources(tmp_path), "main", bad)
+    # Verify staging.csv is empty (nothing was written)
+    assert read_rows(year_dir / "staging.csv") == []
+
+
+def test_encoding_mismatch_raises(year_dir, tmp_path):
+    """File encoded as UTF-8 but format says cp932 should raise clear error."""
+    # Write a file in UTF-8 containing Japanese that's invalid in cp932
+    bad_path = tmp_path / "encoding-bad.csv"
+    bad_path.write_text("x\n取引日,お引出し,お預入れ,お取引内容,残高\n2025/04/01,,1000,髙﨑①,\n", encoding="utf-8")
+    with pytest.raises(KessanError, match="文字コード"):
+        import_bank(year_dir, write_sources(tmp_path), "main", bad_path)
+
+
+def test_malformed_amount_raises(year_dir, tmp_path):
+    """Amount cell with non-numeric text should raise clear error."""
+    bad = write_bank_csv(tmp_path, "bad.csv", "x\n取引日,お引出し,お預入れ,お取引内容,残高\n2025/04/01,,不明,テスト,\n")
+    with pytest.raises(KessanError, match="金額"):
+        import_bank(year_dir, write_sources(tmp_path), "main", bad)
