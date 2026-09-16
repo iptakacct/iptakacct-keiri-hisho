@@ -1,7 +1,7 @@
 """kessan：会計システムなしで帳簿を作るためのコマンド（段階1：取り込み・登録・検算・試算表）。
 
 インスタンスフォルダで実行する例:
-  python ../.claude/scripts/kessan/cli.py init --year-dir work/kessan/2026-03期
+  python ../.claude/scripts/kessan/cli.py init --year-dir work/kessan/2026-03期 --start 2025-04-01 --end 2026-03-31
   python ../.claude/scripts/kessan/cli.py import-bank --year-dir work/kessan/2026-03期 --account-id main --file work/kessan/2026-03期/inbox/2025-04.csv
   python ../.claude/scripts/kessan/cli.py post --year-dir work/kessan/2026-03期
   python ../.claude/scripts/kessan/cli.py check --year-dir work/kessan/2026-03期 [--prev-year-dir work/kessan/2025-03期]
@@ -25,6 +25,9 @@ def _parser():
     for name in ("init", "import-bank", "post", "check", "tb"):
         p = sub.add_parser(name)
         p.add_argument("--year-dir", required=True, type=Path)
+        if name == "init":
+            p.add_argument("--start", required=True, help="期首日 YYYY-MM-DD")
+            p.add_argument("--end", required=True, help="期末日 YYYY-MM-DD")
         if name == "import-bank":
             p.add_argument("--account-id", required=True)
             p.add_argument("--file", required=True, type=Path)
@@ -47,7 +50,7 @@ def main(argv=None):
     year_dir = args.year_dir
     try:
         if args.command == "init":
-            init_year_dir(year_dir)
+            init_year_dir(year_dir, args.start, args.end)
             print(f"年度フォルダを用意しました: {year_dir}")
             return 0
         if not (year_dir / "journal.csv").exists():
@@ -57,7 +60,8 @@ def main(argv=None):
         if args.command == "import-bank":
             sources = args.sources or year_dir.resolve().parents[2] / "context" / "company" / "kessan-sources.yaml"
             r = import_bank(year_dir, sources, args.account_id, args.file)
-            print(f"取り込み: 追加 {r.added}件 / 取り込み済みのためスキップ {r.duplicates}件 / 金額0のためスキップ {r.zero_amount}件")
+            print(f"取り込み: 追加 {r.added}件 / 取り込み済みのためスキップ {r.duplicates}件 / 金額0のためスキップ {r.zero_amount}件"
+                  f" / 期間外のためスキップ {r.out_of_period}件")
             return 0
         if args.command == "post":
             r = post_approved(year_dir, accounts)

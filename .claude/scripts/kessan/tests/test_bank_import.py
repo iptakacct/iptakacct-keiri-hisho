@@ -110,3 +110,11 @@ def test_malformed_amount_raises(year_dir, tmp_path):
     bad = write_bank_csv(tmp_path, "bad.csv", "x\n取引日,お引出し,お預入れ,お取引内容,残高\n2025/04/01,,不明,テスト,\n")
     with pytest.raises(KessanError, match="金額"):
         import_bank(year_dir, write_sources(tmp_path), "main", bad)
+
+
+def test_rows_outside_period_are_not_staged(year_dir, tmp_path):
+    text = ("x\n取引日,お引出し,お預入れ,お取引内容,残高\n"
+            "2025/03/31,,1000,期首前,\n2025/04/01,,2000,期中,\n2026/04/01,500,,期末後,\n")
+    result = import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "p.csv", text), now=NOW)
+    assert (result.added, result.out_of_period) == (1, 2)
+    assert [r["摘要"] for r in read_rows(year_dir / "staging.csv")] == ["期中"]

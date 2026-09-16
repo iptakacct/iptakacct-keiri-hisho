@@ -9,7 +9,7 @@ from pathlib import Path
 
 from common import (
     IMPORT_LOG_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS,
-    KessanError, project, read_rows, replace_rows, to_int,
+    KessanError, load_period, project, read_rows, replace_rows, to_int,
 )
 
 
@@ -33,7 +33,8 @@ def _label(key, lines):
     return f"伝票{key}"
 
 
-def _validate(groups, accounts, journal):
+def _validate(groups, accounts, journal, period):
+    start, end = period
     errors = []
     registered = {r["取り込み元ID"] for r in journal if r.get("取り込み元ID")}
     id_groups = defaultdict(set)
@@ -41,6 +42,9 @@ def _validate(groups, accounts, journal):
         label = _label(key, lines)
         debit = credit = 0
         for r in lines:
+            date = r["日付"].strip()
+            if not start <= date <= end:
+                errors.append(f"{label}: 期間外の日付「{date}」（{start}〜{end}）")
             for side in ("借方", "貸方"):
                 amount = to_int(r[f"{side}金額"])
                 name = r[f"{side}科目"].strip()
@@ -96,7 +100,7 @@ def post_approved(year_dir, accounts, now=None):
         return PostResult(vouchers=[], remaining=len(remaining))
 
     groups = _group(approved)
-    errors = _validate(groups, accounts, journal)
+    errors = _validate(groups, accounts, journal, load_period(year_dir))
     if errors:
         raise KessanError("承認済みの行を登録できません（何も登録していません）:\n" + "\n".join(errors))
 

@@ -2,6 +2,7 @@
 
 会計システムを使っていない会社の帳簿・決算は、事業年度ごとにこのフォルダの下に `<年度>/`（例：`2026-03期/`）を作って管理する。
 
+- 年度フォルダは `init --year-dir <年度> --start <期首日> --end <期末日>` で作る（事業年度の期間は `<年度>/period.yaml` に記録される）
 - 作り方・手順：`../../../.claude/scripts/kessan/README.md`
 - 口座と明細形式の設定：`../../context/company/kessan-sources.yaml`
 - `<年度>/inbox/`（受領資料の原本）はgitに入らない。原本の保管場所は `../../context/company/systems.md` の「ストレージ」行に書く

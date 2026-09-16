@@ -15,7 +15,7 @@ import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, append_rows, read_rows, to_int,
+    KessanError, append_rows, load_period, read_rows, to_int,
 )
 
 
@@ -24,6 +24,7 @@ class ImportResult:
     added: int
     duplicates: int
     zero_amount: int
+    out_of_period: int = 0
 
 
 def load_sources(path):
@@ -133,6 +134,7 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
     if fmt is None:
         raise KessanError(f"口座ID {account_id} の明細形式「{account.get('format')}」が設定ファイルにありません")
 
+    start, end = load_period(year_dir)
     rows = parse_statement(file_path, fmt)
     file_name = Path(file_path).name
     existing = {
@@ -143,13 +145,16 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
 
     seen = Counter()
     new_rows, new_balances = [], []
-    duplicate = zero = 0
+    duplicate = zero = out_of_period = 0
     for row in rows:
         key = (row["日付"], row["入金"], row["出金"], row["摘要"], row["残高"])
         occurrence = seen[key]
         seen[key] += 1
         if row["入金"] == 0 and row["出金"] == 0:
             zero += 1
+            continue
+        if not start <= row["日付"] <= end:
+            out_of_period += 1
             continue
         source_id = make_source_id(account_id, row, occurrence)
         if source_id in existing:
@@ -176,4 +181,4 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
             "出金合計": str(sum(row["出金"] for row, _ in new_rows)),
             "登録伝票番号範囲": "",
         }])
-    return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero)
+    return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period)

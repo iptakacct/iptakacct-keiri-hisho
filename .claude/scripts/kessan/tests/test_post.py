@@ -71,6 +71,8 @@ def test_nothing_approved_is_noop(year_dir, accounts):
      "科目マスタに無い借方科目「謎の科目」"),
     (staging_row(日付="2025-04-05", 借方科目="支払手数料", 借方金額="3300", 貸方科目="普通預金", 貸方金額="3000", 承認="済"),
      "借方3300≠貸方3000"),
+    (staging_row(日付="2026-04-01", 借方科目="現金", 借方金額="1", 貸方科目="資本金", 貸方金額="1", 承認="済"),
+     "期間外の日付"),
 ])
 def test_invalid_rows_block_everything(year_dir, accounts, bad, message):
     write_staging(year_dir, [capital(), bad])

@@ -109,7 +109,7 @@ def test_missing_opening_is_warning(year_dir, accounts):
 
 def setup_prev(tmp_path):
     prev = tmp_path / "2025-03期"
-    init_year_dir(prev)
+    init_year_dir(prev, "2024-04-01", "2025-03-31")
     write_rows(prev / "opening-balances.csv", OPENING_COLUMNS, [
         {"科目": "普通預金", "補助": "サンプル銀行", "残高": "500000"},
         {"科目": "資本金", "補助": "", "残高": "500000"},

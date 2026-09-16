@@ -8,6 +8,7 @@
 
 | ファイル | 中身 |
 |---|---|
+| `period.yaml` | 事業年度の期首日・期末日（`init --start --end` で作成）。期間外の明細は取り込まず、期間外の日付は登録できない |
 | `inbox/` | 受領資料の原本（gitに入れない） |
 | `staging.csv` | 取り込んだ明細・仕訳候補。`承認` 列に `済` を入れた行が `post` で登録される |
 | `journal.csv` | 帳簿本体。直接編集しない（`post` 経由で登録する） |
@@ -22,7 +23,7 @@
 インスタンスフォルダで実行する（`<Y>` は `work/kessan/2026-03期` など）。
 
 ```bash
-python ../.claude/scripts/kessan/cli.py init --year-dir <Y>
+python ../.claude/scripts/kessan/cli.py init --year-dir <Y> --start 2025-04-01 --end 2026-03-31
 # opening-balances.csv に期首残高を入れる
 # context/company/kessan-sources.yaml に口座と明細形式を登録する
 python ../.claude/scripts/kessan/cli.py import-bank --year-dir <Y> --account-id <口座ID> --file <Y>/inbox/<明細>.csv

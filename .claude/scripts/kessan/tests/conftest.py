@@ -17,5 +17,5 @@ def accounts():
 @pytest.fixture
 def year_dir(tmp_path):
     d = tmp_path / "2026-03期"
-    init_year_dir(d)
+    init_year_dir(d, "2025-04-01", "2026-03-31")
     return d
