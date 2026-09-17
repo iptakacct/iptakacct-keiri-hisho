@@ -149,3 +149,19 @@ def test_normalize_key_removes_spaces_and_unifies_width():
     assert normalize_key(" ﾃｽﾄ　文具店 ") == "テスト文具店"
     assert normalize_key("ＡＢＣ 商店") == "ABC商店"
     assert normalize_key(None) == ""
+
+
+def test_ensure_writable_reports_locked_file(tmp_path, monkeypatch):
+    import builtins
+    from common import ensure_writable
+    write_rows(tmp_path / "evidence.csv", ["x"], [])
+    original_open = builtins.open
+
+    def locked_open(file, mode="r", *args, **kwargs):
+        if str(file).endswith("evidence.csv") and "a" in mode:
+            raise PermissionError(13, "Permission denied", str(file))
+        return original_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", locked_open)
+    with pytest.raises(KessanError, match="evidence.csv に書き込めません（Excelで開いていたら閉じてから再実行）"):
+        ensure_writable(tmp_path, ["none.csv", "evidence.csv"])

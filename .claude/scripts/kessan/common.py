@@ -21,6 +21,10 @@ JOURNAL_COLUMNS = [
     "摘要", "取引先", "証憑ファイル", "取り込み元ID", "登録区分", "登録日時",
 ]
 STAGING_COLUMNS = JOURNAL_COLUMNS + ["読み取り信頼度", "判定", "要確認理由", "承認"]
+EVIDENCE_COLUMNS = [
+    "証憑ID", "証憑ファイル", "種類", "日付", "金額", "取引先", "内容", "科目候補", "補助候補",
+    "状態", "取り込み元ID", "取り込み日時",
+]
 IMPORT_LOG_COLUMNS = ["取り込み日時", "ファイル名", "口座ID", "対象期間", "件数", "入金合計", "出金合計", "登録伝票番号範囲"]
 STATEMENT_BALANCE_COLUMNS = ["科目", "補助", "日付", "残高", "ファイル名"]
 OPENING_COLUMNS = ["科目", "補助", "残高"]
@@ -32,6 +36,7 @@ YEAR_FILES = {
     "import-log.csv": IMPORT_LOG_COLUMNS,
     "statement-balances.csv": STATEMENT_BALANCE_COLUMNS,
     "opening-balances.csv": OPENING_COLUMNS,
+    "evidence.csv": EVIDENCE_COLUMNS,
 }
 
 
@@ -160,6 +165,23 @@ def load_period(year_dir):
     if not isinstance(data, dict):
         raise KessanError(f"{PERIOD_FILE} の形式が不正です（期首日・期末日を書く）")
     return _validate_period(data.get("期首日"), data.get("期末日"))
+
+
+def cannot_write(name):
+    return KessanError(f"{name} に書き込めません（Excelで開いていたら閉じてから再実行）")
+
+
+def ensure_writable(year_dir, names):
+    """書き込む前に、対象のCSVが全部書き込めるか確かめる（Excelで開いたままだと書けない。途中まで書いた状態を作らない）。"""
+    for name in names:
+        path = Path(year_dir) / name
+        if not path.exists():
+            continue
+        try:
+            with open(path, "a", encoding="utf-8"):
+                pass
+        except OSError:
+            raise cannot_write(name) from None
 
 
 def init_year_dir(year_dir, start, end):

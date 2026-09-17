@@ -29,9 +29,10 @@ BANK_CSV = (
 )
 
 
-def write_sources(directory):
+def write_sources(directory, extra=""):
+    """extra：SOURCES_YAML の末尾に足すYAML（口座の追加・receipt_default など）。"""
     path = directory / "kessan-sources.yaml"
-    path.write_text(SOURCES_YAML, encoding="utf-8")
+    path.write_text(SOURCES_YAML + extra, encoding="utf-8")
     return path
 
 

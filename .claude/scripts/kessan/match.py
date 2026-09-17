@@ -5,9 +5,10 @@
 """
 import re
 import unicodedata
+from datetime import date
 from pathlib import Path
 
-from common import KessanError
+from common import KessanError, parse_amount, parse_date
 
 ABBREVIATIONS_PATH = Path(__file__).resolve().parents[2] / "rules" / "company-name-abbreviations.md"
 ABBREVIATION_SECTIONS = ("## 法人略語", "## 営業所略語")  # カッコ付きの略語だけを使う（事業略語は誤読み替えが多い）
@@ -60,3 +61,64 @@ def name_in_description(name, description, abbreviations):
     """取引先名が摘要に含まれるか（両側を正規化・略語を読み替えてから部分一致）。"""
     needle = expand_abbreviations(name, abbreviations)
     return bool(needle) and needle in expand_abbreviations(description, abbreviations)
+
+
+# --- 証憑と明細行の突き合わせ ---
+
+MATCH_WINDOW_DAYS = 7  # 証憑の日付の前後7日（両端を含む）
+RECEIPT_DEFAULTS = ("立替", "現金")
+NO_MATCH = "明細に該当なし"
+NO_MATCH_BANK = "明細に該当なし（口座・カードの明細が未取り込みでないか確認）"
+MATCHED_RECEIPT = "証憑と一致"
+SUSPECTED_DUPLICATE_RECEIPT = "証憑の重複の疑い"
+
+
+def payment_accounts(sources):
+    """kessan-sources.yaml の accounts に登録した口座・カード・現金の (科目, 補助)。"""
+    return {(str(a.get("科目", "")).strip(), str(a.get("補助", "") or "").strip()) for a in sources.get("accounts") or []}
+
+
+def receipt_default(sources):
+    """領収書の既定の支払方法（kessan-sources.yaml の receipt_default）。未設定は空文字。"""
+    value = sources.get("receipt_default") or ""
+    if value not in ("",) + RECEIPT_DEFAULTS:
+        raise KessanError(f"kessan-sources.yaml の receipt_default は {'／'.join(RECEIPT_DEFAULTS)} のどちらか（未設定なら空欄）: {value}")
+    return value
+
+
+def find_candidates(lines, receipt, accounts_for_payment, attached):
+    """証憑と突き合わせる明細行の取り込み元IDを、見つかった順に返す。
+
+    条件：貸方が支払口座（kessan-sources.yaml の口座・カード・現金）、貸方金額＝証憑の金額、
+    日付が証憑の日付の前後7日以内、取り込み元IDがあり証憑由来（receipt:）ではない、まだ証憑が付いていない。
+    """
+    target = date.fromisoformat(receipt["日付"])
+    found = []
+    for r in lines:
+        source_id = r["取り込み元ID"].strip()
+        if not source_id or source_id.startswith("receipt:") or source_id in attached or source_id in found:
+            continue
+        if (r["貸方科目"].strip(), r["貸方補助"].strip()) not in accounts_for_payment:
+            continue
+        if parse_amount(r["貸方金額"], f"{r['_file']} {r['伝票番号'] or r['日付']}") != receipt["金額"]:
+            continue
+        line_date = parse_date(r["日付"])
+        if line_date is None or abs((date.fromisoformat(line_date) - target).days) > MATCH_WINDOW_DAYS:
+            continue
+        found.append(source_id)
+    return found
+
+
+def credit_for_new_entry(method, default, accounts_for_payment):
+    """明細に該当が無い証憑から新しい仕訳を作るときの貸方 (科目, 補助, 要確認理由)。後払いは None（仕訳を作らない）。"""
+    if method == "後払い":
+        return None
+    if method in ("口座", "カード"):
+        return "", "", NO_MATCH_BANK
+    chosen = method if method in RECEIPT_DEFAULTS else default
+    if chosen == "立替":
+        return "役員借入金", "", NO_MATCH
+    if chosen == "現金":
+        cash = sorted(sub for name, sub in accounts_for_payment if name == "現金")
+        return "現金", cash[0] if len(cash) == 1 else "", NO_MATCH
+    return "", "", NO_MATCH

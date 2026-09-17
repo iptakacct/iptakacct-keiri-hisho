@@ -17,7 +17,7 @@ from pathlib import Path
 
 from common import (
     IMPORT_LOG_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS,
-    KessanError, load_period, parse_amount, parse_date, project, read_rows, replace_rows,
+    KessanError, cannot_write, ensure_writable, load_period, parse_amount, parse_date, project, read_rows, replace_rows,
 )
 
 WRITE_TARGETS = ("journal.csv", "staging.csv", "import-log.csv")
@@ -94,22 +94,6 @@ def _validate(groups, accounts, journal, period):
     return errors
 
 
-def _cannot_write(name):
-    return KessanError(f"{name} に書き込めません（Excelで開いていたら閉じてから再実行）")
-
-
-def _ensure_writable(year_dir):
-    for name in WRITE_TARGETS:
-        path = year_dir / name
-        if not path.exists():
-            continue
-        try:
-            with open(path, "a", encoding="utf-8"):
-                pass
-        except OSError:
-            raise _cannot_write(name) from None
-
-
 def _assign_manual_ids(groups):
     """取り込み元IDの無い行に、伝票ごとに1つの manual:<ランダム値> を付ける。"""
     for lines in groups.values():
@@ -155,13 +139,13 @@ def post_approved(year_dir, accounts, now=None):
     if errors:
         raise KessanError("承認済みの行を登録できません（何も登録していません）:\n" + "\n".join(errors))
     log = read_rows(year_dir / "import-log.csv")  # 読めなければここで止まる（まだ何も書いていない）
-    _ensure_writable(year_dir)
+    ensure_writable(year_dir, WRITE_TARGETS)
 
     _assign_manual_ids(groups)
     try:
         replace_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in staging])
     except OSError:
-        raise _cannot_write("staging.csv") from None
+        raise cannot_write("staging.csv") from None
 
     next_no = max((int(r["伝票番号"]) for r in journal if r["伝票番号"].isdigit()), default=0) + 1
     stamp = (now or datetime.now()).isoformat(timespec="seconds")
@@ -187,7 +171,7 @@ def post_approved(year_dir, accounts, now=None):
     try:
         replace_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, full_journal)
     except OSError:
-        raise _cannot_write("journal.csv") from None
+        raise cannot_write("journal.csv") from None
 
     # ここから先は登録が確定済み。失敗しても再実行で二重登録にはならない（取り込み元IDで拒否される）
     current = "staging.csv"
