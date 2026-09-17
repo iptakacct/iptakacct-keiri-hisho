@@ -56,3 +56,61 @@ def line(no, date, debit=None, credit=None, **extra):
     if credit:
         row.update({"貸方科目": credit[0], "貸方補助": credit[1], "貸方金額": str(credit[2])})
     return row
+
+
+# --- 読み取り結果ファイル（extracted/*.json）の架空データ ---
+
+def passbook():
+    """BANK_CSV と同じ取引（1〜2行目）を含む、2ページの通帳。"""
+    return {
+        "資料": "inbox/通帳-2025-04.pdf",
+        "種類": "通帳",
+        "口座ID": "main",
+        "ページ": [
+            {"ページ番号": 1, "繰越残高": 1000000, "行": [
+                {"日付": "2025-04-01", "日付原文": "07-04-01", "入金": 100000, "出金": 0,
+                 "摘要": "フリコミ カ）テストシヨウジ", "残高": 1100000},
+                {"日付": "2025-04-05", "日付原文": "07-04-05", "入金": 0, "出金": 3300, "摘要": "テスウリヨウ", "残高": 1096700},
+            ]},
+            {"ページ番号": 2, "繰越残高": 1096700, "行": [
+                {"日付": "2025-04-10", "日付原文": "07-04-10", "入金": 0, "出金": 5500, "摘要": "カード テストブングテン", "残高": 1091200},
+            ]},
+        ],
+    }
+
+
+def receipt(**overrides):
+    data = {
+        "資料": "inbox/領収書-0001.jpg",
+        "種類": "領収書",
+        "日付": "2025-04-10", "日付原文": "2025年4月10日",
+        "金額": 5500, "取引先": "テスト文具店", "内容": "文房具",
+        "支払方法の推定": "不明",
+        "科目候補": "消耗品費", "補助候補": "",
+        "自信度": "高", "メモ": "",
+    }
+    data.update(overrides)
+    return data
+
+
+def cash_book():
+    return {
+        "資料": "inbox/出納帳.xlsx", "種類": "出納帳", "科目": "現金", "補助": "",
+        "行": [
+            {"日付": "2025-04-03", "入金": 50000, "出金": 0, "摘要": "預金から引出", "残高": 50000},
+            {"日付": "2025-04-04", "入金": 0, "出金": 1200, "摘要": "切手", "残高": 48800},
+        ],
+    }
+
+
+def write_document(year_dir, data, name=None):
+    """資料の原本（中身は空）と読み取り結果JSONを年度フォルダに置き、JSONのパスを返す。"""
+    import json
+    from pathlib import Path
+    source = year_dir / data["資料"]
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"")
+    path = year_dir / "extracted" / (name or Path(data["資料"]).name + ".json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
