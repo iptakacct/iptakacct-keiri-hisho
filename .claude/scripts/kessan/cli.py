@@ -10,7 +10,7 @@
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-20260917.xlsx --numbers 3 5
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --ids bank:… receipt:…
-  python ../.claude/scripts/kessan/cli.py unimport --year-dir <Y> --source inbox/通帳-2025-04.pdf
+  python ../.claude/scripts/kessan/cli.py unimport --year-dir <Y> --source inbox/通帳-2025-04.pdf [inbox/2025-04.csv]
   python ../.claude/scripts/kessan/cli.py discard --year-dir <Y> --ids bank:… --reason "二重取り込み（オーナー確認済み）"
   python ../.claude/scripts/kessan/cli.py post --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py check --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
@@ -70,7 +70,8 @@ def _parser():
             target.add_argument("--review-file", type=Path, help="オーナーが番号で承認した確認用Excel（--numbers と使う）")
             p.add_argument("--numbers", nargs="+", help="確認用Excelの番号（--review-file と使う）")
         if name == "unimport":
-            p.add_argument("--source", required=True, help="取り消す資料（inbox/…。銀行CSVはファイル名でも可）")
+            p.add_argument("--source", required=True, nargs="+",
+                           help="取り消す資料（記録どおりの inbox/…。同じ口座で期間が重なる資料はまとめて並べる）")
         if name == "discard":
             p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
             p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")

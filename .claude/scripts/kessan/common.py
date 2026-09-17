@@ -156,7 +156,12 @@ def add_reasons(text, *new):
 
 def remove_reason(text, reason):
     """要確認理由から、reason と完全に一致する部分だけを除く（相手科目未設定を外すときに使う）。"""
-    return REASON_SEPARATOR.join(part for part in split_reasons(text) if part != reason)
+    return remove_reasons(text, reason)
+
+
+def remove_reasons(text, *parts):
+    """要確認理由から、parts のどれかと完全に一致する部分だけを除く（他の部分・順序はそのまま）。"""
+    return REASON_SEPARATOR.join(part for part in split_reasons(text) if part not in parts)
 
 
 DISCARD_LOG = "discard-log.csv"

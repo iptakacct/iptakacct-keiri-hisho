@@ -13,13 +13,15 @@ from pathlib import Path
 from bank_import import UNSET_COUNTER_ACCOUNT
 from common import (
     DISCARD_LOG, DISCARD_LOG_COLUMNS, EVIDENCE_COLUMNS, IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, add_reasons, append_rows, ensure_writable, parse_amount, project, read_rows, remove_reason,
+    KessanError, add_reasons, append_rows, ensure_writable, parse_amount, project, read_rows, remove_reasons,
     replace_rows,
 )
 from evidence import EVIDENCE_FILE, STATE_DISCARDED, STATE_MATCHED
+from extracted import RECEIPT_KINDS
 from match import MATCHED_RECEIPT
 
 IMPORTED_ID_PREFIXES = ("bank:", "receipt:")  # 取り込みで作った行（manual: 等の手入力の行は対象外）
+CHECK_ACCOUNTS_AFTER_UNIMPORT = "証憑の取り消し後（科目を確認）"  # 証憑を取り消したが、科目が変えられていて戻さなかった明細行
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,33 @@ def _matching_names(source, values):
     return {path} if path in recorded else set()
 
 
+def _overlapping_documents(log, names):
+    """取り消す資料（names）と同じ口座ID（口座・出納帳）で対象期間が重なる、取り消さない資料の一覧。
+
+    明細は取り込み元IDで二重に入らないため、重なる資料の行は先に取り込んだ資料の分として記録されている。
+    片方だけ取り消すと、もう片方の資料にあった行まで消え、その資料は取り込み済みのまま戻せなくなる。
+    領収書・請求書（口座ID欄＝種類）は明細を持たないので対象外。
+    """
+    def period(r):
+        parts = r["対象期間"].strip().split("〜")
+        return parts if len(parts) == 2 and all(parts) else None
+
+    found = []
+    for own in (r for r in log if r["ファイル名"].strip() in names):
+        account, own_period = own["口座ID"].strip(), period(own)
+        if not account or account in RECEIPT_KINDS or own_period is None:
+            continue
+        for other in log:
+            other_period = period(other)
+            if (other["ファイル名"].strip() in names or other["口座ID"].strip() != account or other_period is None
+                    or not (other_period[0] <= own_period[1] and own_period[0] <= other_period[1])):
+                continue
+            entry = f"{other['ファイル名'].strip()}（{account} {other['対象期間'].strip()}）"
+            if entry not in found:
+                found.append(entry)
+    return found
+
+
 def _is_imported(row):
     return row["取り込み元ID"].strip().startswith(IMPORTED_ID_PREFIXES)
 
@@ -76,11 +105,17 @@ def _write_all(year_dir, writes):
         done.append(name)
 
 
-def unimport(year_dir, source):
-    """資料1件分の取り込みを取り消す。書き込みの順序：staging.csv → evidence.csv → statement-balances.csv → import-log.csv。
+def unimport(year_dir, sources):
+    """資料の取り込みを取り消す（sources：資料1件の名前、または複数の名前のリスト）。
 
+    指定した資料を全部確かめてから、ファイルごとに1回ずつ書く。
+    書き込みの順序：staging.csv → evidence.csv → statement-balances.csv → import-log.csv。
     import-log.csv を最後にするので、途中で止まっても資料は「取り込み済み」のまま残り、再実行で続きを消せる。
     """
+    sources = [sources] if isinstance(sources, (str, Path)) else list(sources)
+    if not sources:
+        raise KessanError("取り消す資料を --source で指定してください")
+    label = "・".join(str(s) for s in sources)
     year_dir = Path(year_dir)
     staging = read_rows(year_dir / "staging.csv")
     journal = read_rows(year_dir / "journal.csv")
@@ -91,9 +126,13 @@ def unimport(year_dir, source):
     values = ([r["証憑ファイル"] for r in staging if _is_imported(r)] + [r["ファイル名"] for r in balances]
               + [r["証憑ファイル"] for r in evidence] + [r["ファイル名"] for r in log]
               + [r["証憑ファイル"] for r in journal if _is_imported(r)])
-    names = _matching_names(source, values)
-    if not names:
-        raise KessanError(f"{source} は取り込まれていません（staging.csv・evidence.csv・import-log.csv に記録がありません）")
+    names = set()
+    for source in sources:
+        found = _matching_names(source, values)
+        if not found:
+            raise KessanError(f"{source} は取り込まれていません（staging.csv・evidence.csv・import-log.csv に記録がありません。"
+                              "何も変更していません）")
+        names |= found
 
     removed = [r for r in staging if _is_imported(r) and r["証憑ファイル"].strip() in names]
     removed_keys = {id(r) for r in removed}
@@ -104,6 +143,11 @@ def unimport(year_dir, source):
     new_entry_ids = {r["取り込み元ID"].strip() for r in own_evidence if r["取り込み元ID"].strip().startswith("receipt:")}
 
     errors = []
+    overlapping = _overlapping_documents(log, names)
+    if overlapping:
+        errors.append(f"同じ口座で期間が重なる取り込み済みの資料があります: {'、'.join(overlapping)}"
+                      "（明細の行はどちらか一方の資料の分として記録されているため、片方だけは取り消せません。"
+                      "重なる資料もまとめて取り消す場合は --source に並べて指定）")
     approved = sorted({r["取り込み元ID"].strip() for r in staging
                        if r["承認"].strip() == "済" and (id(r) in removed_keys or r["取り込み元ID"].strip() in matched_ids)})
     if approved:
@@ -121,19 +165,21 @@ def unimport(year_dir, source):
         errors.append(f"この資料の明細行に別の証憑が付いています: {'、'.join(attached)}"
                       "（先にその証憑を unimport してから、この資料を取り消してください）")
     if errors:
-        raise KessanError(f"{source} の取り込みを取り消せません（何も変更していません）:\n" + "\n".join(errors))
+        raise KessanError(f"{label} の取り込みを取り消せません（何も変更していません）:\n" + "\n".join(errors))
 
     restored = []
     for ev in matched:
         for r in staging:
             if r["取り込み元ID"].strip() != ev["取り込み元ID"].strip() or id(r) in removed_keys:
                 continue
-            reasons = remove_reason(r["要確認理由"], MATCHED_RECEIPT)
+            reasons = remove_reasons(r["要確認理由"], MATCHED_RECEIPT)
             current = (r["借方科目"].strip(), r["借方補助"].strip(), r["取引先"].strip())
             if current == (ev["科目候補"].strip(), ev["補助候補"].strip(), ev["取引先"].strip()):
                 r.update({"借方科目": "", "借方補助": "", "取引先": ""})
                 reasons = add_reasons(reasons, UNSET_COUNTER_ACCOUNT)
                 restored.append(r["取り込み元ID"].strip())
+            else:  # 突き合わせの後に科目が変えられている。戻さないが、証憑が無くなったので確認に回す（自動承認させない）
+                reasons = add_reasons(reasons, CHECK_ACCOUNTS_AFTER_UNIMPORT)
             r["要確認理由"] = reasons
 
     own_keys = {id(r) for r in own_evidence}

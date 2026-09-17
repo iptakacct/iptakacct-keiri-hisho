@@ -319,6 +319,25 @@ def test_import_extracted_prints_discarded_rows(tmp_path, capsys):
     assert "破棄済みのため入れなかった行：1件" in capsys.readouterr().out
 
 
+def test_unimport_accepts_several_sources(tmp_path, capsys):
+    from helpers import passbook, write_document
+    year = make_instance(tmp_path)
+    from helpers import OVERLAP_CSV
+    csv_path = write_bank_csv(year / "inbox", text=OVERLAP_CSV)  # 4/1〜4/20。通帳（4/1〜4/10）と期間が重なる
+    assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 0
+    write_document(year, passbook())
+    assert main(["import-extracted", "--year-dir", str(year)]) == 0
+    staging = read_rows(year / "staging.csv")
+    for r in staging:
+        r["承認"] = ""
+    write_rows(year / "staging.csv", STAGING_COLUMNS, staging)
+    capsys.readouterr()
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/通帳-2025-04.pdf"]) == 1
+    assert "--source に並べて指定" in capsys.readouterr().err
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/通帳-2025-04.pdf", "inbox/2025-04.csv"]) == 0
+    assert "取り込みを取り消しました: inbox/2025-04.csv、inbox/通帳-2025-04.pdf" in capsys.readouterr().out
+    assert read_rows(year / "staging.csv") == []
+
 # --- F6：approve --review-file --numbers ---
 
 def test_approve_by_review_numbers(tmp_path, capsys):

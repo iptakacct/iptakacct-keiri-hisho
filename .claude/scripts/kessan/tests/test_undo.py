@@ -7,7 +7,7 @@ from accounts_update import approve, set_accounts
 from bank_import import import_bank
 from common import STAGING_COLUMNS, KessanError, read_rows, write_rows
 from extracted_import import import_extracted
-from helpers import cash_book, passbook, receipt, staging_row, write_bank_csv, write_document, write_sources
+from helpers import OVERLAP_CSV, cash_book, passbook, receipt, staging_row, write_bank_csv, write_document, write_sources
 from post import post_approved
 from undo import discard, unimport
 
@@ -100,7 +100,7 @@ def test_unimport_matched_receipt_keeps_accounts_changed_afterwards(year_dir, tm
     set_accounts(year_dir, accounts, {card["取り込み元ID"]: {"借方科目": "雑費"}}, PAYMENT)
     unimport(year_dir, "inbox/領収書-0001.jpg")
     card = by_description(year_dir)["カード テストブングテン"]
-    assert (card["借方科目"], card["要確認理由"]) == ("雑費", "")
+    assert (card["借方科目"], card["要確認理由"]) == ("雑費", "証憑の取り消し後（科目を確認）")
 
 
 def test_unimport_new_entry_receipt_removes_its_row(year_dir, tmp_path, accounts):
@@ -304,3 +304,73 @@ def test_discarded_receipt_is_not_imported_again(year_dir, tmp_path, accounts):
     (ev,) = read_rows(year_dir / "evidence.csv")
     assert (ev["状態"], ev["取り込み元ID"]) == ("破棄", receipt_id)
     assert "inbox/領収書-0001.jpg" in {r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")}
+
+
+# --- M3：同じ口座で期間が重なる別の資料があれば、まとめて指定しない限り取り消さない ---
+
+def _csv_and_passbook(year_dir, tmp_path, accounts):
+    """同じ口座（main）の銀行CSV（4/1〜4/20）と通帳（新しく入る行は4/10だけ）を取り込む。"""
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(year_dir / "inbox", text=OVERLAP_CSV), now=NOW)
+    run(year_dir, tmp_path, accounts, passbook())
+
+
+def test_unimport_refuses_when_same_account_document_overlaps(year_dir, tmp_path, accounts):
+    _csv_and_passbook(year_dir, tmp_path, accounts)
+    before = snapshot(year_dir)
+    with pytest.raises(KessanError, match="inbox/通帳-2025-04.pdf.*--source に並べて指定"):
+        unimport(year_dir, "inbox/2025-04.csv")
+    assert snapshot(year_dir) == before
+
+
+def test_unimport_overlapping_documents_together_then_reimport(year_dir, tmp_path, accounts):
+    _csv_and_passbook(year_dir, tmp_path, accounts)
+    ids_before = sorted(r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv"))
+    result = unimport(year_dir, ["inbox/2025-04.csv", "inbox/通帳-2025-04.pdf"])
+    assert result.sources == ["inbox/2025-04.csv", "inbox/通帳-2025-04.pdf"]
+    for name in ("staging.csv", "statement-balances.csv", "import-log.csv"):
+        assert read_rows(year_dir / name) == []
+
+    _csv_and_passbook(year_dir, tmp_path, accounts)
+    assert sorted(r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")) == ids_before
+
+
+def test_unimport_multiple_sources_validates_all_first(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, cash_book())
+    before = snapshot(year_dir)
+    with pytest.raises(KessanError, match="取り込まれていません"):
+        unimport(year_dir, ["inbox/出納帳.xlsx", "inbox/無い.pdf"])
+    assert snapshot(year_dir) == before
+
+
+def test_unimport_receipts_are_exempt_from_overlap(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"),
+        receipt(資料="inbox/領収書-0002.jpg", 取引先="別の店", 支払方法の推定="立替"))
+    result = unimport(year_dir, "inbox/領収書-0001.jpg")
+    assert result.import_log == 1
+
+
+# --- M4：取り消し後の明細行には必ず理由を残す ---
+
+def test_remove_reasons_removes_only_given_parts():
+    from common import remove_reasons
+    assert remove_reasons("A／証憑と一致／B／C", "証憑と一致", "C") == "A／B"
+    assert remove_reasons("", "A") == ""
+
+
+def test_unimport_changed_line_gets_reason_and_is_not_auto_approved(year_dir, tmp_path, accounts):
+    from patterns import auto_approve
+    run(year_dir, tmp_path, accounts, passbook())
+    run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))
+    card = by_description(year_dir)["カード テストブングテン"]
+    set_accounts(year_dir, accounts, {card["取り込み元ID"]: {"借方科目": "雑費"}}, PAYMENT)
+    unimport(year_dir, "inbox/領収書-0001.jpg")
+    card = by_description(year_dir)["カード テストブングテン"]
+    assert (card["借方科目"], card["要確認理由"]) == ("雑費", "証憑の取り消し後（科目を確認）")
+    patterns_path = tmp_path / "kessan-patterns.yaml"
+    patterns_path.write_text("patterns:\n  - 名前: 文具店\n    入出金: 出金\n    摘要キーワード: テストブングテン\n    科目: 雑費\n",
+                             encoding="utf-8")
+    from match import load_abbreviations
+    from patterns import load_patterns
+    r = auto_approve(year_dir, accounts, load_patterns(patterns_path, accounts), PAYMENT, load_abbreviations())
+    assert r.approved == 0
+    assert by_description(year_dir)["カード テストブングテン"]["承認"] == ""
