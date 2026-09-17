@@ -394,3 +394,15 @@ def test_match_with_partner_in_description_is_not_flagged(year_dir, tmp_path, ac
     run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))
     (row,) = read_rows(year_dir / "staging.csv")
     assert row["要確認理由"] == "証憑と一致"
+
+
+# --- F8：evidence.csv に支払期日・支払方法の推定・自信度を残す（段階3の未払管理用） ---
+
+def test_evidence_keeps_due_date_payment_method_and_confidence(year_dir, tmp_path, accounts):
+    from common import EVIDENCE_COLUMNS
+    assert EVIDENCE_COLUMNS[-3:] == ["支払期日", "支払方法の推定", "自信度"]
+    run(year_dir, tmp_path, accounts, receipt(種類="請求書", 支払方法の推定="後払い", 自信度="低", 支払期日="2025-05-31"))
+    run(year_dir, tmp_path, accounts, receipt(資料="inbox/領収書-0002.jpg", 日付="2025-06-01", 支払方法の推定="立替"))
+    invoice, paid = read_rows(year_dir / "evidence.csv")
+    assert (invoice["支払期日"], invoice["支払方法の推定"], invoice["自信度"]) == ("2025-05-31", "後払い", "低")
+    assert (paid["支払期日"], paid["支払方法の推定"], paid["自信度"]) == ("", "立替", "高")

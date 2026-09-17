@@ -181,6 +181,10 @@ def validate_document(data, accounts, account_ids, period, year_dir, payment_acc
         c.text(data, "取引先", "", allow_empty=False)
         c.text(data, "内容", "", allow_empty=False)
         c.choice(data, "支払方法の推定", PAYMENT_METHODS, "")
+        if "支払期日" in data:  # 任意。請求書に印字されていれば書く（期末後の期日もありうるので期間は見ない）
+            due = data["支払期日"]
+            if not (isinstance(due, str) and parse_date(due)):
+                c.error("", f"「支払期日」はYYYY-MM-DDの実在する日付で書く（値: {due!r}）")
         c.account(data, "科目候補", accounts, "", allow_empty=False)
         c.text(data, "補助候補", "", required=False)
         c.choice(data, "自信度", CONFIDENCE_LEVELS, "")

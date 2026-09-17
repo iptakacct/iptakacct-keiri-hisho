@@ -174,3 +174,11 @@ def test_cash_book_account_must_be_registered_in_sources(year_dir, accounts):
     data["補助"] = "金庫"
     errors = errors_of(year_dir, accounts, data)
     assert any("現金（金庫）" in e and "kessan-sources.yaml" in e for e in errors), errors
+
+
+# --- F8：請求書の支払期日（任意） ---
+
+def test_receipt_due_date_is_optional_and_must_be_a_date(year_dir, accounts):
+    assert errors_of(year_dir, accounts, receipt(種類="請求書", 支払期日="2026-04-30")) == []  # 期末後の期日でもよい
+    errors = errors_of(year_dir, accounts, receipt(種類="請求書", 支払期日="4月末"))
+    assert any("「支払期日」はYYYY-MM-DDの実在する日付で書く" in e for e in errors), errors
