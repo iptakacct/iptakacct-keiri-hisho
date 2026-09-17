@@ -328,3 +328,11 @@ def test_resume_after_import_log_failure_does_not_add_further_duplicate_suffix(y
     assert read_rows(year_dir / "staging.csv") == staging_before
     assert read_rows(year_dir / "evidence.csv") == evidence_before
     assert result.resumed == ["inbox/領収書-0002.jpg"]
+
+
+def test_template_receipt_default_is_unset():
+    from pathlib import Path
+    from bank_import import load_sources
+    from match import receipt_default
+    template = Path(__file__).resolve().parents[4] / "テンプレート" / "context" / "company" / "kessan-sources.yaml"
+    assert receipt_default(load_sources(template)) == ""

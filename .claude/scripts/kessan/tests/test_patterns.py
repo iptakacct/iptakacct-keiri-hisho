@@ -169,3 +169,20 @@ def test_auto_approved_rows_post_as_automatic(year_dir, tmp_path, accounts, abbr
     post_approved(year_dir, accounts, now=NOW)
     (posted,) = read_rows(year_dir / "journal.csv")
     assert (posted["借方科目"], posted["登録区分"]) == ("支払手数料", "自動")
+
+
+def test_template_patterns_example_parses_when_uncommented(accounts, tmp_path):
+    from pathlib import Path
+    template = Path(__file__).resolve().parents[4] / "テンプレート" / "context" / "company" / "kessan-patterns.yaml"
+    assert load_patterns(template, accounts) == []
+    lines = template.read_text(encoding="utf-8").split("\n")
+    start = lines.index("# patterns:")
+    block = []
+    for text in lines[start:]:
+        if not text.startswith("#"):
+            break
+        block.append(text[2:])
+    uncommented = [t for t in lines[:start] if t != "patterns: []"] + block
+    (pattern,) = load_patterns(write_patterns(tmp_path, "\n".join(uncommented)), accounts)
+    assert (pattern.name, pattern.direction, pattern.keyword, pattern.subject, pattern.amount_range) == (
+        "振込手数料", "出金", "テスウリヨウ", "支払手数料", (0, 1000))
