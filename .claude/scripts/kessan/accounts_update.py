@@ -6,6 +6,7 @@
 """
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 from common import STAGING_COLUMNS, KessanError, ensure_writable, parse_amount, project, read_rows, replace_rows
@@ -144,3 +145,38 @@ def approve(year_dir, accounts, source_ids):
     changed = _approve_rows(staging, accounts, ids)
     _write_staging(year_dir, staging)
     return changed
+
+
+@dataclass(frozen=True)
+class ApplyReviewResult:
+    approved: int      # 承認=済 にした行数
+    unapproved: int    # 修正メモが付いたため承認を外した行数（自動承認済みの行など）
+    memos: list        # [(取り込み元ID, 修正メモ)]。AIが読んで set-accounts で直す
+    missing: list      # 承認=済 だが staging.csv に無い取り込み元ID（登録済み・削除済み）
+
+
+def apply_review(year_dir, accounts, review_rows):
+    """確認用Excelの読み戻し結果（{取り込み元ID, 承認, 修正メモ}）を staging.csv に反映する。
+
+    - 承認=済 で修正メモが空の行だけを承認する（Excel側の科目等の書き換えは読まない）
+    - 修正メモがある行は承認せず、承認済みなら承認を外して 判定=要確認 に戻す
+    - 承認する行に科目の抜けがあれば、何も変えない
+    """
+    year_dir = Path(year_dir)
+    staging = read_rows(year_dir / "staging.csv")
+    index = _rows_by_id(staging)
+    memos = [(r["取り込み元ID"], r["修正メモ"]) for r in review_rows if r["修正メモ"]]
+    wanted = [r["取り込み元ID"] for r in review_rows if r["承認"] == "済" and not r["修正メモ"]]
+    missing = [source_id for source_id in wanted if source_id not in index]
+    ids = list(dict.fromkeys(source_id for source_id in wanted if source_id in index))
+    approved = _approve_rows(staging, accounts, ids) if ids else 0
+    unapproved = 0
+    for source_id, _ in memos:
+        for row in index.get(source_id, []):
+            if row["承認"].strip() == "済":
+                row["承認"] = ""
+                row["判定"] = AI_JUDGEMENT
+                unapproved += 1
+    if approved or unapproved:
+        _write_staging(year_dir, staging)
+    return ApplyReviewResult(approved=approved, unapproved=unapproved, memos=memos, missing=missing)
