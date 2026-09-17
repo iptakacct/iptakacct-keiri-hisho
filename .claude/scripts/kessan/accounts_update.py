@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common import STAGING_COLUMNS, KessanError, ensure_writable, parse_amount, project, read_rows, replace_rows
+from review_xlsx import FINGERPRINT_COLUMN, row_fingerprint
 
 SET_FIELDS = ("借方科目", "借方補助", "貸方科目", "貸方補助", "取引先", "判定", "要確認理由")
 AI_JUDGEMENT = "要確認"
@@ -153,12 +154,24 @@ class ApplyReviewResult:
     unapproved: int    # 修正メモが付いたため承認を外した行数（自動承認済みの行など）
     memos: list        # [(取り込み元ID, 修正メモ)]。AIが読んで set-accounts で直す
     missing: list      # 承認=済 だが staging.csv に無い取り込み元ID（登録済み・削除済み）
+    changed: list       # 承認=済 だが、確認用Excel出力後に staging.csv の内容が変わった取り込み元ID
+                         # （出し直して確認。古い指紋のまま承認しない）
+
+
+def _fingerprint_matches(rows, expected):
+    """確認用Excelに書かれていた指紋（expected）が、今の staging.csv の行（複数なら全部）と一致するか。
+
+    expected が空（指紋列が無い古い形式のファイル等）なら、内容確認ができないので一致とはみなさない。
+    """
+    return bool(expected) and all(row_fingerprint(row) == expected for row in rows)
 
 
 def apply_review(year_dir, accounts, review_rows):
-    """確認用Excelの読み戻し結果（{取り込み元ID, 承認, 修正メモ}）を staging.csv に反映する。
+    """確認用Excelの読み戻し結果（{取り込み元ID, 承認, 修正メモ, 確認用指紋}）を staging.csv に反映する。
 
     - 承認=済 で修正メモが空の行だけを承認する（Excel側の科目等の書き換えは読まない）
+    - ただし、確認用Excel出力後に set_accounts 等で staging.csv の内容（日付・借方・貸方・金額・摘要）が
+      変わっていたら、古い「済」のまま承認しない（`changed` に入れて報告する。出し直して確認してもらう）
     - 修正メモがある行は承認せず、承認済みなら承認を外して 判定=要確認 に戻す
     - 承認する行に科目の抜けがあれば、何も変えない
     """
@@ -166,10 +179,21 @@ def apply_review(year_dir, accounts, review_rows):
     staging = read_rows(year_dir / "staging.csv")
     index = _rows_by_id(staging)
     memos = [(r["取り込み元ID"], r["修正メモ"]) for r in review_rows if r["修正メモ"]]
-    wanted = [r["取り込み元ID"] for r in review_rows if r["承認"] == "済" and not r["修正メモ"]]
-    missing = [source_id for source_id in wanted if source_id not in index]
-    ids = list(dict.fromkeys(source_id for source_id in wanted if source_id in index))
-    approved = _approve_rows(staging, accounts, ids) if ids else 0
+    candidates = [r for r in review_rows if r["承認"] == "済" and not r["修正メモ"]]
+    missing = [r["取り込み元ID"] for r in candidates if r["取り込み元ID"] not in index]
+    wanted = []
+    changed = []
+    seen = set()
+    for r in candidates:
+        source_id = r["取り込み元ID"]
+        if source_id not in index or source_id in seen:
+            continue
+        seen.add(source_id)
+        if _fingerprint_matches(index[source_id], r.get(FINGERPRINT_COLUMN, "")):
+            wanted.append(source_id)
+        else:
+            changed.append(source_id)
+    approved = _approve_rows(staging, accounts, wanted) if wanted else 0
     unapproved = 0
     for source_id, _ in memos:
         for row in index.get(source_id, []):
@@ -179,4 +203,4 @@ def apply_review(year_dir, accounts, review_rows):
                 unapproved += 1
     if approved or unapproved:
         _write_staging(year_dir, staging)
-    return ApplyReviewResult(approved=approved, unapproved=unapproved, memos=memos, missing=missing)
+    return ApplyReviewResult(approved=approved, unapproved=unapproved, memos=memos, missing=missing, changed=changed)

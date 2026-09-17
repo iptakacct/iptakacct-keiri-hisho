@@ -3,10 +3,10 @@ from datetime import date
 import pytest
 from openpyxl import Workbook, load_workbook
 
-from accounts_update import apply_review
+from accounts_update import apply_review, set_accounts
 from common import EVIDENCE_COLUMNS, STAGING_COLUMNS, KessanError, read_rows, write_rows
 from helpers import staging_row, write_document
-from review_xlsx import REVIEW_COLUMNS, read_review, write_review
+from review_xlsx import FINGERPRINT_COLUMN, REVIEW_COLUMNS, read_review, row_fingerprint, write_review
 
 TODAY = date(2026, 9, 17)
 
@@ -76,8 +76,9 @@ def test_review_lists_pending_rows_first(year_dir):
     assert [r[:4] for r in rows[1:]] == [
         [1, "bank:a", "2025-04-10", 5500], [2, "receipt:r1", "2025-04-12", 1100], [3, "bank:auto", "2025-04-05", 330],
     ]
-    assert rows[1][4:] == ["カード テストブングテン", "消耗品費", "普通預金（サンプル銀行）", "inbox/領収書-0001.jpg",
-                           "ページの残高が連続しない", "低", None, None]
+    assert rows[1][4:-1] == ["カード テストブングテン", "消耗品費", "普通預金（サンプル銀行）", "inbox/領収書-0001.jpg",
+                             "ページの残高が連続しない", "低", None, None]
+    assert rows[1][-1] == row_fingerprint(pending_bank())
     assert rows[3][10] == "済"
     assert (summary.rows, summary.needs_review, summary.approved, summary.low_confidence, summary.no_match,
             summary.without_id) == (3, 2, 1, 1, 1, 1)
@@ -183,3 +184,56 @@ def test_review_file_open_in_excel_raises(year_dir, monkeypatch):
     monkeypatch.setattr(Workbook, "save", locked)
     with pytest.raises(KessanError, match="output/review-20260917.xlsx に書き込めません"):
         write_review(year_dir, today=TODAY)
+
+
+# --- fix round 1：確認用Excel出力後に内容が変わった行を「済」のまま承認しない ---
+
+def test_review_fingerprint_column_is_hidden(year_dir):
+    setup(year_dir)
+    ws = load_workbook(write_review(year_dir, today=TODAY).path)["確認"]
+    letter = ws.cell(row=1, column=REVIEW_COLUMNS.index(FINGERPRINT_COLUMN) + 1).column_letter
+    assert ws.column_dimensions[letter].hidden is True
+
+
+def test_apply_review_does_not_approve_row_changed_since_review_was_written(year_dir, accounts):
+    setup(year_dir)
+    path = write_review(year_dir, today=TODAY).path
+    set_accounts(year_dir, accounts, {"receipt:r1": {"借方科目": "交際費"}}, set())
+    edit_review(path, {"bank:a": {"承認": "済"}, "receipt:r1": {"承認": "済"}})
+    result = apply_review(year_dir, accounts, read_review(path))
+    assert (result.approved, result.changed) == (1, ["receipt:r1"])
+    rows = {r["取り込み元ID"]: r for r in read_rows(year_dir / "staging.csv")}
+    assert rows["bank:a"]["承認"] == "済"
+    assert rows["receipt:r1"]["承認"] == ""
+    assert rows["receipt:r1"]["借方科目"] == "交際費"
+
+
+def test_apply_review_approves_row_unchanged_since_review_was_written(year_dir, accounts):
+    setup(year_dir)
+    path = write_review(year_dir, today=TODAY).path
+    edit_review(path, {"bank:a": {"承認": "済"}})
+    result = apply_review(year_dir, accounts, read_review(path))
+    assert (result.approved, result.changed) == (1, [])
+    rows = {r["取り込み元ID"]: r for r in read_rows(year_dir / "staging.csv")}
+    assert rows["bank:a"]["承認"] == "済"
+
+
+def test_apply_review_from_workbook_without_fingerprint_column_approves_nothing(year_dir, accounts):
+    """古い形式の確認用Excel（確認用指紋の列が無い）で「済」にされた行は、内容を確認できないので承認しない。"""
+    setup(year_dir)
+    staging = {r["取り込み元ID"]: r for r in read_rows(year_dir / "staging.csv")}
+    bank_a = staging["bank:a"]
+    old_columns = [c for c in REVIEW_COLUMNS if c != FINGERPRINT_COLUMN]
+    workbook = Workbook()
+    ws = workbook.active
+    ws.title = "確認"
+    ws.append(old_columns)
+    ws.append([1, "bank:a", bank_a["日付"], 5500, bank_a["摘要"], "消耗品費", "普通預金（サンプル銀行）",
+               bank_a["証憑ファイル"], bank_a["要確認理由"], bank_a["読み取り信頼度"], "済", ""])
+    path = year_dir / "output" / "review-old.xlsx"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
+    result = apply_review(year_dir, accounts, read_review(path))
+    assert (result.approved, result.changed) == (0, ["bank:a"])
+    rows = {r["取り込み元ID"]: r for r in read_rows(year_dir / "staging.csv")}
+    assert rows["bank:a"]["承認"] == ""
