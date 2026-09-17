@@ -79,7 +79,7 @@ def test_unimport_refuses_when_a_row_is_posted(year_dir, tmp_path, accounts):
 def test_unimport_matched_receipt_restores_the_statement_line(year_dir, tmp_path, accounts):
     run(year_dir, tmp_path, accounts, passbook())
     card_before = by_description(year_dir)["カード テストブングテン"]
-    run(year_dir, tmp_path, accounts, receipt())
+    run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))  # 取引先名が摘要にある（理由は「証憑と一致」だけ）
     assert by_description(year_dir)["カード テストブングテン"]["借方科目"] == "消耗品費"
 
     result = unimport(year_dir, "inbox/領収書-0001.jpg")
@@ -89,13 +89,13 @@ def test_unimport_matched_receipt_restores_the_statement_line(year_dir, tmp_path
     assert read_rows(year_dir / "evidence.csv") == []
     assert len(read_rows(year_dir / "staging.csv")) == 3
 
-    again = run(year_dir, tmp_path, accounts, receipt())
+    again = run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))
     assert again.evidence == {"明細に対応": 1}
 
 
 def test_unimport_matched_receipt_keeps_accounts_changed_afterwards(year_dir, tmp_path, accounts):
     run(year_dir, tmp_path, accounts, passbook())
-    run(year_dir, tmp_path, accounts, receipt())
+    run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))
     card = by_description(year_dir)["カード テストブングテン"]
     set_accounts(year_dir, accounts, {card["取り込み元ID"]: {"借方科目": "雑費"}}, PAYMENT)
     unimport(year_dir, "inbox/領収書-0001.jpg")

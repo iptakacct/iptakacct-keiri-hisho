@@ -17,7 +17,8 @@ import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, add_reasons, append_rows, load_period, parse_amount, parse_date, read_rows, remove_reason,
+    KessanError, add_reasons, append_rows, cannot_write, ensure_writable, load_period, parse_amount, parse_date,
+    project, read_rows, remove_reason, replace_rows,
 )
 from evidence import STATE_NEW_ENTRY, STATE_UNPAID, read_evidence
 from match import MATCH_WINDOW_DAYS
@@ -26,6 +27,8 @@ SUSPECTED_DOUBLE_IMPORT = "取り込み済みの明細と日付・金額が一�
 UNSET_COUNTER_ACCOUNT = "相手科目未設定"
 SUSPECTED_DOUBLE_BOOKED_RECEIPT = "証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）"
 MATCHES_UNPAID_RECEIPT = "未払候補の証憑と金額が一致（支払の可能性）"
+DOUBLE_BOOKED_ON_RECEIPT_ROW = "明細にも同額の支払がある（二重計上の疑い）"  # 証憑から作った行（receipt:）の側に付ける
+WRITE_TARGETS = ("staging.csv", "statement-balances.csv", "import-log.csv")
 
 
 @dataclass(frozen=True)
@@ -234,15 +237,32 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
     """
     year_dir = Path(year_dir)
     start, end = load_period(year_dir)
-    existing_lines = [{**r, "_file": name} for name in ("journal.csv", "staging.csv") for r in read_rows(year_dir / name)]
+    staging_rows = read_rows(year_dir / "staging.csv")
+    existing_lines = ([{**r, "_file": "journal.csv"} for r in read_rows(year_dir / "journal.csv")]
+                      + [{**r, "_file": "staging.csv"} for r in staging_rows])
     existing = {r["取り込み元ID"] for r in existing_lines if r.get("取り込み元ID")}
+    from_this_file = {r["取り込み元ID"] for r in existing_lines if r.get("取り込み元ID") and r["証憑ファイル"] == file_name}
     bank_lines = _existing_bank_lines(existing_lines)
-    overlapping = _overlapping_imports(read_rows(year_dir / "import-log.csv"), log_id, rows)
+    log = read_rows(year_dir / "import-log.csv")
+    logged = file_name in {r["ファイル名"] for r in log}
+    overlapping = _overlapping_imports(log, log_id, rows)
+    recorded_balances = {(r["科目"], r["補助"], r["日付"], r["残高"], r["ファイル名"])
+                         for r in read_rows(year_dir / "statement-balances.csv")}
     evidence_rows = read_evidence(year_dir)
 
     seen = Counter()
     new_rows, new_balances = [], []
+    resumed_rows = []          # 前回この資料から staging.csv に入れた行（書き込みが途中で止まった後の再実行）
+    receipts_to_flag = set()   # 明細にも同額の支払があった、証憑から作った行の取り込み元ID
     duplicate = zero = out_of_period = 0
+
+    def add_balance(row, only_if_missing=False):
+        # 検算は日付ごとに最後の残高を使うので、新しい行の残高は重複に見えても順序どおりに全部書く。
+        # 再実行で埋める残高（only_if_missing）だけは、既に記録済みのものを書かない
+        key = (subject, sub, row["日付"], str(row["残高"]), file_name)
+        if row["残高"] is not None and not (only_if_missing and key in recorded_balances):
+            new_balances.append(dict(zip(STATEMENT_BALANCE_COLUMNS, key)))
+
     for row in rows:
         key = (row["日付"], row["入金"], row["出金"], row["摘要"], row["残高"])
         occurrence = seen[key]
@@ -256,6 +276,9 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         source_id = make_source_id(source_key, row, occurrence)
         if source_id in existing:
             duplicate += 1
+            if source_id in from_this_file:  # 残高の記録が書けずに止まった後の再実行なら、残高を埋める
+                resumed_rows.append(row)
+                add_balance(row, only_if_missing=True)
             continue
         staged = _staging_row(subject, sub, file_name, row, source_id)
         side = "借方" if row["入金"] else "貸方"
@@ -266,35 +289,74 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         if row["出金"]:  # 支払側（出金）の新しい行は、対応しそうな証憑が無いか確認する
             near = _near_evidence(evidence_rows, row["日付"], row["出金"])
             extra_reasons = []
-            if any(r["状態"] == STATE_NEW_ENTRY for r in near):
+            new_entries = [r for r in near if r["状態"] == STATE_NEW_ENTRY]
+            if new_entries:
                 extra_reasons.append(SUSPECTED_DOUBLE_BOOKED_RECEIPT)
+                receipts_to_flag.update(r["取り込み元ID"].strip() for r in new_entries)
             if any(r["状態"] == STATE_UNPAID for r in near):
                 extra_reasons.append(MATCHES_UNPAID_RECEIPT)
             staged["要確認理由"] = add_reasons(staged["要確認理由"], *extra_reasons)
         new_rows.append((row, staged))
-        if row["残高"] is not None:
-            new_balances.append({
-                "科目": subject, "補助": sub,
-                "日付": row["日付"], "残高": str(row["残高"]), "ファイル名": file_name,
-            })
+        add_balance(row)
 
-    if new_rows or always_log:
-        if new_rows:
+    receipt_rows = [r for r in staging_rows
+                    if r["取り込み元ID"].strip() in receipts_to_flag and r["取り込み元ID"].strip().startswith("receipt:")
+                    and r["承認"].strip() != "済"]
+    for r in receipt_rows:
+        r["要確認理由"] = add_reasons(r["要確認理由"], DOUBLE_BOOKED_ON_RECEIPT_ROW)
+
+    log_rows = [row for row, _ in new_rows]
+    write_log = bool(new_rows) or always_log
+    if not new_rows and resumed_rows and not logged:  # 取り込み記録が書けずに止まった後の再実行
+        log_rows, write_log = resumed_rows, True
+    if not (new_rows or new_balances or write_log):
+        return ImportResult(added=0, duplicates=duplicate, zero_amount=zero,
+                            out_of_period=out_of_period, overlapping_imports=overlapping)
+
+    ensure_writable(year_dir, WRITE_TARGETS)
+    done = []
+    try:
+        if new_rows and receipt_rows:
+            replace_rows(year_dir / "staging.csv", STAGING_COLUMNS,
+                         [project(r, STAGING_COLUMNS) for r in staging_rows] + [staged for _, staged in new_rows])
+        elif new_rows:
             append_rows(year_dir / "staging.csv", STAGING_COLUMNS, [staged for _, staged in new_rows])
-            append_rows(year_dir / "statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances)
-        dates = sorted(row["日付"] for row, _ in new_rows) or sorted(r["日付"] for r in rows if r["入金"] or r["出金"])
-        append_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, [{
-            "取り込み日時": (now or datetime.now()).isoformat(timespec="seconds"),
-            "ファイル名": file_name,
-            "口座ID": log_id,
-            "対象期間": f"{dates[0]}〜{dates[-1]}" if dates else "",
-            "件数": str(len(new_rows)),
-            "入金合計": str(sum(row["入金"] for row, _ in new_rows)),
-            "出金合計": str(sum(row["出金"] for row, _ in new_rows)),
-            "登録伝票番号範囲": "",
-        }])
+    except OSError:
+        raise cannot_write("staging.csv") from None
+    if new_rows:
+        done.append("staging.csv")
+    later_writes = []
+    if new_balances:
+        later_writes.append(("statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances))
+    if write_log:
+        later_writes.append(("import-log.csv", IMPORT_LOG_COLUMNS, [_log_row(log_rows, rows, file_name, log_id, now)]))
+    for name, columns, lines in later_writes:
+        try:
+            append_rows(year_dir / name, columns, lines)
+        except OSError:
+            if not done:
+                raise cannot_write(name) from None
+            raise KessanError(
+                f"{'・'.join(done)} は更新済み、{name} の書き込みに失敗しました（Excelで開いていたら閉じてから再実行してください。"
+                "再実行しても二重には取り込まず、残高の記録・取り込み記録を埋めます）"
+            ) from None
+        done.append(name)
     return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero,
                         out_of_period=out_of_period, overlapping_imports=overlapping)
+
+
+def _log_row(log_rows, all_rows, file_name, log_id, now):
+    dates = sorted(row["日付"] for row in log_rows) or sorted(r["日付"] for r in all_rows if r["入金"] or r["出金"])
+    return {
+        "取り込み日時": (now or datetime.now()).isoformat(timespec="seconds"),
+        "ファイル名": file_name,
+        "口座ID": log_id,
+        "対象期間": f"{dates[0]}〜{dates[-1]}" if dates else "",
+        "件数": str(len(log_rows)),
+        "入金合計": str(sum(row["入金"] for row in log_rows)),
+        "出金合計": str(sum(row["出金"] for row in log_rows)),
+        "登録伝票番号範囲": "",
+    }
 
 
 def import_bank(year_dir, sources_path, account_id, file_path, now=None):

@@ -41,7 +41,8 @@ def test_receipt_matching_one_staging_line_fills_counter_account(year_dir, tmp_p
     rows = read_rows(year_dir / "staging.csv")
     assert len(rows) == 3
     card = rows[2]
-    assert (card["借方科目"], card["取引先"], card["要確認理由"], card["承認"]) == ("消耗品費", "テスト文具店", "証憑と一致", "")
+    assert (card["借方科目"], card["取引先"], card["要確認理由"], card["承認"]) == (
+        "消耗品費", "テスト文具店", "証憑と一致／取引先名が摘要に無い（突き合わせ先を確認）", "")
     (ev,) = read_rows(year_dir / "evidence.csv")
     assert (ev["証憑ID"], ev["証憑ファイル"], ev["状態"], ev["取り込み元ID"]) == (
         make_evidence_id("2025-04-10", 5500, "テスト文具店"), "inbox/領収書-0001.jpg", "明細に対応", card["取り込み元ID"])
@@ -200,7 +201,7 @@ def test_statement_documents_are_processed_before_receipts_in_the_same_call(year
     assert len(rows) == 3
     assert not any(r["貸方科目"] == "役員借入金" for r in rows)
     card = rows[2]
-    assert (card["借方科目"], card["要確認理由"]) == ("消耗品費", "証憑と一致")
+    assert (card["借方科目"], card["要確認理由"]) == ("消耗品費", "証憑と一致／取引先名が摘要に無い（突き合わせ先を確認）")
 
 
 def test_invoice_with_unknown_method_is_unpaid_not_receipt_default(year_dir, tmp_path, accounts):
@@ -347,7 +348,7 @@ def test_template_receipt_default_is_unset():
 ])
 def test_matched_receipt_keeps_existing_reasons(year_dir, tmp_path, accounts, existing):
     write_staging(year_dir, [bank_line("bank:a", "2025-04-10", 要確認理由=existing)])
-    run(year_dir, tmp_path, accounts, receipt())
+    run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))
     (row,) = read_rows(year_dir / "staging.csv")
     kept = existing.replace("相手科目未設定／", "")
     assert row["要確認理由"] == f"{kept}／証憑と一致"
@@ -374,3 +375,22 @@ def test_same_date_and_amount_without_a_row_to_flag_is_reported(year_dir, tmp_pa
     result = run(year_dir, tmp_path, accounts, receipt(資料="inbox/領収書-0002.jpg", 取引先="テスト文房具店"))
     assert result.evidence == {"複数候補": 1}
     assert result.receipt_same_date_amount == [("inbox/領収書-0002.jpg", first_id)]
+
+
+# --- F7：取引先名が摘要に無いまま突き合わせたら、その旨を付ける ---
+
+PARTNER_NOT_IN_DESCRIPTION = "取引先名が摘要に無い（突き合わせ先を確認）"
+
+
+def test_match_without_partner_in_description_is_flagged(year_dir, tmp_path, accounts):
+    write_staging(year_dir, [bank_line("bank:a", "2025-04-10")])
+    assert run(year_dir, tmp_path, accounts, receipt()).evidence == {"明細に対応": 1}
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert row["要確認理由"] == f"証憑と一致／{PARTNER_NOT_IN_DESCRIPTION}"
+
+
+def test_match_with_partner_in_description_is_not_flagged(year_dir, tmp_path, accounts):
+    write_staging(year_dir, [bank_line("bank:a", "2025-04-10")])
+    run(year_dir, tmp_path, accounts, receipt(取引先="テストブングテン"))
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert row["要確認理由"] == "証憑と一致"

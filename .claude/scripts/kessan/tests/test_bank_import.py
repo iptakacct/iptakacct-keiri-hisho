@@ -349,3 +349,98 @@ def test_suspected_double_import_keeps_other_reasons(year_dir, tmp_path):
     stage_statement_rows(year_dir, "main", "普通預金", "サンプル銀行", "inbox/通帳.pdf", [row], log_id="main", now=NOW)
     assert read_rows(year_dir / "staging.csv")[-1]["要確認理由"] == (
         "ページの残高が連続しない／取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）")
+
+
+# --- F5：書き込み前の確認・途中失敗の KessanError・再実行での残高の補完 ---
+
+def test_read_only_statement_balances_raises_before_writing(year_dir, tmp_path):
+    import os
+    import stat
+    path = year_dir / "statement-balances.csv"
+    os.chmod(path, stat.S_IREAD)
+    try:
+        with pytest.raises(KessanError, match="statement-balances.csv に書き込めません"):
+            import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    finally:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    assert read_rows(year_dir / "staging.csv") == []
+    assert read_rows(year_dir / "import-log.csv") == []
+
+
+def test_balance_write_failure_then_rerun_backfills_balances_and_log(year_dir, tmp_path, monkeypatch):
+    import bank_import
+    original = bank_import.append_rows
+    state = {"fail": True}
+
+    def failing(path, columns, rows):
+        if state["fail"] and str(path).endswith("statement-balances.csv"):
+            state["fail"] = False
+            raise OSError(13, "Permission denied")
+        return original(path, columns, rows)
+
+    monkeypatch.setattr(bank_import, "append_rows", failing)
+    sources, csv_path = write_sources(tmp_path), write_bank_csv(tmp_path)
+    with pytest.raises(KessanError, match="staging.csv は更新済み.*statement-balances.csv"):
+        import_bank(year_dir, sources, "main", csv_path, now=NOW)
+    assert len(read_rows(year_dir / "staging.csv")) == 2
+    assert read_rows(year_dir / "statement-balances.csv") == []
+
+    result = import_bank(year_dir, sources, "main", csv_path, now=NOW)
+    assert (result.added, result.duplicates) == (0, 2)
+    assert len(read_rows(year_dir / "staging.csv")) == 2
+    assert [(b["日付"], b["残高"], b["ファイル名"]) for b in read_rows(year_dir / "statement-balances.csv")] == [
+        ("2025-04-01", "1100000", "2025-04.csv"), ("2025-04-05", "1096700", "2025-04.csv")]
+    (log,) = read_rows(year_dir / "import-log.csv")
+    assert (log["ファイル名"], log["件数"], log["入金合計"], log["出金合計"]) == ("2025-04.csv", "2", "100000", "3300")
+
+    import_bank(year_dir, sources, "main", csv_path, now=NOW)  # もう一度流しても増えない
+    assert len(read_rows(year_dir / "statement-balances.csv")) == 2
+    assert len(read_rows(year_dir / "import-log.csv")) == 1
+
+
+def test_import_log_write_failure_is_kessan_error(year_dir, tmp_path, monkeypatch):
+    import bank_import
+    original = bank_import.append_rows
+
+    def failing(path, columns, rows):
+        if str(path).endswith("import-log.csv"):
+            raise OSError(13, "Permission denied")
+        return original(path, columns, rows)
+
+    monkeypatch.setattr(bank_import, "append_rows", failing)
+    with pytest.raises(KessanError, match="staging.csv・statement-balances.csv は更新済み.*import-log.csv"):
+        import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+
+
+# --- F7：二重計上の疑いを証憑から作った行の側にも付ける ---
+
+def _receipt_staging_row(approved=""):
+    from helpers import staging_row
+    return staging_row(日付="2025-04-03", 借方科目="消耗品費", 借方金額="3300", 貸方科目="役員借入金", 貸方金額="3300",
+                       摘要="文房具", 証憑ファイル="inbox/領収書-0001.jpg", 取り込み元ID="receipt:ev1",
+                       読み取り信頼度="高", 判定="要確認", 要確認理由="明細に該当なし", 承認=approved)
+
+
+def _new_entry_evidence(year_dir):
+    append_evidence(year_dir, [evidence_row(
+        証憑ID="ev1", 証憑ファイル="inbox/領収書-0001.jpg", 種類="領収書",
+        日付="2025-04-03", 金額="3300", 取引先="テスト業者", 内容="文房具",
+        科目候補="消耗品費", 状態="新規仕訳", 取り込み元ID="receipt:ev1", 取り込み日時="2025-04-03T00:00:00",
+    )])
+
+
+def test_double_booking_flag_is_added_to_the_receipt_row_too(year_dir, tmp_path):
+    _new_entry_evidence(year_dir)
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [_receipt_staging_row()])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    receipt_row, deposit, fee = read_rows(year_dir / "staging.csv")
+    assert receipt_row["要確認理由"] == "明細に該当なし／明細にも同額の支払がある（二重計上の疑い）"
+    assert "二重計上の疑い" in fee["要確認理由"]
+    assert len(read_rows(year_dir / "staging.csv")) == 3
+
+
+def test_double_booking_flag_is_not_added_to_an_approved_receipt_row(year_dir, tmp_path):
+    _new_entry_evidence(year_dir)
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [_receipt_staging_row(approved="済")])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    assert read_rows(year_dir / "staging.csv")[0]["要確認理由"] == "明細に該当なし"

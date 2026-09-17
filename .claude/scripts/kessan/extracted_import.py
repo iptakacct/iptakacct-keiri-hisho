@@ -31,11 +31,12 @@ from evidence import (
 )
 from extracted import check_passbook_pages, extracted_files, load_document, validate_document
 from match import (
-    MATCHED_RECEIPT, SUSPECTED_DUPLICATE_RECEIPT, credit_for_new_entry, find_candidates, payment_accounts,
-    receipt_default,
+    MATCHED_RECEIPT, SUSPECTED_DUPLICATE_RECEIPT, credit_for_new_entry, find_candidates, load_abbreviations,
+    name_in_description, payment_accounts, receipt_default,
 )
 
 PAGE_NOT_CHAINED = "ページの残高が連続しない"
+PARTNER_NOT_IN_DESCRIPTION = "取引先名が摘要に無い（突き合わせ先を確認）"
 STATEMENT_KINDS = ("通帳", "出納帳")  # この回の取り込みでは、証憑（領収書・請求書）より先に処理する
 
 
@@ -118,7 +119,7 @@ def _write_failure(done, failed):
     )
 
 
-def _import_receipt(year_dir, data, sources, result, now):
+def _import_receipt(year_dir, data, sources, result, now, abbreviations):
     """証憑1件を取り込む。書き込みの順序：staging.csv → evidence.csv → import-log.csv。
 
     途中で止まって再実行しても、receipt:<証憑ID> の行が staging.csv・journal.csv にあれば
@@ -173,7 +174,10 @@ def _import_receipt(year_dir, data, sources, result, now):
             if r["借方科目"].strip() and r["貸方科目"].strip():
                 reasons = remove_reason(reasons, UNSET_COUNTER_ACCOUNT)
             # 既存の理由（ページの残高が連続しない・二重計上の疑い等）は消さずに追記する
-            r["要確認理由"] = add_reasons(reasons, MATCHED_RECEIPT, suspected_reason, duplicate_reason)
+            # 金額・日付だけで一致した行かもしれないので、取引先名が摘要に無ければその旨も付ける
+            partner_reason = (None if name_in_description(data["取引先"], r["摘要"], abbreviations)
+                              else PARTNER_NOT_IN_DESCRIPTION)
+            r["要確認理由"] = add_reasons(reasons, MATCHED_RECEIPT, partner_reason, suspected_reason, duplicate_reason)
             if data["自信度"] == "低":
                 r["読み取り信頼度"] = "低"
             staging_changed = True
@@ -233,6 +237,7 @@ def import_extracted(year_dir, sources_path, accounts, files, now=None):
     source_accounts = {a["id"]: a for a in sources.get("accounts") or []}
     period = load_period(year_dir)
     result = ExtractedImportResult()
+    abbreviations = load_abbreviations()
 
     entries = []
     for path in files:
@@ -262,7 +267,7 @@ def import_extracted(year_dir, sources_path, accounts, files, now=None):
         elif data["種類"] == "出納帳":
             _import_cash_book(year_dir, data, result, now)
         else:
-            _import_receipt(year_dir, data, sources, result, now)
+            _import_receipt(year_dir, data, sources, result, now, abbreviations)
         result.imported.append(path.name)
     return result
 
