@@ -11,6 +11,9 @@
 - 資料ファイル単位の再取り込みは import-log.csv で止める。同じ内容（日付・金額・取引先）の証憑が
   「別の」資料ファイルから来た場合は取り込みを止めず、証憑IDに -2・-3 …を付けて取り込み、重複の疑いを付記する
 - 取り込んだ資料は import-log.csv に「資料」のパス（inbox/…）で記録し、同じ資料の再取り込みは件数0にする
+- import-log.csv の書き込みだけが失敗した後の再実行は「再開」として扱う：evidence.csv に既にこの資料の
+  証憑行があれば、突き合わせをやり直さず（自分自身が「既存の証憑」に見えて -2 が付いてしまうため）
+  import-log.csv の記録だけを埋める（件数は必ず0）
 """
 from collections import Counter
 from dataclasses import dataclass, field
@@ -49,6 +52,7 @@ class ExtractedImportResult:
     overlapping_imports: list = field(default_factory=list)
     evidence: Counter = field(default_factory=Counter)        # 証憑の状態（明細に対応／新規仕訳／複数候補／未払候補）→ 件数
     receipt_duplicates: list = field(default_factory=list)    # (資料, 重複していた既存の証憑ID) の一覧。取り込みは止めない
+    resumed: list = field(default_factory=list)               # import-log.csv の書き込み失敗後の再実行で、記録だけ埋めた資料
 
     def add(self, r):
         self.added += r.added
@@ -120,12 +124,26 @@ def _import_receipt(year_dir, data, sources, result, now):
     同じ資料ファイルの再取り込みは呼び出し元（import_extracted）が import-log.csv で止める。
     ここで止めるのは「同じ資料の再取り込み」だけで、日付・金額・取引先が同じ証憑が「別の」資料
     から来た場合は取り込みを止めず、証憑IDに -2・-3 …を付けて取り込み、要確認理由に重複の疑いを付記する。
+
+    ただし、evidence.csv にこの資料（data["資料"]）の証憑行が既にある場合は「再開」として扱い、
+    突き合わせをやり直さない：staging.csv・evidence.csv は前回の実行で書き終わっていて
+    import-log.csv だけが書けなかったケースであり、ここで改めて突き合わせると、自分自身の証憑IDが
+    「別の資料からの同一内容」に見えてしまい、-2 が付いた証憑・仕訳をもう一つ作ってしまう（二重取り込み）。
     """
     stamp = (now or datetime.now()).isoformat(timespec="seconds")
-    raw_evidence_id = make_evidence_id(data["日付"], data["金額"], data["取引先"])
     evidence_rows = read_evidence(year_dir)
     names = ("staging.csv", EVIDENCE_FILE, "import-log.csv")
 
+    if any(r["証憑ファイル"] == data["資料"] for r in evidence_rows):
+        ensure_writable(year_dir, names)
+        try:
+            append_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, [_receipt_log_row(data, 0, stamp)])
+        except OSError:
+            raise _write_failure("staging.csv・evidence.csv", "import-log.csv") from None
+        result.resumed.append(data["資料"])
+        return
+
+    raw_evidence_id = make_evidence_id(data["日付"], data["金額"], data["取引先"])
     evidence_id, duplicate_of = unique_evidence_id(evidence_rows, raw_evidence_id)
     duplicate_reason = f"{SUSPECTED_DUPLICATE_RECEIPT}（証憑ID {duplicate_of}）" if duplicate_of else None
 

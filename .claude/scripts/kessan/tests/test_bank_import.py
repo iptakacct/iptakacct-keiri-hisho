@@ -256,6 +256,30 @@ def test_deposit_row_is_not_checked_against_evidence(year_dir, tmp_path):
     assert "支払の可能性" not in deposit["要確認理由"]
 
 
+def test_evidence_match_window_includes_day_seven(year_dir, tmp_path):
+    """I3 fix round 2: 証憑との突き合わせ窓は前後7日（両端含む）。7日ちょうどは対象。"""
+    append_evidence(year_dir, [evidence_row(
+        証憑ID="ev7", 証憑ファイル="inbox/領収書-0007.jpg", 種類="領収書",
+        日付="2025-04-12", 金額="3300", 取引先="テスト業者", 内容="文房具",  # 明細の2025-04-05から+7日
+        科目候補="消耗品費", 状態="新規仕訳", 取り込み元ID="receipt:ev7", 取り込み日時="2025-04-12T00:00:00",
+    )])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    fee = read_rows(year_dir / "staging.csv")[1]
+    assert "二重計上の疑い" in fee["要確認理由"]
+
+
+def test_evidence_match_window_excludes_day_eight(year_dir, tmp_path):
+    """I3 fix round 2: 8日離れていれば突き合わせ対象外。"""
+    append_evidence(year_dir, [evidence_row(
+        証憑ID="ev8", 証憑ファイル="inbox/領収書-0008.jpg", 種類="領収書",
+        日付="2025-04-13", 金額="3300", 取引先="テスト業者", 内容="文房具",  # 明細の2025-04-05から+8日
+        科目候補="消耗品費", 状態="新規仕訳", 取り込み元ID="receipt:ev8", 取り込み日時="2025-04-13T00:00:00",
+    )])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    fee = read_rows(year_dir / "staging.csv")[1]
+    assert "二重計上の疑い" not in fee["要確認理由"]
+
+
 # --- 設定ファイル（kessan-sources.yaml）の不備 ---
 
 def write_yaml(tmp_path, text):

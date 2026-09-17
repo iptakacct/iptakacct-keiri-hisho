@@ -254,3 +254,77 @@ def test_import_log_write_failure_is_wrapped_with_kessan_error(year_dir, tmp_pat
         run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
     assert len(read_rows(year_dir / "staging.csv")) == 1
     assert len(read_rows(year_dir / "evidence.csv")) == 1
+
+
+# --- Fix round 2 ---
+
+def _fail_import_log_once(monkeypatch):
+    """import-log.csv への append_rows を1回だけ失敗させる（2回目以降は本来の動きに戻す）。"""
+    import extracted_import
+    original_append_rows = extracted_import.append_rows
+    state = {"fail": True}
+
+    def wrapper(path, columns, rows):
+        if state["fail"] and str(path).endswith("import-log.csv"):
+            state["fail"] = False
+            raise OSError(13, "Permission denied")
+        return original_append_rows(path, columns, rows)
+
+    monkeypatch.setattr(extracted_import, "append_rows", wrapper)
+
+
+def test_resume_after_import_log_failure_does_not_duplicate_new_entry(year_dir, tmp_path, accounts, monkeypatch):
+    """C2/I5 fix round 2, case (1): 新規仕訳を作った直後の import-log 失敗→再実行で X-2 を作らない。"""
+    _fail_import_log_once(monkeypatch)
+    with pytest.raises(KessanError):
+        run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    staging_before = read_rows(year_dir / "staging.csv")
+    evidence_before = read_rows(year_dir / "evidence.csv")
+    assert len(staging_before) == 1
+    assert len(evidence_before) == 1
+    assert read_rows(year_dir / "import-log.csv") == []
+
+    result = run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    assert read_rows(year_dir / "staging.csv") == staging_before
+    assert read_rows(year_dir / "evidence.csv") == evidence_before
+    assert result.resumed == ["inbox/領収書-0001.jpg"]
+    (log,) = read_rows(year_dir / "import-log.csv")
+    assert (log["ファイル名"], log["件数"]) == ("inbox/領収書-0001.jpg", "0")
+
+
+def test_resume_after_import_log_failure_does_not_duplicate_matched_receipt(year_dir, tmp_path, accounts, monkeypatch):
+    """fix round 2, case (2): 明細に対応した直後の import-log 失敗→再実行で余分な新規仕訳を作らない。"""
+    run(year_dir, tmp_path, accounts, passbook())
+    _fail_import_log_once(monkeypatch)
+    with pytest.raises(KessanError):
+        run(year_dir, tmp_path, accounts, receipt())
+    staging_before = read_rows(year_dir / "staging.csv")
+    evidence_before = read_rows(year_dir / "evidence.csv")
+    assert len(staging_before) == 3
+    assert len(evidence_before) == 1
+    assert evidence_before[0]["状態"] == "明細に対応"
+
+    result = run(year_dir, tmp_path, accounts, receipt())
+    assert read_rows(year_dir / "staging.csv") == staging_before
+    assert read_rows(year_dir / "evidence.csv") == evidence_before
+    assert result.resumed == ["inbox/領収書-0001.jpg"]
+
+
+def test_resume_after_import_log_failure_does_not_add_further_duplicate_suffix(year_dir, tmp_path, accounts, monkeypatch):
+    """fix round 2, case (3): 別ファイルの重複取り込み直後の import-log 失敗→再実行で -3 を作らない。"""
+    run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    _fail_import_log_once(monkeypatch)
+    again = receipt(資料="inbox/領収書-0002.jpg", 取引先=" ﾃｽﾄ文具店", 支払方法の推定="立替")
+    with pytest.raises(KessanError):
+        run(year_dir, tmp_path, accounts, again)
+
+    staging_before = read_rows(year_dir / "staging.csv")
+    evidence_before = read_rows(year_dir / "evidence.csv")
+    base_id = make_evidence_id("2025-04-10", 5500, "テスト文具店")
+    assert len(staging_before) == 2
+    assert [r["証憑ID"] for r in evidence_before] == [base_id, f"{base_id}-2"]
+
+    result = run(year_dir, tmp_path, accounts, again)
+    assert read_rows(year_dir / "staging.csv") == staging_before
+    assert read_rows(year_dir / "evidence.csv") == evidence_before
+    assert result.resumed == ["inbox/領収書-0002.jpg"]
