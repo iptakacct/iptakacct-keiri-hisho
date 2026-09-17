@@ -1,10 +1,15 @@
 """読み取り結果ファイル（extracted/*.json）を検証してから staging.csv に取り込む（import-extracted）。
 
 - 形式に誤りがあるファイルは丸ごと取り込まず、ファイル名と理由を返す（他のファイルの取り込みは続ける）
+- 同じ回の取り込みでは、明細（通帳・出納帳）を先に登録してから証憑（領収書・請求書）を突き合わせる
+  （証憑を先に処理すると、まだ明細が無く突き合わせ候補が見つからないまま新しい仕訳を作ってしまう）
 - 通帳・出納帳は銀行CSVと同じ共通部分（bank_import.stage_statement_rows）で取り込む。
   通帳の取り込み元IDは銀行CSVと同じ作り方なので、同じ取引をCSVと通帳の両方で受け取っても二重に入らない
 - 領収書・請求書は、口座・カード・現金の明細行と突き合わせ、明細にあれば行に証憑として付け（evidence.csv）、
-  無ければ支払方法から新しい仕訳の候補を作る（取り込み元ID=receipt:<証憑ID>）
+  無ければ支払方法から新しい仕訳の候補を作る（取り込み元ID=receipt:<証憑ID>）。請求書は支払方法が不明でも
+  `receipt_default` を適用せず「未払候補」にする（銀行振込での支払と二重計上になりやすいため）
+- 資料ファイル単位の再取り込みは import-log.csv で止める。同じ内容（日付・金額・取引先）の証憑が
+  「別の」資料ファイルから来た場合は取り込みを止めず、証憑IDに -2・-3 …を付けて取り込み、重複の疑いを付記する
 - 取り込んだ資料は import-log.csv に「資料」のパス（inbox/…）で記録し、同じ資料の再取り込みは件数0にする
 """
 from collections import Counter
@@ -14,12 +19,12 @@ from pathlib import Path
 
 from bank_import import load_sources, normalize_description, stage_statement_rows
 from common import (
-    IMPORT_LOG_COLUMNS, STAGING_COLUMNS, append_rows, cannot_write, ensure_writable, load_period, project,
-    read_rows, replace_rows,
+    IMPORT_LOG_COLUMNS, STAGING_COLUMNS, KessanError, append_rows, cannot_write, ensure_writable, load_period,
+    project, read_rows, replace_rows,
 )
 from evidence import (
     CANDIDATE_SEPARATOR, EVIDENCE_FILE, STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID,
-    append_evidence, attached_source_ids, make_evidence_id, read_evidence, receipt_source_id,
+    append_evidence, attached_source_ids, make_evidence_id, read_evidence, receipt_source_id, unique_evidence_id,
 )
 from extracted import check_passbook_pages, extracted_files, load_document, validate_document
 from match import (
@@ -28,6 +33,7 @@ from match import (
 )
 
 PAGE_NOT_CHAINED = "ページの残高が連続しない"
+STATEMENT_KINDS = ("通帳", "出納帳")  # この回の取り込みでは、証憑（領収書・請求書）より先に処理する
 
 
 @dataclass
@@ -42,7 +48,7 @@ class ExtractedImportResult:
     low_confidence_pages: list = field(default_factory=list)  # 「inbox/… ページN」
     overlapping_imports: list = field(default_factory=list)
     evidence: Counter = field(default_factory=Counter)        # 証憑の状態（明細に対応／新規仕訳／複数候補／未払候補）→ 件数
-    receipt_duplicates: int = 0                               # 証憑IDが取り込み済みの証憑（同じ領収書の撮り直し等）
+    receipt_duplicates: list = field(default_factory=list)    # (資料, 重複していた既存の証憑ID) の一覧。取り込みは止めない
 
     def add(self, r):
         self.added += r.added
@@ -99,28 +105,37 @@ def _evidence_row(data, evidence_id, state, source_id, stamp):
     }
 
 
+def _write_failure(done, failed):
+    return KessanError(
+        f"{done} は更新済み、{failed} の書き込みに失敗しました"
+        "（Excelで開いていたら閉じてから再実行してください。再実行しても二重には登録されません）"
+    )
+
+
 def _import_receipt(year_dir, data, sources, result, now):
     """証憑1件を取り込む。書き込みの順序：staging.csv → evidence.csv → import-log.csv。
 
-    途中で止まって再実行しても、証憑IDが evidence.csv にあれば取り込まず、receipt:<証憑ID> の行が
-    staging.csv・journal.csv にあれば新しい行を作らないので、二重にならない。
+    途中で止まって再実行しても、receipt:<証憑ID> の行が staging.csv・journal.csv にあれば
+    新しい行を作らず、evidence.csv に無ければ改めて記録するだけなので、二重にならない。
+    同じ資料ファイルの再取り込みは呼び出し元（import_extracted）が import-log.csv で止める。
+    ここで止めるのは「同じ資料の再取り込み」だけで、日付・金額・取引先が同じ証憑が「別の」資料
+    から来た場合は取り込みを止めず、証憑IDに -2・-3 …を付けて取り込み、要確認理由に重複の疑いを付記する。
     """
     stamp = (now or datetime.now()).isoformat(timespec="seconds")
-    evidence_id = make_evidence_id(data["日付"], data["金額"], data["取引先"])
+    raw_evidence_id = make_evidence_id(data["日付"], data["金額"], data["取引先"])
     evidence_rows = read_evidence(year_dir)
     names = ("staging.csv", EVIDENCE_FILE, "import-log.csv")
-    if any(r["証憑ID"] == evidence_id for r in evidence_rows):
-        ensure_writable(year_dir, names)
-        result.receipt_duplicates += 1
-        append_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, [_receipt_log_row(data, 0, stamp)])
-        return
+
+    evidence_id, duplicate_of = unique_evidence_id(evidence_rows, raw_evidence_id)
+    duplicate_reason = f"{SUSPECTED_DUPLICATE_RECEIPT}（証憑ID {duplicate_of}）" if duplicate_of else None
 
     staging = read_rows(year_dir / "staging.csv")
     lines = ([{**r, "_file": "journal.csv"} for r in read_rows(year_dir / "journal.csv")]
              + [{**r, "_file": "staging.csv"} for r in staging])
     accounts_for_payment = payment_accounts(sources)
     candidates = find_candidates(lines, data, accounts_for_payment, attached_source_ids(evidence_rows))
-    suspected = [r["証憑ID"] for r in evidence_rows if r["日付"] == data["日付"] and r["金額"] == str(data["金額"])]
+    suspected = [r["証憑ID"] for r in evidence_rows
+                 if r["日付"] == data["日付"] and r["金額"] == str(data["金額"]) and r["証憑ID"] != duplicate_of]
 
     staging_changed = False
     new_row = None
@@ -132,12 +147,17 @@ def _import_receipt(year_dir, data, sources, result, now):
             r["借方科目"] = data["科目候補"]
             r["借方補助"] = data.get("補助候補", "") if data["科目候補"] else ""
             r["取引先"] = r["取引先"] or data["取引先"]
-            r["要確認理由"] = MATCHED_RECEIPT
+            reason = MATCHED_RECEIPT
+            if duplicate_reason:
+                reason = f"{reason}／{duplicate_reason}"
+            r["要確認理由"] = reason
+            if data["自信度"] == "低":
+                r["読み取り信頼度"] = "低"
             staging_changed = True
     elif len(candidates) > 1:
         state, source_id = STATE_MULTIPLE, CANDIDATE_SEPARATOR.join(candidates)
     else:
-        credit = credit_for_new_entry(data["支払方法の推定"], receipt_default(sources), accounts_for_payment)
+        credit = credit_for_new_entry(data["種類"], data["支払方法の推定"], receipt_default(sources), accounts_for_payment)
         if credit is None:
             state, source_id = STATE_UNPAID, ""
         else:
@@ -145,7 +165,9 @@ def _import_receipt(year_dir, data, sources, result, now):
             if source_id not in {r["取り込み元ID"].strip() for r in lines}:
                 subject, sub, reason = credit
                 if suspected:
-                    reason = f"{SUSPECTED_DUPLICATE_RECEIPT}（証憑ID {'・'.join(suspected)} と日付・金額が一致）"
+                    reason = f"{reason}／{SUSPECTED_DUPLICATE_RECEIPT}（証憑ID {'・'.join(suspected)} と日付・金額が一致）"
+                if duplicate_reason:
+                    reason = f"{reason}／{duplicate_reason}"
                 amount = str(data["金額"])
                 new_row = dict.fromkeys(STAGING_COLUMNS, "")
                 new_row.update({
@@ -164,11 +186,22 @@ def _import_receipt(year_dir, data, sources, result, now):
             append_rows(year_dir / "staging.csv", STAGING_COLUMNS, [new_row])
     except OSError:
         raise cannot_write("staging.csv") from None
-    append_evidence(year_dir, [_evidence_row(data, evidence_id, state, source_id, stamp)])
-    append_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, [_receipt_log_row(data, 1 if new_row else 0, stamp)])
+
+    try:
+        append_evidence(year_dir, [_evidence_row(data, evidence_id, state, source_id, stamp)])
+    except OSError:
+        raise _write_failure("staging.csv", "evidence.csv") from None
+
+    try:
+        append_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, [_receipt_log_row(data, 1 if new_row else 0, stamp)])
+    except OSError:
+        raise _write_failure("staging.csv・evidence.csv", "import-log.csv") from None
+
     result.evidence[state] += 1
     if new_row:
         result.added += 1
+    if duplicate_of:
+        result.receipt_duplicates.append((data["資料"], duplicate_of))
 
 
 def import_extracted(year_dir, sources_path, accounts, files, now=None):
@@ -178,6 +211,8 @@ def import_extracted(year_dir, sources_path, accounts, files, now=None):
     source_accounts = {a["id"]: a for a in sources.get("accounts") or []}
     period = load_period(year_dir)
     result = ExtractedImportResult()
+
+    entries = []
     for path in files:
         path = Path(path)
         data, errors = load_document(path)
@@ -189,6 +224,14 @@ def import_extracted(year_dir, sources_path, accounts, files, now=None):
         if data["種類"] == "読めない":
             result.unreadable.append(data["資料"])
             continue
+        entries.append((path, data))
+
+    # 明細（通帳・出納帳）を先に、証憑（領収書・請求書）を後に処理する（各グループ内は元の順序のまま）。
+    # 逆だと、証憑が明細より先に処理されて突き合わせ候補が見つからず、新しい仕訳を余分に作ってしまう。
+    ordered = ([e for e in entries if e[1]["種類"] in STATEMENT_KINDS]
+               + [e for e in entries if e[1]["種類"] not in STATEMENT_KINDS])
+
+    for path, data in ordered:
         if data["資料"] in {r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")}:
             result.already_imported.append(path.name)
             continue

@@ -10,18 +10,22 @@ import hashlib
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, append_rows, load_period, parse_amount, read_rows,
+    KessanError, append_rows, load_period, parse_amount, parse_date, read_rows,
 )
+from evidence import STATE_NEW_ENTRY, STATE_UNPAID, read_evidence
+from match import MATCH_WINDOW_DAYS
 
 SUSPECTED_DOUBLE_IMPORT = "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）"
 UNSET_COUNTER_ACCOUNT = "相手科目未設定"
+SUSPECTED_DOUBLE_BOOKED_RECEIPT = "証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）"
+MATCHES_UNPAID_RECEIPT = "未払候補の証憑と金額が一致（支払の可能性）"
 
 
 @dataclass(frozen=True)
@@ -187,6 +191,21 @@ def _existing_bank_lines(lines):
     return index
 
 
+def _near_evidence(evidence_rows, target_date_str, amount):
+    """evidence.csv のうち、金額が同じで日付が target_date_str の前後 MATCH_WINDOW_DAYS 日以内の行。"""
+    target = date.fromisoformat(target_date_str)
+    found = []
+    for r in evidence_rows:
+        if parse_amount(r["金額"], "evidence.csv") != amount:
+            continue
+        ev_date = parse_date(r["日付"])
+        if ev_date is None:
+            continue
+        if abs((date.fromisoformat(ev_date) - target).days) <= MATCH_WINDOW_DAYS:
+            found.append(r)
+    return found
+
+
 def _overlapping_imports(log, account_id, rows):
     dates = [r["日付"] for r in rows if r["入金"] or r["出金"]]
     if not dates:
@@ -219,6 +238,7 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
     existing = {r["取り込み元ID"] for r in existing_lines if r.get("取り込み元ID")}
     bank_lines = _existing_bank_lines(existing_lines)
     overlapping = _overlapping_imports(read_rows(year_dir / "import-log.csv"), log_id, rows)
+    evidence_rows = read_evidence(year_dir)
 
     seen = Counter()
     new_rows, new_balances = [], []
@@ -244,6 +264,15 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
             reason = staged["要確認理由"]
             staged["要確認理由"] = (SUSPECTED_DOUBLE_IMPORT if reason == UNSET_COUNTER_ACCOUNT
                                   else f"{reason}／{SUSPECTED_DOUBLE_IMPORT}")
+        if row["出金"]:  # 支払側（出金）の新しい行は、対応しそうな証憑が無いか確認する
+            near = _near_evidence(evidence_rows, row["日付"], row["出金"])
+            extra_reasons = []
+            if any(r["状態"] == STATE_NEW_ENTRY for r in near):
+                extra_reasons.append(SUSPECTED_DOUBLE_BOOKED_RECEIPT)
+            if any(r["状態"] == STATE_UNPAID for r in near):
+                extra_reasons.append(MATCHES_UNPAID_RECEIPT)
+            if extra_reasons:
+                staged["要確認理由"] = "／".join([staged["要確認理由"], *extra_reasons])
         new_rows.append((row, staged))
         if row["残高"] is not None:
             new_balances.append({

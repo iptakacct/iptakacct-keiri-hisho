@@ -5,7 +5,8 @@ import pytest
 from bank_import import import_bank
 from check import run_checks
 from common import OPENING_COLUMNS, STAGING_COLUMNS, KessanError, init_year_dir, read_rows, write_rows
-from helpers import write_bank_csv, write_sources
+from evidence import append_evidence
+from helpers import evidence_row, write_bank_csv, write_sources
 from post import post_approved
 
 HEADER = "入出金明細,\n取引日,お引出し,お預入れ,お取引内容,残高\n"
@@ -216,6 +217,43 @@ def test_overlapping_import_period_is_reported(year_dir, tmp_path):
     later = HEADER + "2025/04/03,500,,ATM,\n2025/04/10,700,,ATM,\n"
     result = import_bank(year_dir, sources, "main", write_bank_csv(tmp_path, "later.csv", later), now=NOW)
     assert result.overlapping_imports == ["2025-04.csv 2025-04-01〜2025-04-05"]
+
+
+# --- 証憑との突き合わせ（明細側。I3: 証憑を先に取り込んだ場合の計上漏れ・二重計上の検知） ---
+
+def test_new_bank_row_flags_suspected_double_booking_with_new_entry_evidence(year_dir, tmp_path):
+    append_evidence(year_dir, [evidence_row(
+        証憑ID="ev1", 証憑ファイル="inbox/領収書-0001.jpg", 種類="領収書",
+        日付="2025-04-03", 金額="3300", 取引先="テスト業者", 内容="文房具",
+        科目候補="消耗品費", 状態="新規仕訳", 取り込み元ID="receipt:ev1", 取り込み日時="2025-04-03T00:00:00",
+    )])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    fee = read_rows(year_dir / "staging.csv")[1]
+    assert "証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）" in fee["要確認理由"]
+
+
+def test_new_bank_row_flags_match_with_unpaid_evidence(year_dir, tmp_path):
+    append_evidence(year_dir, [evidence_row(
+        証憑ID="ev2", 証憑ファイル="inbox/請求書-0001.pdf", 種類="請求書",
+        日付="2025-04-05", 金額="3300", 取引先="テスト業者", 内容="振込手数料",
+        科目候補="支払手数料", 状態="未払候補", 取り込み元ID="", 取り込み日時="2025-04-05T00:00:00",
+    )])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    fee = read_rows(year_dir / "staging.csv")[1]
+    assert "未払候補の証憑と金額が一致（支払の可能性）" in fee["要確認理由"]
+
+
+def test_deposit_row_is_not_checked_against_evidence(year_dir, tmp_path):
+    """入金側の行は支払ではないので、証憑との突き合わせ対象にしない。"""
+    append_evidence(year_dir, [evidence_row(
+        証憑ID="ev3", 証憑ファイル="inbox/領収書-0002.jpg", 種類="領収書",
+        日付="2025-04-01", 金額="100000", 取引先="テスト業者", 内容="備品",
+        科目候補="消耗品費", 状態="新規仕訳", 取り込み元ID="receipt:ev3", 取り込み日時="2025-04-01T00:00:00",
+    )])
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path), now=NOW)
+    deposit = read_rows(year_dir / "staging.csv")[0]
+    assert "二重計上の疑い" not in deposit["要確認理由"]
+    assert "支払の可能性" not in deposit["要確認理由"]
 
 
 # --- 設定ファイル（kessan-sources.yaml）の不備 ---

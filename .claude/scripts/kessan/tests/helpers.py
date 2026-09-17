@@ -1,5 +1,5 @@
 """テスト用の架空データ。実在のクライアント情報は入れない。"""
-from common import JOURNAL_COLUMNS, STAGING_COLUMNS
+from common import EVIDENCE_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS
 
 SOURCES_YAML = """\
 formats:
@@ -44,6 +44,12 @@ def write_bank_csv(directory, name="2025-04.csv", text=BANK_CSV):
 
 def staging_row(**values):
     row = dict.fromkeys(STAGING_COLUMNS, "")
+    row.update(values)
+    return row
+
+
+def evidence_row(**values):
+    row = dict.fromkeys(EVIDENCE_COLUMNS, "")
     row.update(values)
     return row
 

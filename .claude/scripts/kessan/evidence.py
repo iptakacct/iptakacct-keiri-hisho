@@ -37,3 +37,21 @@ def attached_source_ids(evidence_rows):
 
 def candidate_ids(evidence_row):
     return [x for x in evidence_row["取り込み元ID"].split(CANDIDATE_SEPARATOR) if x]
+
+
+def unique_evidence_id(evidence_rows, base_id):
+    """base_id が既存の証憑IDと同じなら、-2・-3 …を付けて重複しないIDにする。
+
+    別の資料ファイルが同じ内容（日付・金額・取引先）の証憑を含む場合に使う
+    （同じ資料ファイルの再取り込みは import-log.csv で別途止めるので、ここでは止めない）。
+    戻り値: (使う証憑ID, 重複していた元の証憑ID。重複が無ければ None)
+    """
+    existing = {r["証憑ID"] for r in evidence_rows}
+    if base_id not in existing:
+        return base_id, None
+    n = 2
+    candidate = f"{base_id}-{n}"
+    while candidate in existing:
+        n += 1
+        candidate = f"{base_id}-{n}"
+    return candidate, base_id

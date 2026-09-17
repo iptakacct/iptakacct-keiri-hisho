@@ -109,9 +109,13 @@ def find_candidates(lines, receipt, accounts_for_payment, attached):
     return found
 
 
-def credit_for_new_entry(method, default, accounts_for_payment):
-    """明細に該当が無い証憑から新しい仕訳を作るときの貸方 (科目, 補助, 要確認理由)。後払いは None（仕訳を作らない）。"""
-    if method == "後払い":
+def credit_for_new_entry(kind, method, default, accounts_for_payment):
+    """明細に該当が無い証憑から新しい仕訳を作るときの貸方 (科目, 補助, 要確認理由)。
+
+    後払いは None（仕訳を作らず「未払候補」にする）。請求書（kind=請求書）で支払方法が不明の場合も
+    同様に None にする（`receipt_default` を適用しない。銀行振込での支払と二重計上になりやすいため）。
+    """
+    if method == "後払い" or (kind == "請求書" and method == "不明"):
         return None
     if method in ("口座", "カード"):
         return "", "", NO_MATCH_BANK

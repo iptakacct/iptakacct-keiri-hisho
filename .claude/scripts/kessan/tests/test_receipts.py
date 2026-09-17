@@ -137,23 +137,48 @@ def test_invalid_receipt_default_raises(year_dir, tmp_path, accounts):
         run(year_dir, tmp_path, accounts, receipt(), extra="receipt_default: カード\n")
 
 
-def test_same_receipt_photographed_twice_is_not_imported(year_dir, tmp_path, accounts):
+def test_reimporting_the_same_receipt_file_adds_nothing(year_dir, tmp_path, accounts):
+    """C2: 同じ資料ファイルの再取り込みは、これまで通り import-log.csv で止める。"""
+    doc = receipt(支払方法の推定="立替")
+    path = write_document(year_dir, doc)
+    sources = write_sources(tmp_path)
+    import_extracted(year_dir, sources, accounts, [path])
+    result = import_extracted(year_dir, sources, accounts, [path])
+    assert result.already_imported == ["領収書-0001.jpg.json"]
+    assert result.imported == []
+    assert len(read_rows(year_dir / "staging.csv")) == 1
+    assert len(read_rows(year_dir / "evidence.csv")) == 1
+
+
+def test_two_different_files_with_identical_content_are_both_imported_and_flagged(year_dir, tmp_path, accounts):
+    """C2: 別の資料ファイルが同じ内容（日付・金額・取引先）でも、取り込みを止めず要確認で入れる。"""
     run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
     again = receipt(資料="inbox/領収書-0002.jpg", 取引先=" ﾃｽﾄ文具店", 支払方法の推定="立替")
     result = run(year_dir, tmp_path, accounts, again)
-    assert (result.receipt_duplicates, result.added, result.imported) == (1, 0, ["領収書-0002.jpg.json"])
-    assert len(read_rows(year_dir / "staging.csv")) == 1
-    assert len(read_rows(year_dir / "evidence.csv")) == 1
+    base_id = make_evidence_id("2025-04-10", 5500, "テスト文具店")
+
+    assert result.added == 1
+    assert result.imported == ["領収書-0002.jpg.json"]
+    assert result.receipt_duplicates == [("inbox/領収書-0002.jpg", base_id)]
+
+    evidence_rows = read_rows(year_dir / "evidence.csv")
+    assert [r["証憑ID"] for r in evidence_rows] == [base_id, f"{base_id}-2"]
     assert len(read_rows(year_dir / "import-log.csv")) == 2
+
+    first, second = read_rows(year_dir / "staging.csv")
+    assert first["取り込み元ID"] == f"receipt:{base_id}"
+    assert second["取り込み元ID"] == f"receipt:{base_id}-2"
+    assert second["要確認理由"] == f"明細に該当なし／証憑の重複の疑い（証憑ID {base_id}）"
 
 
 def test_same_date_and_amount_with_different_partner_is_flagged(year_dir, tmp_path, accounts):
+    """m6: 重複の疑いの理由は、既存の要確認理由を消さずに／で連結する。"""
     run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
     other = receipt(資料="inbox/領収書-0002.jpg", 取引先="テスト文房具店", 支払方法の推定="立替")
     run(year_dir, tmp_path, accounts, other)
     first, second = read_rows(year_dir / "staging.csv")
     first_id = make_evidence_id("2025-04-10", 5500, "テスト文具店")
-    assert second["要確認理由"] == f"証憑の重複の疑い（証憑ID {first_id} と日付・金額が一致）"
+    assert second["要確認理由"] == f"明細に該当なし／証憑の重複の疑い（証憑ID {first_id} と日付・金額が一致）"
 
 
 def test_receipt_row_already_staged_is_not_added_again(year_dir, tmp_path, accounts):
@@ -162,3 +187,70 @@ def test_receipt_row_already_staged_is_not_added_again(year_dir, tmp_path, accou
     result = run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
     assert (result.added, result.evidence) == (0, {"新規仕訳": 1})
     assert len(read_rows(year_dir / "staging.csv")) == 1
+
+
+# --- Fix round 1 ---
+
+def test_statement_documents_are_processed_before_receipts_in_the_same_call(year_dir, tmp_path, accounts):
+    """C1: 同じ回の取り込みでは、証憑より先に明細（通帳・出納帳）を処理する（渡された順序に関わらず）。"""
+    result = run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"), passbook())
+    assert result.evidence == {"明細に対応": 1}
+    rows = read_rows(year_dir / "staging.csv")
+    assert len(rows) == 3
+    assert not any(r["貸方科目"] == "役員借入金" for r in rows)
+    card = rows[2]
+    assert (card["借方科目"], card["要確認理由"]) == ("消耗品費", "証憑と一致")
+
+
+def test_invoice_with_unknown_method_is_unpaid_not_receipt_default(year_dir, tmp_path, accounts):
+    """I4: 請求書は支払方法が不明でも receipt_default を使わず、後払いと同じ未払候補にする。"""
+    invoice = receipt(種類="請求書", 支払方法の推定="不明")
+    result = run(year_dir, tmp_path, accounts, invoice, extra="receipt_default: 立替\n")
+    assert result.evidence == {"未払候補": 1}
+    assert read_rows(year_dir / "staging.csv") == []
+
+
+def test_receipt_with_unknown_method_still_uses_receipt_default(year_dir, tmp_path, accounts):
+    """I4 対比: 領収書はこれまで通り receipt_default を使う（請求書だけ挙動を変える）。"""
+    result = run(year_dir, tmp_path, accounts, receipt(支払方法の推定="不明"), extra="receipt_default: 立替\n")
+    assert result.evidence == {"新規仕訳": 1}
+    assert read_rows(year_dir / "staging.csv")[0]["貸方科目"] == "役員借入金"
+
+
+def test_low_confidence_receipt_marks_matched_staging_line(year_dir, tmp_path, accounts):
+    """m8: 自信度が低い証憑が明細に一致したら、その明細行の読み取り信頼度も低にする。"""
+    write_staging(year_dir, [bank_line("bank:a", "2025-04-10")])
+    run(year_dir, tmp_path, accounts, receipt(自信度="低"))
+    row = read_rows(year_dir / "staging.csv")[0]
+    assert row["読み取り信頼度"] == "低"
+
+
+def test_evidence_write_failure_is_wrapped_with_kessan_error(year_dir, tmp_path, accounts, monkeypatch):
+    """I5: evidence.csv への書き込み失敗は、何が書けたか・再実行が安全かが分かる KessanError にする。"""
+    import extracted_import
+
+    def failing(*args, **kwargs):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(extracted_import, "append_evidence", failing)
+    with pytest.raises(KessanError, match="staging.csv は更新済み.*evidence.csv.*再実行しても二重には登録されません"):
+        run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    assert len(read_rows(year_dir / "staging.csv")) == 1
+    assert read_rows(year_dir / "evidence.csv") == []
+
+
+def test_import_log_write_failure_is_wrapped_with_kessan_error(year_dir, tmp_path, accounts, monkeypatch):
+    """I5: import-log.csv への書き込み失敗も同様に、何が書けたかが分かる KessanError にする。"""
+    import extracted_import
+    original_append_rows = extracted_import.append_rows
+
+    def wrapper(path, columns, rows):
+        if str(path).endswith("import-log.csv"):
+            raise OSError(13, "Permission denied")
+        return original_append_rows(path, columns, rows)
+
+    monkeypatch.setattr(extracted_import, "append_rows", wrapper)
+    with pytest.raises(KessanError, match="staging.csv・evidence.csv は更新済み.*import-log.csv.*再実行しても二重には登録されません"):
+        run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    assert len(read_rows(year_dir / "staging.csv")) == 1
+    assert len(read_rows(year_dir / "evidence.csv")) == 1
