@@ -286,6 +286,39 @@ def test_unimport_and_discard_commands(tmp_path, capsys):
     assert read_rows(year / "staging.csv") == []
 
 
+def test_import_bank_prints_discarded_rows(tmp_path, capsys):
+    year = make_instance(tmp_path)
+    csv_path = write_bank_csv(year / "inbox")
+    assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 0
+    staging = read_rows(year / "staging.csv")
+    for r in staging:
+        r["承認"] = ""
+    write_rows(year / "staging.csv", STAGING_COLUMNS, staging)
+    fee_id = by_description(year)["テスウリヨウ"]["取り込み元ID"]
+    assert main(["discard", "--year-dir", str(year), "--ids", fee_id, "--reason", "重複"]) == 0
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/2025-04.csv"]) == 0
+    capsys.readouterr()
+    assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 0
+    assert "破棄済みのため入れなかった行：1件" in capsys.readouterr().out
+
+
+def test_import_extracted_prints_discarded_rows(tmp_path, capsys):
+    from helpers import passbook, write_document
+    year = make_instance(tmp_path)
+    write_document(year, passbook())
+    assert main(["import-extracted", "--year-dir", str(year)]) == 0
+    staging = read_rows(year / "staging.csv")
+    for r in staging:
+        r["承認"] = ""
+    write_rows(year / "staging.csv", STAGING_COLUMNS, staging)
+    card_id = by_description(year)["カード テストブングテン"]["取り込み元ID"]
+    assert main(["discard", "--year-dir", str(year), "--ids", card_id, "--reason", "重複"]) == 0
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/通帳-2025-04.pdf"]) == 0
+    capsys.readouterr()
+    assert main(["import-extracted", "--year-dir", str(year)]) == 0
+    assert "破棄済みのため入れなかった行：1件" in capsys.readouterr().out
+
+
 # --- F6：approve --review-file --numbers ---
 
 def test_approve_by_review_numbers(tmp_path, capsys):

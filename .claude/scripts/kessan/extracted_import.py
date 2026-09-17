@@ -22,11 +22,11 @@ from pathlib import Path
 
 from bank_import import UNSET_COUNTER_ACCOUNT, load_sources, normalize_description, stage_statement_rows
 from common import (
-    IMPORT_LOG_COLUMNS, STAGING_COLUMNS, KessanError, add_reasons, append_rows, cannot_write, ensure_writable,
-    load_period, project, read_rows, remove_reason, replace_rows,
+    IMPORT_LOG_COLUMNS, STAGING_COLUMNS, KessanError, add_reasons, append_rows, cannot_write, discarded_source_ids,
+    ensure_writable, load_period, project, read_rows, remove_reason, replace_rows,
 )
 from evidence import (
-    CANDIDATE_SEPARATOR, EVIDENCE_FILE, STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID,
+    CANDIDATE_SEPARATOR, EVIDENCE_FILE, STATE_DISCARDED, STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID,
     append_evidence, attached_source_ids, make_evidence_id, read_evidence, receipt_source_id, unique_evidence_id,
 )
 from extracted import check_passbook_pages, extracted_files, load_document, validate_document
@@ -56,12 +56,15 @@ class ExtractedImportResult:
     resumed: list = field(default_factory=list)               # import-log.csv の書き込み失敗後の再実行で、記録だけ埋めた資料
     receipt_same_date_amount: list = field(default_factory=list)  # (資料, 日付・金額が同じ既存の証憑ID「・」区切り)。
     # 要確認理由を書ける行が無かった（複数候補・未払候補・登録済みの明細に対応 等）ため、ここで報告する
+    discarded: int = 0                                        # 破棄済み（discard-log.csv）のため入れなかった明細の行
+    discarded_receipts: list = field(default_factory=list)    # 破棄済みのため仕訳の候補を作らなかった証憑の資料（inbox/…）
 
     def add(self, r):
         self.added += r.added
         self.duplicates += r.duplicates
         self.zero_amount += r.zero_amount
         self.overlapping_imports += r.overlapping_imports
+        self.discarded += r.discarded
 
 
 def _statement_row(r):
@@ -190,7 +193,9 @@ def _import_receipt(year_dir, data, sources, result, now, abbreviations):
             state, source_id = STATE_UNPAID, ""
         else:
             state, source_id = STATE_NEW_ENTRY, receipt_source_id(evidence_id)
-            if source_id not in {r["取り込み元ID"].strip() for r in lines}:
+            if source_id in discarded_source_ids(year_dir):  # オーナーが破棄した証憑の行は作り直さない
+                state = STATE_DISCARDED
+            elif source_id not in {r["取り込み元ID"].strip() for r in lines}:
                 subject, sub, reason = credit
                 reason = add_reasons(reason, suspected_reason, duplicate_reason)
                 amount = str(data["金額"])
@@ -222,7 +227,10 @@ def _import_receipt(year_dir, data, sources, result, now, abbreviations):
     except OSError:
         raise _write_failure("staging.csv・evidence.csv", "import-log.csv") from None
 
-    result.evidence[state] += 1
+    if state == STATE_DISCARDED:
+        result.discarded_receipts.append(data["資料"])
+    else:
+        result.evidence[state] += 1
     if new_row:
         result.added += 1
     if duplicate_of:
@@ -286,7 +294,7 @@ def inbox_status(year_dir):
     statuses = []
     for path in sorted(p for p in inbox.rglob("*") if p.is_file() and not p.name.startswith(".")):
         rel = "inbox/" + path.relative_to(inbox).as_posix()
-        if rel in logged or path.name in logged:  # 銀行CSV（import-bank）はファイル名だけで記録されている
+        if rel in logged or path.name in logged:  # 以前の import-bank は銀行CSVをファイル名だけで記録していた
             status = "取り込み済み"
         elif kinds.get(rel) == "読めない":
             status = "読めない"

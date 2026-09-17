@@ -205,3 +205,102 @@ def test_discard_rejects_invalid_input(year_dir, ids, reason, message):
 def test_init_creates_discard_log(year_dir):
     assert (year_dir / "discard-log.csv").exists()
     assert (year_dir / "discard-log.csv").read_text(encoding="utf-8-sig").strip() == "日時,取り込み元ID,日付,金額,摘要,理由"
+
+
+# --- M1：記録した資料名と完全に一致するものだけを取り消す ---
+
+def _same_basename_documents(year_dir, tmp_path, accounts):
+    """銀行CSV inbox/x.csv と出納帳 inbox/other/x.csv（ファイル名が同じ別の資料）を取り込む。"""
+    csv_path = write_bank_csv(year_dir / "inbox", name="x.csv")
+    import_bank(year_dir, write_sources(tmp_path), "main", csv_path, now=NOW)
+    book = cash_book()
+    book["資料"] = "inbox/other/x.csv"
+    run(year_dir, tmp_path, accounts, book)
+
+
+def test_import_bank_records_inbox_relative_path(year_dir, tmp_path):
+    csv_path = write_bank_csv(year_dir / "inbox", name="x.csv")
+    import_bank(year_dir, write_sources(tmp_path), "main", csv_path, now=NOW)
+    assert [r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")] == ["inbox/x.csv"]
+    assert {r["証憑ファイル"] for r in read_rows(year_dir / "staging.csv")} == {"inbox/x.csv"}
+    assert {r["ファイル名"] for r in read_rows(year_dir / "statement-balances.csv")} == {"inbox/x.csv"}
+
+
+def test_import_bank_outside_inbox_keeps_basename(year_dir, tmp_path):
+    csv_path = write_bank_csv(tmp_path, name="x.csv")
+    import_bank(year_dir, write_sources(tmp_path), "main", csv_path, now=NOW)
+    assert [r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")] == ["x.csv"]
+
+
+def test_unimport_exact_path_removes_only_that_document(year_dir, tmp_path, accounts):
+    _same_basename_documents(year_dir, tmp_path, accounts)
+    result = unimport(year_dir, "inbox/other/x.csv")
+    assert result.sources == ["inbox/other/x.csv"]
+    assert {r["証憑ファイル"] for r in read_rows(year_dir / "staging.csv")} == {"inbox/x.csv"}
+    assert [r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")] == ["inbox/x.csv"]
+
+
+def test_unimport_ambiguous_basename_refuses(year_dir, tmp_path, accounts):
+    _same_basename_documents(year_dir, tmp_path, accounts)
+    before = snapshot(year_dir)
+    with pytest.raises(KessanError, match="inbox/other/x.csv.*inbox/x.csv|inbox/x.csv.*inbox/other/x.csv"):
+        unimport(year_dir, "x.csv")
+    assert snapshot(year_dir) == before
+
+
+def test_post_fills_voucher_range_for_bank_csv_in_inbox(year_dir, tmp_path, accounts):
+    csv_path = write_bank_csv(year_dir / "inbox", name="x.csv")
+    import_bank(year_dir, write_sources(tmp_path), "main", csv_path, now=NOW)
+    fee = by_description(year_dir)["テスウリヨウ"]
+    set_accounts(year_dir, accounts, {fee["取り込み元ID"]: {"借方科目": "支払手数料"}}, PAYMENT)
+    approve(year_dir, accounts, [fee["取り込み元ID"]])
+    post_approved(year_dir, accounts, now=NOW)
+    assert [r["登録伝票番号範囲"] for r in read_rows(year_dir / "import-log.csv")] == ["1-1"]
+
+
+# --- M2：破棄した行は取り込み直しても入れない ---
+
+def test_discarded_bank_row_is_not_imported_again(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox"), now=NOW)
+    fee_id = by_description(year_dir)["テスウリヨウ"]["取り込み元ID"]
+    discard(year_dir, [fee_id], "二重取り込み（オーナー確認済み）", now=NOW)
+
+    unimport(year_dir, "inbox/2025-04.csv")
+    again = import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox"), now=NOW)
+    assert (again.added, again.discarded) == (1, 1)
+    assert fee_id not in {r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")}
+    assert len(read_rows(year_dir / "statement-balances.csv")) == 2
+
+    other = import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox", name="2025-04-再DL.csv"), now=NOW)
+    assert (other.added, other.duplicates, other.discarded) == (0, 1, 1)
+    assert fee_id not in {r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")}
+    assert len(read_rows(year_dir / "statement-balances.csv")) == 3  # 破棄した行の残高は、この資料の分として1回だけ記録
+
+    same = import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox", name="2025-04-再DL.csv"), now=NOW)
+    assert (same.added, same.discarded) == (0, 1)
+    assert len(read_rows(year_dir / "statement-balances.csv")) == 3  # 記録済みの残高は書き直さない
+
+
+def test_discarded_passbook_row_is_not_imported_again(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, passbook())
+    fee_id = by_description(year_dir)["テスウリヨウ"]["取り込み元ID"]
+    discard(year_dir, [fee_id], "重複", now=NOW)
+    unimport(year_dir, "inbox/通帳-2025-04.pdf")
+    again = run(year_dir, tmp_path, accounts, passbook())
+    assert (again.added, again.discarded) == (2, 1)
+    assert fee_id not in {r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")}
+
+
+def test_discarded_receipt_is_not_imported_again(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"), cash_book())
+    receipt_id = by_description(year_dir)["文房具"]["取り込み元ID"]
+    discard(year_dir, [receipt_id], "重複", now=NOW)
+    unimport(year_dir, "inbox/領収書-0001.jpg")
+
+    again = run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    assert (again.added, again.discarded_receipts) == (0, ["inbox/領収書-0001.jpg"])
+    assert receipt_id not in {r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")}
+    (ev,) = read_rows(year_dir / "evidence.csv")
+    assert (ev["状態"], ev["取り込み元ID"]) == ("破棄", receipt_id)
+    assert "inbox/領収書-0001.jpg" in {r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")}

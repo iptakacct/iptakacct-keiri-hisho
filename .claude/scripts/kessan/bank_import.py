@@ -17,7 +17,7 @@ import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, add_reasons, append_rows, cannot_write, ensure_writable, load_period, parse_amount, parse_date,
+    KessanError, add_reasons, append_rows, cannot_write, discarded_source_ids, ensure_writable, load_period, parse_amount, parse_date,
     project, read_rows, remove_reason, replace_rows,
 )
 from evidence import STATE_NEW_ENTRY, STATE_UNPAID, read_evidence
@@ -38,6 +38,7 @@ class ImportResult:
     zero_amount: int
     out_of_period: int = 0
     overlapping_imports: list = field(default_factory=list)
+    discarded: int = 0  # discard-log.csv にある（破棄済みの）ため入れなかった行
 
 
 def load_sources(path):
@@ -249,12 +250,13 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
     recorded_balances = {(r["科目"], r["補助"], r["日付"], r["残高"], r["ファイル名"])
                          for r in read_rows(year_dir / "statement-balances.csv")}
     evidence_rows = read_evidence(year_dir)
+    discarded_ids = discarded_source_ids(year_dir)
 
     seen = Counter()
     new_rows, new_balances = [], []
     resumed_rows = []          # 前回この資料から staging.csv に入れた行（書き込みが途中で止まった後の再実行）
     receipts_to_flag = set()   # 明細にも同額の支払があった、証憑から作った行の取り込み元ID
-    duplicate = zero = out_of_period = 0
+    duplicate = zero = out_of_period = discarded = 0
 
     def add_balance(row, only_if_missing=False):
         # 検算は日付ごとに最後の残高を使うので、新しい行の残高は重複に見えても順序どおりに全部書く。
@@ -274,6 +276,10 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
             out_of_period += 1
             continue
         source_id = make_source_id(source_key, row, occurrence)
+        if source_id in discarded_ids:  # オーナーが破棄した行は入れ直さない（他の行の要確認理由にも使わない）
+            discarded += 1
+            add_balance(row, only_if_missing=True)
+            continue
         if source_id in existing:
             duplicate += 1
             if source_id in from_this_file:  # 残高の記録が書けずに止まった後の再実行なら、残高を埋める
@@ -310,8 +316,8 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
     if not new_rows and resumed_rows and not logged:  # 取り込み記録が書けずに止まった後の再実行
         log_rows, write_log = resumed_rows, True
     if not (new_rows or new_balances or write_log):
-        return ImportResult(added=0, duplicates=duplicate, zero_amount=zero,
-                            out_of_period=out_of_period, overlapping_imports=overlapping)
+        return ImportResult(added=0, duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period,
+                            overlapping_imports=overlapping, discarded=discarded)
 
     ensure_writable(year_dir, WRITE_TARGETS)
     done = []
@@ -341,8 +347,8 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
                 "再実行しても二重には取り込まず、残高の記録・取り込み記録を埋めます）"
             ) from None
         done.append(name)
-    return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero,
-                        out_of_period=out_of_period, overlapping_imports=overlapping)
+    return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period,
+                        overlapping_imports=overlapping, discarded=discarded)
 
 
 def _log_row(log_rows, all_rows, file_name, log_id, now):
@@ -359,6 +365,19 @@ def _log_row(log_rows, all_rows, file_name, log_id, now):
     }
 
 
+def recorded_file_name(year_dir, file_path):
+    """取り込んだ資料を記録する名前。年度フォルダの inbox/ の中なら「inbox/…」（/ 区切り）、外ならファイル名だけ。
+
+    import-extracted の「資料」と同じ形にそろえ、unimport で同じファイル名の別の資料と取り違えないようにする。
+    """
+    path = Path(file_path)
+    try:
+        relative = path.resolve().relative_to((Path(year_dir) / "inbox").resolve())
+    except (OSError, ValueError):
+        return path.name
+    return "inbox/" + relative.as_posix()
+
+
 def import_bank(year_dir, sources_path, account_id, file_path, now=None):
     year_dir = Path(year_dir)
     sources = load_sources(sources_path)
@@ -372,7 +391,7 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
     _check_format(account.get("format"), fmt)
 
     load_period(year_dir)  # 年度フォルダの期間設定が無ければ、明細を読む前に止める
-    file_name = Path(file_path).name
-    rows = order_oldest_first(parse_statement(file_path, fmt), file_name)
+    file_name = recorded_file_name(year_dir, file_path)
+    rows = order_oldest_first(parse_statement(file_path, fmt), Path(file_path).name)
     return stage_statement_rows(year_dir, account_id, account["科目"], account.get("補助", ""), file_name, rows,
                                 log_id=account_id, now=now)

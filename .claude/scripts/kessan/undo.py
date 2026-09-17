@@ -12,7 +12,7 @@ from pathlib import Path
 
 from bank_import import UNSET_COUNTER_ACCOUNT
 from common import (
-    DISCARD_LOG_COLUMNS, EVIDENCE_COLUMNS, IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
+    DISCARD_LOG, DISCARD_LOG_COLUMNS, EVIDENCE_COLUMNS, IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
     KessanError, add_reasons, append_rows, ensure_writable, parse_amount, project, read_rows, remove_reason,
     replace_rows,
 )
@@ -20,7 +20,6 @@ from evidence import EVIDENCE_FILE, STATE_DISCARDED, STATE_MATCHED
 from match import MATCHED_RECEIPT
 
 IMPORTED_ID_PREFIXES = ("bank:", "receipt:")  # 取り込みで作った行（manual: 等の手入力の行は対象外）
-DISCARD_LOG = "discard-log.csv"
 
 
 @dataclass(frozen=True)
@@ -35,30 +34,28 @@ class UnimportResult:
 
 
 def _normalize_source(source):
-    """--source を「inbox/…」の形とファイル名に分ける（年度フォルダからのパスや \\ 区切りも受け付ける）。"""
+    """--source を記録と同じ形にする（年度フォルダからのパスや \\ 区切りは「inbox/…」に直す）。"""
     s = str(source).replace("\\", "/").strip()
     if "/inbox/" in "/" + s:
         s = "inbox/" + ("/" + s).rsplit("/inbox/", 1)[1]
-    return s, s.rsplit("/", 1)[-1]
+    return s
 
 
 def _matching_names(source, values):
-    """記録に残っている資料名（values）のうち、--source が指すもの。
+    """記録に残っている資料名（values）のうち、--source が指すもの（1件）。
 
-    import-extracted は「inbox/…」、import-bank はファイル名だけで記録するので、両方の形で照合する。
+    記録名と完全に一致するものだけを指す。フォルダを含まない指定（例：2025-04.csv）は、ファイル名が
+    それと同じ記録が1件だけならそれを指し、複数あれば取り違えないよう候補を挙げて止める。
     """
-    path, name = _normalize_source(source)
-    found = set()
-    for value in values:
-        v = value.strip()
-        if not v:
-            continue
-        if v == path or v == name or (path == name and v.rsplit("/", 1)[-1] == name):
-            found.add(v)
-    with_folder = sorted(v for v in found if "/" in v)
-    if len(with_folder) > 1:
-        raise KessanError(f"{source} に当てはまる資料が複数あります（{'、'.join(with_folder)}）。inbox/ からのパスで指定してください")
-    return found
+    path = _normalize_source(source)
+    recorded = {v.strip() for v in values if v.strip()}
+    if "/" not in path:
+        found = sorted(v for v in recorded if v.rsplit("/", 1)[-1] == path)
+        if len(found) > 1:
+            raise KessanError(f"{source} に当てはまる資料が複数あります（{'、'.join(found)}）。"
+                              "記録どおりのパス（inbox/…）で指定してください（何も変更していません）")
+        return set(found)
+    return {path} if path in recorded else set()
 
 
 def _is_imported(row):

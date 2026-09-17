@@ -159,6 +159,14 @@ def remove_reason(text, reason):
     return REASON_SEPARATOR.join(part for part in split_reasons(text) if part != reason)
 
 
+DISCARD_LOG = "discard-log.csv"
+
+
+def discarded_source_ids(year_dir):
+    """discard-log.csv に記録された（オーナーが破棄した）取り込み元ID。取り込みのたびにこれを入れ直さない。"""
+    return {r["取り込み元ID"].strip() for r in read_rows(Path(year_dir) / DISCARD_LOG) if r["取り込み元ID"].strip()}
+
+
 PERIOD_FILE = "period.yaml"
 
 

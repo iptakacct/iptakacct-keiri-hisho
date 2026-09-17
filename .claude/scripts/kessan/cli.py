@@ -116,6 +116,9 @@ def _auto_approve_after(year_dir, accounts, args, done):
 def _print_extracted_result(r):
     print(f"読み取り結果の取り込み: ファイル {len(r.imported)}件 / 追加 {r.added}件"
           f" / 取り込み済みの明細のためスキップ {r.duplicates}件 / 金額0のためスキップ {r.zero_amount}件")
+    discarded = r.discarded + len(r.discarded_receipts)
+    if discarded:
+        print(f"破棄済みのため入れなかった行：{discarded}件（discard-log.csv に記録あり）")
     if r.evidence or r.receipt_duplicates:
         states = "、".join(f"{k} {v}件" for k, v in sorted(r.evidence.items()))
         print(f"証憑: {states or 'なし'} / 証憑の重複の疑い {len(r.receipt_duplicates)}件")
@@ -165,6 +168,8 @@ def main(argv=None):
             r = import_bank(year_dir, sources, args.account_id, args.file)
             print(f"取り込み: 追加 {r.added}件 / 取り込み済みのためスキップ {r.duplicates}件 / 金額0のためスキップ {r.zero_amount}件"
                   f" / 期間外のためスキップ {r.out_of_period}件")
+            if r.discarded:
+                print(f"破棄済みのため入れなかった行：{r.discarded}件（discard-log.csv に記録あり）")
             if r.overlapping_imports:
                 print("警告: 同じ口座で期間が重なる取り込み済みファイルがあります: "
                       + "、".join(r.overlapping_imports)
