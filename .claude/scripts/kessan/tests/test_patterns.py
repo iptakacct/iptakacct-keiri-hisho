@@ -2,6 +2,7 @@ from datetime import datetime
 
 import pytest
 
+from bank_import import UNSET_COUNTER_ACCOUNT
 from common import STAGING_COLUMNS, KessanError, read_rows, write_rows
 from helpers import staging_row
 from match import load_abbreviations
@@ -77,6 +78,8 @@ def test_missing_file_means_no_patterns(tmp_path, accounts):
      "金額の範囲は [下限, 上限] の整数で書く"),
     ("patterns: 振込手数料\n", "patterns は「- 名前: …」の並び（リスト）で書く"),
     ("patterns: [\n", "kessan-patterns.yaml を読めません"),
+    ("patterns:\n  - 名前: A\n    入出金: 出金\n    摘要キーワード: X\n    科目: 雑費\n", "摘要キーワード「X」は短すぎます"),
+    ("patterns:\n  - 名前: A\n    入出金: 入金\n    取引先: Y\n    科目: 売上高\n", "取引先「Y」は短すぎます"),
 ])
 def test_invalid_patterns_raise(tmp_path, accounts, text, message):
     with pytest.raises(KessanError, match="kessan-patterns.yaml") as e:
@@ -105,6 +108,11 @@ def test_direction_must_match(year_dir, tmp_path, accounts, abbreviations):
     {"読み取り信頼度": "低"},
     {"要確認理由": "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）"},
     {"要確認理由": "ページの残高が連続しない"},
+    {"要確認理由": "未払候補の証憑と金額が一致（支払の可能性）"},
+    {"要確認理由": "証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）"},
+    {"要確認理由": "証憑と一致"},
+    {"要確認理由": "相手科目未設定／証憑の重複の疑い（証憑ID x）"},
+    {"要確認理由": "謎の理由"},
 ])
 def test_uncertain_rows_are_not_approved(year_dir, tmp_path, accounts, abbreviations, extra):
     assert run(year_dir, tmp_path, accounts, abbreviations, [fee(**extra)]).approved == 0
@@ -114,6 +122,20 @@ def test_uncertain_rows_are_not_approved(year_dir, tmp_path, accounts, abbreviat
 def test_receipt_rows_are_not_approved(year_dir, tmp_path, accounts, abbreviations):
     row = fee(source_id="receipt:abc", 貸方科目="現金", 貸方補助="")
     assert run(year_dir, tmp_path, accounts, abbreviations, [row]).approved == 0
+
+
+def test_empty_reason_is_approved(year_dir, tmp_path, accounts, abbreviations):
+    assert run(year_dir, tmp_path, accounts, abbreviations, [fee(要確認理由="")]).approved == 1
+
+
+def test_unset_counter_account_reason_is_approved(year_dir, tmp_path, accounts, abbreviations):
+    assert run(year_dir, tmp_path, accounts, abbreviations, [fee(要確認理由=UNSET_COUNTER_ACCOUNT)]).approved == 1
+
+
+def test_unset_counter_account_with_space_chars_is_approved(year_dir, tmp_path, accounts, abbreviations):
+    # Leading/trailing whitespace should not prevent matching
+    result = run(year_dir, tmp_path, accounts, abbreviations, [fee(要確認理由="  " + UNSET_COUNTER_ACCOUNT + "  ")])
+    assert result.approved == 1
 
 
 def test_ai_candidate_that_differs_is_flagged(year_dir, tmp_path, accounts, abbreviations):

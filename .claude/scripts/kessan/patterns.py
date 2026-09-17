@@ -3,19 +3,20 @@
 - AIの判断では自動承認しない。オーナーが承認してファイルに書いたパターンに一致した行だけを 判定=確立済み・承認=済 にする
 - 対象は明細の行（取り込み元IDが bank: の行：銀行CSV・通帳・出納帳）だけ。証憑から作った行（receipt:）は
   支払方法の見分けを人が確認するため対象外
-- 読み取り信頼度が低い行、「疑い」「連続しない」を含む要確認理由の行、複合仕訳（伝票番号あり）は対象外
+- 読み取り信頼度が低い行、要確認理由が空か「相手科目未設定」以外の行、複合仕訳（伝票番号あり）は対象外
 """
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
+from bank_import import UNSET_COUNTER_ACCOUNT
 from common import STAGING_COLUMNS, KessanError, ensure_writable, parse_amount, project, read_rows, replace_rows
-from match import name_in_description
+from match import expand_abbreviations, name_in_description
 
 DIRECTIONS = ("入金", "出金")
-BLOCKING_REASON_WORDS = ("疑い", "連続しない")
 ESTABLISHED = "確立済み"
+MIN_KEYWORD_LENGTH = 2
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,14 @@ class AutoApproveResult:
 
 def _text(value):
     return "" if value is None else str(value).strip()
+
+
+def _normalize_keyword(text):
+    """パターン検証用の正規化：expand_abbreviations と同じく NFKC + 空白除去。"""
+    import re
+    import unicodedata
+    s = unicodedata.normalize("NFKC", str(text or ""))
+    return re.sub(r"\s+", "", s)
 
 
 def load_patterns(path, accounts):
@@ -67,6 +76,10 @@ def load_patterns(path, accounts):
             errors.append(f"{where}: 入出金は 入金／出金 のどちらかで書く（値: {direction}）")
         if not keyword and not partner:
             errors.append(f"{where}: 摘要キーワード・取引先のどちらかを書く")
+        if keyword and len(_normalize_keyword(keyword)) < MIN_KEYWORD_LENGTH:
+            errors.append(f"{where}: 摘要キーワード「{keyword}」は短すぎます（最小{MIN_KEYWORD_LENGTH}文字）")
+        if partner and len(_normalize_keyword(partner)) < MIN_KEYWORD_LENGTH:
+            errors.append(f"{where}: 取引先「{partner}」は短すぎます（最小{MIN_KEYWORD_LENGTH}文字）")
         if subject not in accounts:
             errors.append(f"{where}: 科目マスタに無い科目「{subject}」")
         amount_range = ()
@@ -114,9 +127,11 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
     approved = conflicts = 0
     changed = False
     for row in staging:
+        reason = row["要確認理由"].strip()
+        check_allowed = reason == "" or reason == UNSET_COUNTER_ACCOUNT
         if (row["承認"].strip() == "済" or not row["取り込み元ID"].strip().startswith("bank:") or row["伝票番号"].strip()
                 or row["読み取り信頼度"].strip() != "高"
-                or any(word in row["要確認理由"] for word in BLOCKING_REASON_WORDS)):
+                or not check_allowed):
             continue
         side = _statement_side(row, payment_accounts)
         if side is None:
