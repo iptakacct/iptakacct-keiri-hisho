@@ -22,7 +22,7 @@ pip install pyyaml openpyxl pytest
 | `staging.csv` | 取り込んだ明細・仕訳候補。`承認` 列が `済` の行が `post` で登録される |
 | `journal.csv` | 帳簿本体。直接編集しない（`post` 経由で登録する）。伝票番号は数字の連番 |
 | `adjustments.csv` | 決算整理仕訳（段階3で使う）。伝票番号は `A1`, `A2`… と「A」で始め、journal.csv と同じ番号を使わない（検算「伝票番号」で確認） |
-| `import-log.csv` | 取り込み記録。銀行CSVはファイル名、読み取り結果は資料のパス（`inbox/…`）で記録する。`口座ID` 欄は、銀行CSV・通帳は口座ID、出納帳は `出納帳:<科目>`、領収書・請求書は種類 |
+| `import-log.csv` | 取り込み記録。資料は年度フォルダからのパス（`inbox/…`、`/` 区切り）で記録する（銀行CSVも `inbox/` の中にあれば `inbox/2025-04.csv` の形。`inbox/` の外から取り込んだ銀行CSVだけはファイル名）。staging.csv の `証憑ファイル`・statement-balances.csv の `ファイル名` も同じ形。`口座ID` 欄は、銀行CSV・通帳は口座ID、出納帳は `出納帳:<科目>`、領収書・請求書は種類 |
 | `statement-balances.csv` | 明細（CSV・通帳・出納帳）に載っていた残高（検算で帳簿と照合） |
 | `evidence.csv` | 証憑（領収書・請求書）と明細行の対応。`状態` は 明細に対応／新規仕訳／複数候補／未払候補／破棄（`discard` で証憑から作った行を破棄した）。末尾の `支払期日`・`支払方法の推定`・`自信度` は読み取り結果の値（段階3の未払管理の材料） |
 | `discard-log.csv` | `discard` で破棄した行の記録（日時・取り込み元ID・日付・金額・摘要・理由） |
@@ -54,7 +54,7 @@ python ../.claude/scripts/kessan/cli.py review --year-dir <Y>                # �
 python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-YYYYMMDD.xlsx
 python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-YYYYMMDD.xlsx --numbers 1 2   # チャットで番号を挙げて承認されたとき
 python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --ids <取り込み元ID> ...   # 行を取り込み元IDで特定して承認されたとき
-python ../.claude/scripts/kessan/cli.py unimport --year-dir <Y> --source inbox/<資料>     # 読み違えた資料1件分の取り込みを取り消す
+python ../.claude/scripts/kessan/cli.py unimport --year-dir <Y> --source inbox/<資料> [inbox/<資料> ...]   # 読み違えた資料の取り込みを取り消す（期間が重なる資料は並べる）
 python ../.claude/scripts/kessan/cli.py discard --year-dir <Y> --ids <取り込み元ID> ... --reason <理由>   # 確認済みの重複などを破棄
 python ../.claude/scripts/kessan/cli.py post --year-dir <Y>                  # 登録＋検算
 python ../.claude/scripts/kessan/cli.py check --year-dir <Y> --prev-year-dir <前期のY>
@@ -96,8 +96,13 @@ python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
 
 どちらも全部を検証してから書き（拒否する理由が1つでもあれば何も変えない）、承認済みの行・帳簿（journal.csv）に登録済みの行には触らない。
 
-- `unimport --source inbox/<資料>`：資料1件分の取り込みを取り消す。staging.csv のその資料の行、statement-balances.csv・import-log.csv の記録、evidence.csv の証憑を消す（銀行CSVはファイル名でも指定できる）。明細に対応した証憑を取り消すときは、明細の行は消さず、未承認で科目・補助・取引先が証憑のままなら空に戻して「相手科目未設定」を追記し、「証憑と一致」を外す。その資料や対応する明細行が承認済み・登録済みのとき、その資料の明細行に別の証憑が付いているとき（先にその証憑を取り消す）は拒否する。取り消した後は、読み取り結果を直して取り込み直せる。
+- `unimport --source inbox/<資料> [inbox/<資料> ...]`：資料の取り込みを取り消す。staging.csv のその資料の行、statement-balances.csv・import-log.csv の記録、evidence.csv の証憑を消す。`--source` には複数の資料を並べられ、全部を検証してからファイルごとに1回で書く。
+  - 指定は記録どおりの名前（`inbox/…`）と完全に一致する資料だけを指す。フォルダを含まない指定（例：`2025-04.csv`）は、ファイル名が同じ記録が1件だけならそれを指し、複数あれば（`inbox/2025-04.csv` と `inbox/現金/2025-04.csv` など）候補を挙げて何も変えずに止める。
+  - 同じ口座（`import-log.csv` の `口座ID`。出納帳は `出納帳:…`）で対象期間が重なる、別の取り込み済み資料があるときは拒否する（同じ取引の行はどちらか一方の資料の分として記録されているため、片方だけ取り消すと、もう片方の資料の行まで消える）。重なる資料もまとめて取り消す場合は `--source` に並べて指定する。領収書・請求書は対象外。
+  - 明細に対応した証憑を取り消すときは、明細の行は消さず「証憑と一致」を外す。未承認で科目・補助・取引先が証憑のままなら空に戻して「相手科目未設定」を追記し、突き合わせの後に科目が変えられていたら戻さずに「証憑の取り消し後（科目を確認）」を追記する（確立済みパターンで自動承認されない）。
+  - その資料や対応する明細行が承認済み・登録済みのとき、その資料の明細行に別の証憑が付いているとき（先にその証憑を取り消す）は拒否する。取り消した後は、読み取り結果を直して取り込み直せる。
 - `discard --ids … --reason …`：未承認の行を取り込み元IDで破棄し、`discard-log.csv` に記録する。証憑から作った行（`receipt:`）の証憑は `evidence.csv` の状態を「破棄」にする。承認済み・登録済みの行、証憑が付いた明細行は拒否する。オーナーが重複などを確認してから使う。
+  - 破棄した行は取り込み直しても入らない：`import-bank`・`import-extracted`（通帳・出納帳・領収書・請求書）は、取り込み元IDが `discard-log.csv` にある行を入れず、「破棄済みのため入れなかった行：N件」と表示する（`unimport` して取り込み直した場合も、同じ取引を含む別の資料を取り込んだ場合も同じ）。証憑は evidence.csv に状態「破棄」で記録し、仕訳の候補を作らない。破棄を取り消す手段はコマンドに無い（オーナーが `discard-log.csv` の記録を消した場合だけ、次の取り込みで入る）。
 
 ## Excel で CSV を扱うときの注意
 
