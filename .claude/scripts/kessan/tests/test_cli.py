@@ -322,8 +322,7 @@ def test_import_extracted_prints_discarded_rows(tmp_path, capsys):
 def test_unimport_accepts_several_sources(tmp_path, capsys):
     from helpers import passbook, write_document
     year = make_instance(tmp_path)
-    from helpers import OVERLAP_CSV
-    csv_path = write_bank_csv(year / "inbox", text=OVERLAP_CSV)  # 4/1〜4/20。通帳（4/1〜4/10）と期間が重なる
+    csv_path = write_bank_csv(year / "inbox")  # 4/1〜4/5。通帳（4/1〜4/10）と期間が重なる
     assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 0
     write_document(year, passbook())
     assert main(["import-extracted", "--year-dir", str(year)]) == 0

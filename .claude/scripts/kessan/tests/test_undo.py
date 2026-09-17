@@ -309,13 +309,15 @@ def test_discarded_receipt_is_not_imported_again(year_dir, tmp_path, accounts):
 # --- M3：同じ口座で期間が重なる別の資料があれば、まとめて指定しない限り取り消さない ---
 
 def _csv_and_passbook(year_dir, tmp_path, accounts):
-    """同じ口座（main）の銀行CSV（4/1〜4/20）と通帳（新しく入る行は4/10だけ）を取り込む。"""
-    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(year_dir / "inbox", text=OVERLAP_CSV), now=NOW)
+    """同じ口座（main）の銀行CSV（4/1〜4/5）を取り込んでから、通帳（4/1〜4/10。新しく入る行は4/10だけ）を取り込む。"""
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(year_dir / "inbox"), now=NOW)
     run(year_dir, tmp_path, accounts, passbook())
 
 
 def test_unimport_refuses_when_same_account_document_overlaps(year_dir, tmp_path, accounts):
     _csv_and_passbook(year_dir, tmp_path, accounts)
+    periods = {r["ファイル名"]: r["対象期間"] for r in read_rows(year_dir / "import-log.csv")}
+    assert periods["inbox/通帳-2025-04.pdf"] == "2025-04-01〜2025-04-10"  # 新しく入った行（4/10）だけでなく資料全体の期間
     before = snapshot(year_dir)
     with pytest.raises(KessanError, match="inbox/通帳-2025-04.pdf.*--source に並べて指定"):
         unimport(year_dir, "inbox/2025-04.csv")
@@ -398,3 +400,68 @@ def test_all_duplicate_bank_csv_is_logged_with_full_period_and_blocks_partial_un
     result = unimport(year_dir, ["inbox/通帳-2025-04.pdf", "inbox/2025-04.csv"])
     assert result.import_log == 2
     assert read_rows(year_dir / "staging.csv") == []
+
+
+# --- レビュー指摘：取り込み直しで期間を広げる・資料全体の期間で重なりを見る・ファイル名だけの記録も指定できる ---
+
+ONLY_APRIL_20 = "入出金明細,\n取引日,お引出し,お預入れ,お取引内容,残高\n" + '2025/04/20,1000,,ATM,"1,095,700"\n'
+
+
+def _reimported_with_new_row_then_b(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox"), now=NOW)
+    import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox", text=OVERLAP_CSV), now=NOW)  # 4/20 の行が増えた
+    import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox", name="b.csv", text=ONLY_APRIL_20), now=NOW)
+
+
+def test_reimport_same_name_widens_logged_period(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox"), now=NOW)
+    result = import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox", text=OVERLAP_CSV), now=NOW)
+    assert result.added == 1
+    assert [(r["ファイル名"], r["対象期間"], r["件数"]) for r in read_rows(year_dir / "import-log.csv")] == [
+        ("inbox/2025-04.csv", "2025-04-01〜2025-04-20", "2")]  # 件数は最初の記録のまま
+
+
+def test_unimport_refuses_when_reimported_rows_overlap_another_document(year_dir, tmp_path):
+    _reimported_with_new_row_then_b(year_dir, tmp_path)
+    before = snapshot(year_dir)
+    with pytest.raises(KessanError, match="inbox/b.csv"):
+        unimport(year_dir, "inbox/2025-04.csv")
+    assert snapshot(year_dir) == before
+
+
+def test_unimport_overlap_uses_staging_dates_when_log_period_is_old(year_dir, tmp_path):
+    from common import IMPORT_LOG_COLUMNS
+    _reimported_with_new_row_then_b(year_dir, tmp_path)
+    log = read_rows(year_dir / "import-log.csv")
+    for r in log:  # 期間を広げる前の版で書かれた記録を再現する
+        if r["ファイル名"] == "inbox/2025-04.csv":
+            r["対象期間"] = "2025-04-01〜2025-04-05"
+    write_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, log)
+    with pytest.raises(KessanError, match="inbox/b.csv"):
+        unimport(year_dir, "inbox/2025-04.csv")
+
+
+def _basename_and_inbox_records(year_dir, tmp_path):
+    sources = write_sources(tmp_path)
+    (tmp_path / "dl").mkdir()
+    import_bank(year_dir, sources, "main", write_bank_csv(tmp_path / "dl"), now=NOW)  # inbox の外：ファイル名で記録
+    import_bank(year_dir, sources, "main", write_bank_csv(year_dir / "inbox"), now=NOW)  # inbox/2025-04.csv（追加0件）
+    assert sorted(r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")) == ["2025-04.csv", "inbox/2025-04.csv"]
+
+
+def test_unimport_exact_basename_record_is_selected_not_ambiguous(year_dir, tmp_path):
+    _basename_and_inbox_records(year_dir, tmp_path)
+    with pytest.raises(KessanError, match="期間が重なる.*inbox/2025-04.csv"):  # 曖昧ではなく、重なりで止まる
+        unimport(year_dir, "2025-04.csv")
+    result = unimport(year_dir, ["2025-04.csv", "inbox/2025-04.csv"])
+    assert result.sources == ["2025-04.csv", "inbox/2025-04.csv"]
+    assert read_rows(year_dir / "staging.csv") == []
+    assert read_rows(year_dir / "import-log.csv") == []
+
+
+def test_unimport_unknown_path_hints_same_basename_records(year_dir, tmp_path):
+    import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(year_dir / "inbox", name="x.csv"), now=NOW)
+    with pytest.raises(KessanError, match="取り込まれていません.*inbox/x.csv"):
+        unimport(year_dir, str(tmp_path / "elsewhere" / "x.csv"))

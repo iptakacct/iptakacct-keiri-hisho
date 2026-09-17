@@ -85,7 +85,7 @@ def _import_passbook(year_dir, data, source_accounts, result, now):
     account = source_accounts[data["口座ID"]]
     result.add(stage_statement_rows(
         year_dir, data["口座ID"], account["科目"], account.get("補助", ""), data["資料"], rows,
-        log_id=data["口座ID"], now=now, always_log=True,
+        log_id=data["口座ID"], now=now, always_log=True, full_period=True,
     ))
 
 
@@ -94,7 +94,7 @@ def _import_cash_book(year_dir, data, result, now):
     log_id = f"出納帳:{subject}" + (f"（{sub}）" if sub else "")
     result.add(stage_statement_rows(
         year_dir, f"{subject}|{sub}", subject, sub, data["資料"], [_statement_row(r) for r in data["行"]],
-        log_id=log_id, now=now, always_log=True,
+        log_id=log_id, now=now, always_log=True, full_period=True,
     ))
 
 

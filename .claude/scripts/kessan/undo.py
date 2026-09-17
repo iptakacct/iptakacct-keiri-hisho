@@ -46,30 +46,50 @@ def _normalize_source(source):
 def _matching_names(source, values):
     """記録に残っている資料名（values）のうち、--source が指すもの（1件）。
 
-    記録名と完全に一致するものだけを指す。フォルダを含まない指定（例：2025-04.csv）は、ファイル名が
-    それと同じ記録が1件だけならそれを指し、複数あれば取り違えないよう候補を挙げて止める。
+    記録名と完全に一致する指定は、その記録だけを指す（フォルダを含まない記録名＝inbox/ の外から取り込んだ銀行CSV等も）。
+    完全に一致する記録が無く、フォルダを含まない指定（例：2025-04.csv）は、ファイル名がそれと同じ記録が
+    1件だけならそれを指し、複数あれば取り違えないよう候補を挙げて止める。
     """
     path = _normalize_source(source)
     recorded = {v.strip() for v in values if v.strip()}
+    if path in recorded:
+        return {path}
     if "/" not in path:
         found = sorted(v for v in recorded if v.rsplit("/", 1)[-1] == path)
         if len(found) > 1:
             raise KessanError(f"{source} に当てはまる資料が複数あります（{'、'.join(found)}）。"
                               "記録どおりのパス（inbox/…）で指定してください（何も変更していません）")
         return set(found)
-    return {path} if path in recorded else set()
+    return set()
 
 
-def _overlapping_documents(log, names):
-    """取り消す資料（names）と同じ口座ID（口座・出納帳）で対象期間が重なる、取り消さない資料の一覧。
+def _same_basename_hint(source, values):
+    """指定に当てはまる記録が無いとき、ファイル名が同じ記録名を挙げる（指定の書き方の手がかり）。"""
+    base = _normalize_source(source).rsplit("/", 1)[-1]
+    candidates = sorted({v.strip() for v in values if v.strip() and v.strip().rsplit("/", 1)[-1] == base})
+    return f"ファイル名が同じ記録: {'、'.join(candidates)}。記録どおりの名前で指定してください。" if candidates else ""
+
+
+def _overlapping_documents(log, names, dated_rows):
+    """取り消す資料（names）と同じ口座ID（口座・出納帳）で期間が重なる、取り消さない資料の一覧。
 
     明細は取り込み元IDで二重に入らないため、重なる資料の行は先に取り込んだ資料の分として記録されている。
     片方だけ取り消すと、もう片方の資料にあった行まで消え、その資料は取り込み済みのまま戻せなくなる。
+    資料の期間は、import-log.csv の対象期間と、その資料の行（staging.csv・journal.csv の証憑ファイル、
+    statement-balances.csv のファイル名）の日付を合わせた範囲（期間を広げる前の版で書かれた記録でも漏れないように）。
     領収書・請求書（口座ID欄＝種類）は明細を持たないので対象外。
+    dated_rows：(資料名, 日付) の一覧。
     """
+    dates = {}
+    for name, day in dated_rows:
+        if name.strip() and day.strip():
+            dates.setdefault(name.strip(), []).append(day.strip())
+
     def period(r):
+        name = r["ファイル名"].strip()
         parts = r["対象期間"].strip().split("〜")
-        return parts if len(parts) == 2 and all(parts) else None
+        days = list(dates.get(name, [])) + (parts if len(parts) == 2 and all(parts) else [])
+        return (min(days), max(days)) if days else None
 
     found = []
     for own in (r for r in log if r["ファイル名"].strip() in names):
@@ -81,7 +101,7 @@ def _overlapping_documents(log, names):
             if (other["ファイル名"].strip() in names or other["口座ID"].strip() != account or other_period is None
                     or not (other_period[0] <= own_period[1] and own_period[0] <= other_period[1])):
                 continue
-            entry = f"{other['ファイル名'].strip()}（{account} {other['対象期間'].strip()}）"
+            entry = f"{other['ファイル名'].strip()}（{account} {other_period[0]}〜{other_period[1]}）"
             if entry not in found:
                 found.append(entry)
     return found
@@ -131,7 +151,7 @@ def unimport(year_dir, sources):
         found = _matching_names(source, values)
         if not found:
             raise KessanError(f"{source} は取り込まれていません（staging.csv・evidence.csv・import-log.csv に記録がありません。"
-                              "何も変更していません）")
+                              f"{_same_basename_hint(source, values)}何も変更していません）")
         names |= found
 
     removed = [r for r in staging if _is_imported(r) and r["証憑ファイル"].strip() in names]
@@ -143,7 +163,9 @@ def unimport(year_dir, sources):
     new_entry_ids = {r["取り込み元ID"].strip() for r in own_evidence if r["取り込み元ID"].strip().startswith("receipt:")}
 
     errors = []
-    overlapping = _overlapping_documents(log, names)
+    dated_rows = ([(r["証憑ファイル"], r["日付"]) for r in staging + journal if _is_imported(r)]
+                  + [(r["ファイル名"], r["日付"]) for r in balances])
+    overlapping = _overlapping_documents(log, names, dated_rows)
     if overlapping:
         errors.append(f"同じ口座で期間が重なる取り込み済みの資料があります: {'、'.join(overlapping)}"
                       "（明細の行はどちらか一方の資料の分として記録されているため、片方だけは取り消せません。"

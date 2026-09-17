@@ -326,7 +326,9 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         log_rows, write_log = resumed_rows, True
         if not full_period:
             period_rows = None
-    if not (new_rows or new_balances or write_log):
+    # 同じ資料名で取り込み直して期間が広がったら、記録の行を1行のまま書き換えて対象期間を広げる（件数・合計は最初の記録のまま）
+    widened_log = _widen_logged_period(log, file_name, period_rows) if logged and full_period else None
+    if not (new_rows or new_balances or write_log or widened_log):
         return ImportResult(added=0, duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period,
                             overlapping_imports=overlapping, discarded=discarded)
 
@@ -344,12 +346,16 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         done.append("staging.csv")
     later_writes = []
     if new_balances:
-        later_writes.append(("statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances))
+        later_writes.append(("statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances, append_rows))
     if write_log:
-        later_writes.append(("import-log.csv", IMPORT_LOG_COLUMNS, [_log_row(log_rows, period_rows, file_name, log_id, now)]))
-    for name, columns, lines in later_writes:
+        later_writes.append(("import-log.csv", IMPORT_LOG_COLUMNS, [_log_row(log_rows, period_rows, file_name, log_id, now)],
+                             append_rows))
+    elif widened_log:
+        later_writes.append(("import-log.csv", IMPORT_LOG_COLUMNS, [project(r, IMPORT_LOG_COLUMNS) for r in widened_log],
+                             replace_rows))
+    for name, columns, lines, write in later_writes:
         try:
-            append_rows(year_dir / name, columns, lines)
+            write(year_dir / name, columns, lines)
         except OSError:
             if not done:
                 raise cannot_write(name) from None
@@ -360,6 +366,24 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         done.append(name)
     return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period,
                         overlapping_imports=overlapping, discarded=discarded)
+
+
+def _widen_logged_period(log, file_name, period_rows):
+    """log のうち file_name の記録の対象期間を、period_rows の日付まで広げる。広がったら log 全体を、変わらなければ None を返す。"""
+    dates = sorted(r["日付"] for r in period_rows or [])
+    if not dates:
+        return None
+    changed = False
+    for r in log:
+        if r["ファイル名"] != file_name:
+            continue
+        parts = r["対象期間"].strip().split("〜")
+        low, high = (parts if len(parts) == 2 and all(parts) else (dates[0], dates[-1]))
+        period = f"{min(low, dates[0])}〜{max(high, dates[-1])}"
+        if period != r["対象期間"]:
+            r["対象期間"] = period
+            changed = True
+    return log if changed else None
 
 
 def _log_row(log_rows, period_rows, file_name, log_id, now):
