@@ -9,6 +9,8 @@
   python ../.claude/scripts/kessan/cli.py review --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --ids bank:… receipt:…
+  python ../.claude/scripts/kessan/cli.py unimport --year-dir <Y> --source inbox/通帳-2025-04.pdf
+  python ../.claude/scripts/kessan/cli.py discard --year-dir <Y> --ids bank:… --reason "二重取り込み（オーナー確認済み）"
   python ../.claude/scripts/kessan/cli.py post --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py check --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
   python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
@@ -32,9 +34,10 @@ from patterns import auto_approve, load_patterns
 from post import post_approved
 from review_xlsx import read_review, write_review
 from trial_balance import write_trial_balance
+from undo import discard, unimport
 
 COMMANDS = ("init", "inbox-status", "import-bank", "import-extracted", "set-accounts", "review", "apply-review",
-            "approve", "post", "check", "tb")
+            "approve", "unimport", "discard", "post", "check", "tb")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -60,6 +63,11 @@ def _parser():
             p.add_argument("--file", required=True, type=Path)
         if name == "approve":
             p.add_argument("--ids", required=True, nargs="+", help="承認する取り込み元ID")
+        if name == "unimport":
+            p.add_argument("--source", required=True, help="取り消す資料（inbox/…。銀行CSVはファイル名でも可）")
+        if name == "discard":
+            p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
+            p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")
         if name in ("post", "check"):
             p.add_argument("--prev-year-dir", type=Path)
     return parser
@@ -179,6 +187,20 @@ def main(argv=None):
             return 0
         if args.command == "approve":
             print(f"承認: {approve(year_dir, accounts, args.ids)}件")
+            return 0
+        if args.command == "unimport":
+            r = unimport(year_dir, args.source)
+            print(f"取り込みを取り消しました: {'、'.join(r.sources)} / staging.csv {r.staging}行"
+                  f" / 残高の記録 {r.balances}行 / 証憑 {r.evidence}件 / 取り込み記録 {r.import_log}件")
+            if r.removed_ids:
+                print("staging.csv から消した行: " + "、".join(r.removed_ids))
+            if r.restored:
+                print("証憑の科目候補を外して元に戻した明細行: " + "、".join(r.restored))
+            print("読み取り結果を直してから import-extracted で取り込み直せます")
+            return 0
+        if args.command == "discard":
+            count = discard(year_dir, args.ids, args.reason)
+            print(f"破棄: {count}行（discard-log.csv に記録）")
             return 0
         if args.command == "post":
             r = post_approved(year_dir, accounts)

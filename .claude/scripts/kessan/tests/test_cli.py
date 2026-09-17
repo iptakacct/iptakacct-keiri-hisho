@@ -253,3 +253,34 @@ def test_apply_review_prints_memos(tmp_path, capsys):
     capsys.readouterr()
     assert main(["apply-review", "--year-dir", str(year), "--file", str(review)]) == 0
     assert "修正メモ: bank:a\t会議費では？" in capsys.readouterr().out
+
+
+# --- F2：unimport・discard ---
+
+def test_unimport_and_discard_commands(tmp_path, capsys):
+    from helpers import passbook, write_document
+    year = make_instance(tmp_path)
+    write_document(year, passbook())
+    assert main(["import-extracted", "--year-dir", str(year)]) == 0
+    capsys.readouterr()
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/無い.pdf"]) == 1
+    assert "取り込まれていません" in capsys.readouterr().err
+
+    rows = by_description(year)
+    atm_id = rows["フリコミ カ)テストシヨウジ"]["取り込み元ID"]
+    assert main(["discard", "--year-dir", str(year), "--ids", atm_id, "--reason", "重複（オーナー確認済み）"]) == 0
+    assert "破棄: 1行" in capsys.readouterr().out
+    assert [r["取り込み元ID"] for r in read_rows(year / "discard-log.csv")] == [atm_id]
+
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/通帳-2025-04.pdf"]) == 1
+    assert "承認済みの行があります" in capsys.readouterr().err  # 振込手数料は確立済みパターンで自動承認済み
+    fee_id = rows["テスウリヨウ"]["取り込み元ID"]
+    staging = read_rows(year / "staging.csv")
+    for r in staging:
+        r["承認"] = ""
+    write_rows(year / "staging.csv", STAGING_COLUMNS, staging)
+    assert main(["unimport", "--year-dir", str(year), "--source", "inbox/通帳-2025-04.pdf"]) == 0
+    out = capsys.readouterr().out
+    assert "取り込みを取り消しました: inbox/通帳-2025-04.pdf" in out
+    assert fee_id in out
+    assert read_rows(year / "staging.csv") == []

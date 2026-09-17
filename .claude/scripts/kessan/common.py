@@ -28,6 +28,7 @@ EVIDENCE_COLUMNS = [
 IMPORT_LOG_COLUMNS = ["取り込み日時", "ファイル名", "口座ID", "対象期間", "件数", "入金合計", "出金合計", "登録伝票番号範囲"]
 STATEMENT_BALANCE_COLUMNS = ["科目", "補助", "日付", "残高", "ファイル名"]
 OPENING_COLUMNS = ["科目", "補助", "残高"]
+DISCARD_LOG_COLUMNS = ["日時", "取り込み元ID", "日付", "金額", "摘要", "理由"]
 
 YEAR_FILES = {
     "journal.csv": JOURNAL_COLUMNS,
@@ -37,6 +38,7 @@ YEAR_FILES = {
     "statement-balances.csv": STATEMENT_BALANCE_COLUMNS,
     "opening-balances.csv": OPENING_COLUMNS,
     "evidence.csv": EVIDENCE_COLUMNS,
+    "discard-log.csv": DISCARD_LOG_COLUMNS,
 }
 
 

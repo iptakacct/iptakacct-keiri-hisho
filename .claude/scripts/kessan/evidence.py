@@ -9,6 +9,7 @@ STATE_MATCHED = "明細に対応"
 STATE_NEW_ENTRY = "新規仕訳"
 STATE_MULTIPLE = "複数候補"
 STATE_UNPAID = "未払候補"
+STATE_DISCARDED = "破棄"  # 証憑から作った行（receipt:）を discard で破棄した
 CANDIDATE_SEPARATOR = ";"  # 複数候補のとき、取り込み元ID欄に候補のIDをこの記号でつないで書く
 
 
