@@ -120,9 +120,9 @@ def _assign_manual_ids(groups):
                 r["取り込み元ID"] = manual_id
 
 
-def _update_import_log(year_dir, numbers_by_file):
+def _update_import_log(year_dir, log, numbers_by_file):
+    """log は登録の前に読んでおいた import-log.csv の行（登録後に文字コードの問題で止まらないようにする）。"""
     path = year_dir / "import-log.csv"
-    log = read_rows(path)
     changed = False
     for r in log:
         numbers = numbers_by_file.get(r["ファイル名"])
@@ -154,6 +154,7 @@ def post_approved(year_dir, accounts, now=None):
     errors = _validate(groups, accounts, journal, load_period(year_dir))
     if errors:
         raise KessanError("承認済みの行を登録できません（何も登録していません）:\n" + "\n".join(errors))
+    log = read_rows(year_dir / "import-log.csv")  # 読めなければここで止まる（まだ何も書いていない）
     _ensure_writable(year_dir)
 
     _assign_manual_ids(groups)
@@ -174,6 +175,7 @@ def post_approved(year_dir, accounts, now=None):
             row = project(r, JOURNAL_COLUMNS)
             row.update({
                 "伝票番号": no,
+                "日付": r["日付"].strip(),
                 "登録区分": "自動" if r["判定"] == "確立済み" else "確認済",
                 "登録日時": stamp,
             })
@@ -192,7 +194,7 @@ def post_approved(year_dir, accounts, now=None):
     try:
         replace_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in remaining])
         current = "import-log.csv"
-        _update_import_log(year_dir, numbers_by_file)
+        _update_import_log(year_dir, log, numbers_by_file)
     except OSError:
         raise KessanError(
             f"帳簿への登録は完了済み（伝票 {', '.join(vouchers)}）ですが、{current} の更新に失敗しました。"

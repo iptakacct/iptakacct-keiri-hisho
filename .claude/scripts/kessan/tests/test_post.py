@@ -209,3 +209,20 @@ def test_composite_voucher_with_different_dates_is_rejected(year_dir, accounts):
     with pytest.raises(KessanError, match="伝票内で日付が違う"):
         post_approved(year_dir, accounts, now=NOW)
     assert read_rows(year_dir / "journal.csv") == []
+
+
+def test_post_strips_spaces_around_date(year_dir, accounts):
+    write_staging(year_dir, [staging_row(日付=" 2025-04-01 ", 借方科目="現金", 借方金額="1", 貸方科目="資本金", 貸方金額="1", 承認="済")])
+    post_approved(year_dir, accounts, now=NOW)
+    (posted,) = read_rows(year_dir / "journal.csv")
+    assert posted["日付"] == "2025-04-01"
+
+
+def test_unreadable_import_log_blocks_before_writing(year_dir, accounts):
+    (year_dir / "import-log.csv").write_bytes(("取り込み日時,ファイル名\n2026-09-16T10:00:00,明細.csv\n").encode("cp932"))
+    write_staging(year_dir, [capital()])
+    before = (year_dir / "staging.csv").read_bytes()
+    with pytest.raises(KessanError, match="import-log.csv: UTF-8で読めません"):
+        post_approved(year_dir, accounts, now=NOW)
+    assert read_rows(year_dir / "journal.csv") == []
+    assert (year_dir / "staging.csv").read_bytes() == before

@@ -5,6 +5,7 @@ CSVはExcelでそのまま開けるよう、BOM付きUTF-8で保存する。
 import csv
 import os
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -106,8 +107,8 @@ _AMOUNT_NOISE = str.maketrans("", "", ",，¥￥\\円 　")
 
 
 def parse_amount(value, where):
-    """CSVの金額欄を整数にする。桁区切り・円記号・空白は無視し、空欄は0。読めなければ KessanError。"""
-    s = str(value if value is not None else "").translate(_AMOUNT_NOISE)
+    """CSVの金額欄を整数にする。全角数字も読む（NFKC）。桁区切り・円記号・空白は無視し、空欄は0。読めなければ KessanError。"""
+    s = unicodedata.normalize("NFKC", str(value if value is not None else "")).translate(_AMOUNT_NOISE)
     if not s:
         return 0
     if not re.fullmatch(r"-?[0-9]+", s):
@@ -117,6 +118,11 @@ def parse_amount(value, where):
 
 def to_int(value):
     return parse_amount(value, "金額")
+
+
+def normalize_key(value):
+    """照合用の正規化：NFKC（半角カナ→全角、全角英数→半角）にして、空白をすべて除く。"""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
 
 
 PERIOD_FILE = "period.yaml"

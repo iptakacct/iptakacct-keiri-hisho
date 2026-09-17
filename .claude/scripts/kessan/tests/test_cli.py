@@ -58,14 +58,14 @@ def test_uninitialized_year_dir(tmp_path, capsys):
     assert "init" in capsys.readouterr().err
 
 
-def test_post_returns_2_when_check_finds_ng(tmp_path, capsys):
+def test_post_returns_3_when_check_finds_ng(tmp_path, capsys):
     year = tmp_path / "2026-03期"
     main(["init", "--year-dir", str(year), *PERIOD])
     opening(year, [{"科目": "普通預金", "補助": "サンプル銀行", "残高": "1000000"}])
     write_rows(year / "staging.csv", STAGING_COLUMNS, [
         staging_row(日付="2025-04-01", 借方科目="現金", 借方金額="1", 貸方科目="資本金", 貸方金額="1", 承認="済"),
     ])
-    assert main(["post", "--year-dir", str(year)]) == 2
+    assert main(["post", "--year-dir", str(year)]) == 3
     assert len(read_rows(year / "journal.csv")) == 1
     assert "登録は完了済み" in capsys.readouterr().out
 
@@ -78,6 +78,13 @@ def test_import_reports_out_of_period_rows(tmp_path, capsys):
                  "--account-id", "main", "--file", str(write_bank_csv(tmp_path, "p.csv", text))])
     assert code == 0
     assert "期間外のためスキップ 1件" in capsys.readouterr().out
+
+
+def test_usage_error_exits_with_2():
+    import pytest
+    with pytest.raises(SystemExit) as e:
+        main(["post"])
+    assert e.value.code == 2
 
 
 def test_init_requires_period(tmp_path):

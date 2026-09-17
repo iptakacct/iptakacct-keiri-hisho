@@ -137,3 +137,15 @@ def test_replace_rows_removes_tmp_on_failure(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         replace_rows(path, ["x"], [{"x": "1"}])
     assert not path.with_name(path.name + ".tmp").exists()
+
+
+@pytest.mark.parametrize("value, expected", [("１２３４", 1234), ("１，０００円", 1000), ("－５００", -500)])
+def test_parse_amount_reads_full_width_digits(value, expected):
+    assert parse_amount(value, "x") == expected
+
+
+def test_normalize_key_removes_spaces_and_unifies_width():
+    from common import normalize_key
+    assert normalize_key(" ﾃｽﾄ　文具店 ") == "テスト文具店"
+    assert normalize_key("ＡＢＣ 商店") == "ABC商店"
+    assert normalize_key(None) == ""
