@@ -188,3 +188,16 @@ def test_template_patterns_example_parses_when_uncommented(accounts, tmp_path):
     (pattern,) = load_patterns(write_patterns(tmp_path, "\n".join(uncommented)), accounts)
     assert (pattern.name, pattern.direction, pattern.keyword, pattern.subject, pattern.amount_range) == (
         "振込手数料", "出金", "テスウリヨウ", "支払手数料", (0, 1000))
+
+
+# --- F3：明細の行では、パターンの取引先は摘要とだけ照合する（AIが書いた取引先欄では一致させない） ---
+
+def test_partner_written_by_ai_does_not_trigger_pattern(year_dir, tmp_path, accounts, abbreviations):
+    from accounts_update import set_accounts
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [deposit(摘要="フリコミ サンプルシヨウテン")])
+    set_accounts(year_dir, accounts, {"bank:dep": {"取引先": "株式会社テストシヨウジ"}}, PAYMENT)
+    patterns = load_patterns(write_patterns(tmp_path), accounts)
+    result = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations)
+    assert result.approved == 0
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert (row["貸方科目"], row["承認"]) == ("", "")

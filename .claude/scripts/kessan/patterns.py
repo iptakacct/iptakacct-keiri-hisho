@@ -104,8 +104,9 @@ def _matches(pattern, row, direction, amount, abbreviations):
         return False
     if pattern.keyword and not name_in_description(pattern.keyword, row["摘要"], abbreviations):
         return False
-    if pattern.partner and not (name_in_description(pattern.partner, row["取引先"], abbreviations)
-                                or name_in_description(pattern.partner, row["摘要"], abbreviations)):
+    # 取引先は摘要（銀行・通帳・出納帳に印字された文字）とだけ照合する。staging.csv の取引先欄はAIが
+    # set-accounts で書けるので、そこで一致させるとAIの判断で自動承認できてしまう
+    if pattern.partner and not name_in_description(pattern.partner, row["摘要"], abbreviations):
         return False
     if pattern.amount_range and not pattern.amount_range[0] <= amount <= pattern.amount_range[1]:
         return False

@@ -18,6 +18,8 @@ accounts:
     format: sample-bank
     科目: 普通預金
     補助: サンプル銀行
+  - id: cash
+    科目: 現金
 """
 
 BANK_CSV = (

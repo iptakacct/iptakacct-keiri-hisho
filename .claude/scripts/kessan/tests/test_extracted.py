@@ -5,11 +5,12 @@ from helpers import cash_book, passbook, receipt, write_document
 
 PERIOD = ("2025-04-01", "2026-03-31")
 ACCOUNT_IDS = {"main"}
+PAYMENT = {("普通預金", "サンプル銀行"), ("現金", "")}
 
 
 def errors_of(year_dir, accounts, data):
     write_document(year_dir, data)
-    return validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    return validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
 
 
 def test_valid_passbook_has_no_errors(year_dir, accounts):
@@ -66,19 +67,19 @@ def test_invalid_documents_are_reported(year_dir, accounts, make, path, value, m
     data = make()
     write_document(year_dir, data)
     _set(data, path, value)
-    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     assert any(message in e for e in errors), errors
 
 
 def test_source_path_must_be_under_inbox_and_exist(year_dir, accounts):
     data = receipt(資料="領収書.jpg")
-    assert "「資料」は inbox/ の下に置く相対パスで書く（値: 領収書.jpg）" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert "「資料」は inbox/ の下に置く相対パスで書く（値: 領収書.jpg）" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     data = receipt(資料="inbox/none.jpg")
-    assert "資料 inbox/none.jpg が年度フォルダにありません" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert "資料 inbox/none.jpg が年度フォルダにありません" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
 
 
 def test_top_level_must_be_object(year_dir, accounts):
-    assert validate_document([], accounts, ACCOUNT_IDS, PERIOD, year_dir) == ["JSONの一番外側は {…}（オブジェクト）で書く"]
+    assert validate_document([], accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT) == ["JSONの一番外側は {…}（オブジェクト）で書く"]
 
 
 def test_load_document_reports_broken_json(tmp_path):
@@ -96,7 +97,7 @@ def test_passbook_row_with_both_zero_deposit_and_withdrawal_is_rejected(year_dir
     write_document(year_dir, data)
     data["ページ"][0]["行"][0]["入金"] = 0
     data["ページ"][0]["行"][0]["出金"] = 0
-    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     assert any("入金・出金のどちらかに金額が必要" in e for e in errors), errors
 
 
@@ -105,7 +106,7 @@ def test_cash_book_row_with_both_zero_deposit_and_withdrawal_is_rejected(year_di
     write_document(year_dir, data)
     data["行"][0]["入金"] = 0
     data["行"][0]["出金"] = 0
-    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     assert any("入金・出金のどちらかに金額が必要" in e for e in errors), errors
 
 
@@ -113,7 +114,7 @@ def test_receipt_required_fields_must_be_nonempty(year_dir, accounts):
     for field in ["科目候補", "取引先", "内容"]:
         data = receipt(**{field: ""})
         write_document(year_dir, data)
-        errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+        errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
         assert any(f"「{field}」が空です" in e for e in errors), f"{field} should reject empty: {errors}"
 
 
@@ -121,7 +122,7 @@ def test_cash_book_account_must_be_nonempty(year_dir, accounts):
     data = cash_book()
     write_document(year_dir, data)
     data["科目"] = ""
-    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     assert any("「科目」が空です" in e for e in errors), errors
 
 
@@ -130,13 +131,13 @@ def test_source_path_cannot_escape_inbox_via_traversal(year_dir, accounts):
     outside = year_dir / "outside.jpg"
     outside.write_bytes(b"")
     data = receipt(資料="inbox/../outside.jpg")
-    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     assert any("inbox/ の下に置く" in e for e in errors), errors
 
 
 def test_source_path_cannot_be_absolute(year_dir, accounts):
     data = receipt(資料="/absolute/path.jpg")
-    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir, PAYMENT)
     assert any("inbox/ の下に置く" in e for e in errors), errors
 
 
@@ -164,3 +165,12 @@ def test_gap_between_pages_marks_next_page():
     pages[1]["繰越残高"] = 1000000
     pages[1]["行"][0]["残高"] = 994500
     assert check_passbook_pages(pages) == [2]
+
+
+# --- F4：出納帳の科目・補助は kessan-sources.yaml に登録した口座（現金など）に限る ---
+
+def test_cash_book_account_must_be_registered_in_sources(year_dir, accounts):
+    data = cash_book()
+    data["補助"] = "金庫"
+    errors = errors_of(year_dir, accounts, data)
+    assert any("現金（金庫）" in e and "kessan-sources.yaml" in e for e in errors), errors

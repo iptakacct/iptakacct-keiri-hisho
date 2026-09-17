@@ -239,7 +239,7 @@ def import_extracted(year_dir, sources_path, accounts, files, now=None):
         path = Path(path)
         data, errors = load_document(path)
         if not errors:
-            errors = validate_document(data, accounts, set(source_accounts), period, year_dir)
+            errors = validate_document(data, accounts, set(source_accounts), period, year_dir, payment_accounts(sources))
         if errors:
             result.rejected[path.name] = errors
             continue

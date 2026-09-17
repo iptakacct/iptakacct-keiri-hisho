@@ -118,10 +118,12 @@ class _Checker:
             self.statement_row(row, f"{where}行{i}".strip(), balance_required)
 
 
-def validate_document(data, accounts, account_ids, period, year_dir):
+def validate_document(data, accounts, account_ids, period, year_dir, payment_accounts):
     """読み取り結果の形式チェック。誤りの一覧（空なら取り込める）を返す。
 
-    accounts: 科目マスタ（dict）、account_ids: kessan-sources.yaml の口座IDの集合、period: (期首日, 期末日)
+    accounts: 科目マスタ（dict）、account_ids: kessan-sources.yaml の口座IDの集合、period: (期首日, 期末日)、
+    payment_accounts: kessan-sources.yaml の口座・カード・現金の (科目, 補助)。出納帳の科目・補助はこのどれかに限る
+    （登録が無いと、出納帳の行が証憑の突き合わせ・二重計上の検知の対象にならず、二重計上に気づけない）
     """
     c = _Checker(period)
     if not isinstance(data, dict):
@@ -165,8 +167,12 @@ def validate_document(data, accounts, account_ids, period, year_dir):
                 c.amount(page, "繰越残高", f"ページ{number}", required=False)
                 c.rows(page, f"ページ{number} ", balance_required=True)
     elif kind == "出納帳":
-        c.account(data, "科目", accounts, "", allow_empty=False)
-        c.text(data, "補助", "", required=False)
+        subject = c.account(data, "科目", accounts, "", allow_empty=False)
+        sub = c.text(data, "補助", "", required=False)
+        if subject and (subject.strip(), sub.strip()) not in payment_accounts:
+            label = f"{subject}（{sub}）" if sub else subject
+            c.error("", f"出納帳の科目・補助「{label}」が kessan-sources.yaml の accounts に登録されていません"
+                        "（現金などの口座として登録してから取り込む）")
         c.rows(data, "", balance_required=False)
     elif kind in RECEIPT_KINDS:
         c.date(data, "日付", "")
