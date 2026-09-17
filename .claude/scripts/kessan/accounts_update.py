@@ -166,6 +166,7 @@ class ApplyReviewResult:
     missing: list      # 承認=済 だが staging.csv に無い取り込み元ID（登録済み・削除済み）
     changed: list       # 承認=済 だが、確認用Excel出力後に staging.csv の内容が変わった取り込み元ID
                          # （出し直して確認。古い指紋のまま承認しない）
+    not_done_marks: int = 0  # 承認欄に「済」以外（OK・○ 等）が書かれた行数。承認していない
 
 
 def _fingerprint_matches(rows, expected):
@@ -213,7 +214,9 @@ def apply_review(year_dir, accounts, review_rows):
                 unapproved += 1
     if approved or unapproved:
         _write_staging(year_dir, staging)
-    return ApplyReviewResult(approved=approved, unapproved=unapproved, memos=memos, missing=missing, changed=changed)
+    not_done_marks = sum(1 for r in review_rows if r["承認"] and r["承認"] != "済")
+    return ApplyReviewResult(approved=approved, unapproved=unapproved, memos=memos, missing=missing, changed=changed,
+                             not_done_marks=not_done_marks)
 
 
 @dataclass(frozen=True)

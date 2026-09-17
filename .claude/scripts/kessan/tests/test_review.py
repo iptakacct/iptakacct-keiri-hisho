@@ -269,3 +269,29 @@ def test_approve_numbers_reports_rows_no_longer_in_staging(year_dir, accounts):
     setup(year_dir, rows=[pending_bank()])
     result = approve_numbers(year_dir, accounts, read_review(path), [1, 2])
     assert (result.approved, result.missing) == (1, [(2, "receipt:r1")])
+
+
+# --- F9：二重計上などの疑いは赤、承認欄の「済」以外の記入を数える ---
+
+@pytest.mark.parametrize("reason", [
+    "証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）",
+    "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）",
+    "明細に該当なし／証憑の重複の疑い（証憑ID x）",
+    "未払候補の証憑と金額が一致（支払の可能性）",
+    "証憑と一致／取引先名が摘要に無い（突き合わせ先を確認）",
+])
+def test_review_colors_suspicious_rows_red_over_other_colors(year_dir, reason):
+    setup(year_dir, rows=[pending_bank(要確認理由=reason), receipt_row(要確認理由=f"明細に該当なし／{reason}")])
+    summary = write_review(year_dir, today=TODAY)
+    ws = load_workbook(summary.path)["確認"]
+    assert ws["A2"].fill.fgColor.rgb.endswith("FFCDD2")  # 読み取り信頼度が低い（オレンジ）より優先
+    assert ws["A3"].fill.fgColor.rgb.endswith("FFCDD2")  # 明細に該当なし（黄色）より優先
+    assert (summary.low_confidence, summary.no_match) == (1, 1)
+
+
+def test_apply_review_counts_marks_other_than_done(year_dir, accounts):
+    setup(year_dir)
+    path = write_review(year_dir, today=TODAY).path
+    edit_review(path, {"bank:a": {"承認": "済"}, "receipt:r1": {"承認": "OK"}, "bank:auto": {"承認": "×"}})
+    result = apply_review(year_dir, accounts, read_review(path))
+    assert (result.approved, result.not_done_marks) == (1, 2)

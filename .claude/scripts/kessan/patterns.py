@@ -12,7 +12,7 @@ import yaml
 
 from bank_import import UNSET_COUNTER_ACCOUNT
 from common import (
-    STAGING_COLUMNS, KessanError, add_reasons, ensure_writable, parse_amount, project, read_rows, remove_reason,
+    STAGING_COLUMNS, KessanError, add_reasons, cannot_write, ensure_writable, parse_amount, project, read_rows, remove_reason,
     replace_rows, split_reasons,
 )
 from match import expand_abbreviations, name_in_description
@@ -167,5 +167,8 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
             changed = True
     if changed:
         ensure_writable(year_dir, ["staging.csv"])
-        replace_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in staging])
+        try:
+            replace_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in staging])
+        except OSError:
+            raise cannot_write("staging.csv") from None
     return AutoApproveResult(approved=approved, conflicts=conflicts)

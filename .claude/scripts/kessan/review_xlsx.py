@@ -1,6 +1,7 @@
 """確認用Excel（output/review-YYYYMMDD.xlsx）の出力と読み戻し。
 
 - シート「確認」：staging.csv の取り込み元IDのある行。未承認の行を上に、承認済み（確立済みパターン等）を下に並べる。
+  二重計上・二重取り込み・証憑の重複の疑い、支払の可能性、取引先名が摘要に無い行は赤（他の色より優先）、
   読み取り信頼度が低い行はオレンジ、「明細に該当なし」の行は黄色
 - シート「突き合わせ先が複数」「未払候補」：evidence.csv から
 - シート「読めなかった資料」：extracted/ の 種類=読めない のファイルから
@@ -38,6 +39,8 @@ UNPAID_SHEET = "未払候補"
 UNPAID_COLUMNS = ["証憑ID", "証憑ファイル", "日付", "金額", "取引先", "内容", "科目候補"]
 UNREADABLE_SHEET = "読めなかった資料"
 UNREADABLE_COLUMNS = ["資料", "理由"]
+SUSPICIOUS_COLOR = "FFCDD2"
+SUSPICIOUS_REASONS = ("二重計上の疑い", "二重取り込みの疑い", "証憑の重複の疑い", "支払の可能性", "取引先名が摘要に無い")
 LOW_CONFIDENCE_COLOR = "FFE0B2"
 NO_MATCH_COLOR = "FFF9C4"
 WIDTHS = {"番号": 6, "取り込み元ID": 26, "日付": 12, "金額": 12, "摘要": 30, "借方": 22, "貸方": 22,
@@ -106,14 +109,18 @@ def write_review(year_dir, today=None):
             row_fingerprint(r),
         ])
         ws.cell(row=ws.max_row, column=REVIEW_COLUMNS.index("日付") + 1).number_format = "@"
+        is_low = r["読み取り信頼度"].strip() == "低"
+        is_no_match = NO_MATCH in r["要確認理由"]
         color = None
-        if r["読み取り信頼度"].strip() == "低":
+        if any(word in r["要確認理由"] for word in SUSPICIOUS_REASONS):
+            color = SUSPICIOUS_COLOR
+        elif is_low:
             color = LOW_CONFIDENCE_COLOR
-        elif NO_MATCH in r["要確認理由"]:
+        elif is_no_match:
             color = NO_MATCH_COLOR
-        if color and r["承認"].strip() != "済":
-            low += color == LOW_CONFIDENCE_COLOR
-            no_match += color == NO_MATCH_COLOR
+        if r["承認"].strip() != "済":
+            low += is_low
+            no_match += is_no_match and not is_low  # 両方に当てはまる行は「読み取り信頼度が低い」で数える
         if color:
             for cell in ws[ws.max_row]:
                 cell.fill = PatternFill(fill_type="solid", fgColor=color)

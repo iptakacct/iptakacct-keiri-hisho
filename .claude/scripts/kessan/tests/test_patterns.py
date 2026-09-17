@@ -201,3 +201,14 @@ def test_partner_written_by_ai_does_not_trigger_pattern(year_dir, tmp_path, acco
     assert result.approved == 0
     (row,) = read_rows(year_dir / "staging.csv")
     assert (row["貸方科目"], row["承認"]) == ("", "")
+
+
+def test_auto_approve_write_failure_is_kessan_error(year_dir, tmp_path, accounts, abbreviations, monkeypatch):
+    import patterns
+
+    def failing(*args):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(patterns, "replace_rows", failing)
+    with pytest.raises(KessanError, match="staging.csv"):
+        run(year_dir, tmp_path, accounts, abbreviations, [fee()])

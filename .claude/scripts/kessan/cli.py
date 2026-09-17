@@ -18,6 +18,8 @@
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
           / 3 post で登録は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
+          （import-bank・import-extracted・set-accounts の反映後に自動承認だけが失敗したときは、反映が完了した旨を出して 1。
+            import-extracted で形式エラーのファイルもあったときは 4）
 """
 import argparse
 import sys
@@ -99,6 +101,18 @@ def _auto_approve(year_dir, accounts, args):
     print(f"確立済みパターン: 自動承認 {r.approved}件 / パターンと科目候補が合わず要確認 {r.conflicts}件")
 
 
+def _auto_approve_after(year_dir, accounts, args, done):
+    """反映（取り込み・科目候補）の後に自動承認する。失敗したら、反映は完了していることを伝えて 1 を返す（成功なら 0）。"""
+    try:
+        _auto_approve(year_dir, accounts, args)
+    except KessanError as e:
+        print(f"エラー: 確立済みパターンの自動承認で止まりました: {e}", file=sys.stderr)
+        print(f"{done}（自動承認だけが止まりました。原因を直してから同じコマンドを再実行すると、二重には反映せず自動承認をやり直します）",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def _print_extracted_result(r):
     print(f"読み取り結果の取り込み: ファイル {len(r.imported)}件 / 追加 {r.added}件"
           f" / 取り込み済みの明細のためスキップ {r.duplicates}件 / 金額0のためスキップ {r.zero_amount}件")
@@ -155,20 +169,18 @@ def main(argv=None):
                 print("警告: 同じ口座で期間が重なる取り込み済みファイルがあります: "
                       + "、".join(r.overlapping_imports)
                       + "（別名で保存し直した同じ明細でないか、staging.csv の要確認理由を確認）")
-            _auto_approve(year_dir, accounts, args)
-            return 0
+            return _auto_approve_after(year_dir, accounts, args, "取り込みは完了しています")
         if args.command == "import-extracted":
             sources = _company_file(year_dir, args.sources, "kessan-sources.yaml")
             r = import_extracted(year_dir, sources, accounts, args.file or extracted_files(year_dir))
             _print_extracted_result(r)
-            _auto_approve(year_dir, accounts, args)
-            return EXIT_SOME_FILES_REJECTED if r.rejected else 0
+            code = _auto_approve_after(year_dir, accounts, args, "取り込みは完了しています")
+            return EXIT_SOME_FILES_REJECTED if r.rejected else code
         if args.command == "set-accounts":
             sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
             count = set_accounts(year_dir, accounts, load_updates(args.file), payment_accounts(sources))
             print(f"科目候補: {count}件を反映しました")
-            _auto_approve(year_dir, accounts, args)
-            return 0
+            return _auto_approve_after(year_dir, accounts, args, "科目候補の反映は完了しています")
         if args.command == "review":
             s = write_review(year_dir)
             print(f"確認用Excel: {s.path}")
@@ -188,6 +200,8 @@ def main(argv=None):
                       + "（review を出し直して確認）")
             if r.missing:
                 print("staging.csv に無い取り込み元ID（登録済み・削除済み）: " + "、".join(r.missing))
+            if r.not_done_marks:
+                print(f"承認欄に『済』以外が書かれた行：{r.not_done_marks}件（承認していません）")
             return 0
         if args.command == "approve":
             if args.ids:

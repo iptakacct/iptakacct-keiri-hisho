@@ -313,3 +313,57 @@ def test_approve_by_review_numbers(tmp_path, capsys):
         main(["approve", "--year-dir", str(year), "--ids", "bank:a", "--review-file", str(review)])
     assert main(["approve", "--year-dir", str(year), "--review-file", str(review)]) == 1
     assert "--numbers" in capsys.readouterr().err
+
+
+# --- F9：取り込み後の自動承認だけが失敗したとき ---
+
+def _failing_auto_approve(monkeypatch):
+    import cli
+    from common import KessanError
+
+    def failing(*args, **kwargs):
+        raise KessanError("staging.csv に書き込めません（Excelで開いていたら閉じてから再実行）")
+
+    monkeypatch.setattr(cli, "auto_approve", failing)
+
+
+def test_auto_approve_failure_after_import_returns_1_and_says_import_completed(tmp_path, capsys, monkeypatch):
+    year = make_instance(tmp_path)
+    csv_path = write_bank_csv(year / "inbox")
+    _failing_auto_approve(monkeypatch)
+    assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 1
+    captured = capsys.readouterr()
+    assert "取り込み: 追加 2件" in captured.out
+    assert "取り込みは完了しています" in captured.err
+    assert "staging.csv に書き込めません" in captured.err
+    assert len(read_rows(year / "staging.csv")) == 2
+
+
+def test_auto_approve_failure_with_rejected_files_returns_4(tmp_path, capsys, monkeypatch):
+    from helpers import cash_book, write_document
+    year = make_instance(tmp_path)
+    write_document(year, cash_book())
+    (year / "extracted" / "壊れた.json").write_text("{", encoding="utf-8")
+    _failing_auto_approve(monkeypatch)
+    assert main(["import-extracted", "--year-dir", str(year)]) == 4
+    captured = capsys.readouterr()
+    assert "形式エラーのため取り込んでいません: 壊れた.json" in captured.out
+    assert "staging.csv に書き込めません" in captured.err
+
+
+def test_apply_review_reports_marks_other_than_done(tmp_path, capsys):
+    from openpyxl import load_workbook
+    from review_xlsx import REVIEW_COLUMNS
+    year = make_instance(tmp_path)
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [
+        staging_row(日付="2025-04-05", 借方科目="雑費", 借方金額="500", 貸方科目="普通預金", 貸方補助="サンプル銀行",
+                    貸方金額="500", 摘要="ATM", 取り込み元ID="bank:a"),
+    ])
+    assert main(["review", "--year-dir", str(year)]) == 0
+    (review,) = (year / "output").glob("review-*.xlsx")
+    workbook = load_workbook(review)
+    workbook["確認"].cell(row=2, column=REVIEW_COLUMNS.index("承認") + 1).value = "OK"
+    workbook.save(review)
+    capsys.readouterr()
+    assert main(["apply-review", "--year-dir", str(year), "--file", str(review)]) == 0
+    assert "承認欄に『済』以外が書かれた行：1件（承認していません）" in capsys.readouterr().out
