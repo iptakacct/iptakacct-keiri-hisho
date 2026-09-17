@@ -8,6 +8,7 @@
   python ../.claude/scripts/kessan/cli.py set-accounts --year-dir <Y> --file <Y>/output/set-accounts-20260917.json
   python ../.claude/scripts/kessan/cli.py review --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
+  python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-20260917.xlsx --numbers 3 5
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --ids bank:… receipt:…
   python ../.claude/scripts/kessan/cli.py unimport --year-dir <Y> --source inbox/通帳-2025-04.pdf
   python ../.claude/scripts/kessan/cli.py discard --year-dir <Y> --ids bank:… --reason "二重取り込み（オーナー確認済み）"
@@ -23,7 +24,7 @@ import sys
 from pathlib import Path
 
 from accounts import load_accounts
-from accounts_update import apply_review, approve, load_updates, set_accounts
+from accounts_update import apply_review, approve, approve_numbers, load_updates, set_accounts
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
 from common import KessanError, init_year_dir
@@ -62,7 +63,10 @@ def _parser():
         if name in ("set-accounts", "apply-review"):
             p.add_argument("--file", required=True, type=Path)
         if name == "approve":
-            p.add_argument("--ids", required=True, nargs="+", help="承認する取り込み元ID")
+            target = p.add_mutually_exclusive_group(required=True)
+            target.add_argument("--ids", nargs="+", help="承認する取り込み元ID")
+            target.add_argument("--review-file", type=Path, help="オーナーが番号で承認した確認用Excel（--numbers と使う）")
+            p.add_argument("--numbers", nargs="+", help="確認用Excelの番号（--review-file と使う）")
         if name == "unimport":
             p.add_argument("--source", required=True, help="取り消す資料（inbox/…。銀行CSVはファイル名でも可）")
         if name == "discard":
@@ -186,7 +190,21 @@ def main(argv=None):
                 print("staging.csv に無い取り込み元ID（登録済み・削除済み）: " + "、".join(r.missing))
             return 0
         if args.command == "approve":
-            print(f"承認: {approve(year_dir, accounts, args.ids)}件")
+            if args.ids:
+                if args.numbers:
+                    raise KessanError("--numbers は --review-file と一緒に使います（--ids とは一緒に使えません）")
+                print(f"承認: {approve(year_dir, accounts, args.ids)}件")
+                return 0
+            if not args.numbers:
+                raise KessanError("--review-file には、承認する番号を --numbers で指定してください")
+            r = approve_numbers(year_dir, accounts, read_review(args.review_file), args.numbers)
+            print(f"承認: {r.approved}件")
+            if r.changed:
+                print("Excel出力後に内容が変わったため承認していない行："
+                      + "、".join(f"番号 {n}（{source_id}）" for n, source_id in r.changed) + "（review を出し直して確認）")
+            if r.missing:
+                print("staging.csv に無い行（登録済み・取り消し済み）："
+                      + "、".join(f"番号 {n}（{source_id}）" for n, source_id in r.missing))
             return 0
         if args.command == "unimport":
             r = unimport(year_dir, args.source)

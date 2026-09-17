@@ -214,3 +214,44 @@ def apply_review(year_dir, accounts, review_rows):
     if approved or unapproved:
         _write_staging(year_dir, staging)
     return ApplyReviewResult(approved=approved, unapproved=unapproved, memos=memos, missing=missing, changed=changed)
+
+
+@dataclass(frozen=True)
+class ApproveNumbersResult:
+    approved: int   # 承認=済 にした行数
+    changed: list   # [(番号, 取り込み元ID)]。確認用Excel出力後に staging.csv の内容が変わったため承認していない
+    missing: list   # [(番号, 取り込み元ID)]。staging.csv に無い（登録済み・取り消し済み）
+
+
+def approve_numbers(year_dir, accounts, review_rows, numbers):
+    """チャットでオーナーが確認用Excelの番号を挙げて承認したときに使う（approve --review-file --numbers）。
+
+    番号を確認用Excelで取り込み元IDに置き換え、apply_review と同じ指紋の確認をする。Excel出力後に内容が
+    変わった行は承認しない（オーナーが見た内容と違うため）。確認用Excelに無い番号が1つでもあれば何も変えない。
+    """
+    year_dir = Path(year_dir)
+    wanted_numbers = list(dict.fromkeys(str(n).strip() for n in numbers if str(n).strip()))
+    if not wanted_numbers:
+        raise KessanError("承認する番号がありません")
+    by_number = {r.get("番号", ""): r for r in review_rows if r.get("番号", "")}
+    unknown = [n for n in wanted_numbers if n not in by_number]
+    if unknown:
+        raise KessanError(f"確認用Excelに無い番号 {'・'.join(unknown)} があります（何も変更していません。"
+                          "番号は確認用Excelのシート「確認」の番号列）")
+    staging = read_rows(year_dir / "staging.csv")
+    index = _rows_by_id(staging)
+    wanted, changed, missing = [], [], []
+    for n in wanted_numbers:
+        review_row = by_number[n]
+        source_id = review_row["取り込み元ID"]
+        if source_id not in index:
+            missing.append((int(n) if n.isdigit() else n, source_id))
+        elif _fingerprint_matches(index[source_id], review_row.get(FINGERPRINT_COLUMN, "")):
+            if source_id not in wanted:
+                wanted.append(source_id)
+        else:
+            changed.append((int(n) if n.isdigit() else n, source_id))
+    approved = _approve_rows(staging, accounts, wanted) if wanted else 0
+    if approved:
+        _write_staging(year_dir, staging)
+    return ApproveNumbersResult(approved=approved, changed=changed, missing=missing)

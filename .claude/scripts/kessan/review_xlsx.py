@@ -163,7 +163,7 @@ def write_review(year_dir, today=None):
 
 
 def read_review(path):
-    """確認用Excelのシート「確認」から、取り込み元IDのある行の {取り込み元ID, 承認, 修正メモ, 確認用指紋} を返す。
+    """確認用Excelのシート「確認」から、取り込み元IDのある行の {取り込み元ID, 承認, 修正メモ, 確認用指紋, 番号} を返す。
 
     確認用指紋は列自体が無い（古い形式のファイル等）行・ファイルでは空文字にする
     （apply_review 側で「出力後に内容が変わった」扱いにして承認しない）。
@@ -187,6 +187,7 @@ def read_review(path):
         raise KessanError(f"{path.name} のシート「{REVIEW_SHEET}」に列 {'・'.join(missing)} がありません")
     index = {c: header.index(c) for c in READ_BACK_COLUMNS}
     fingerprint_index = header.index(FINGERPRINT_COLUMN) if FINGERPRINT_COLUMN in header else None
+    number_index = header.index("番号") if "番号" in header else None
     rows = []
     for line in values[1:]:
         row = {c: "" if i >= len(line) or line[i] is None else str(line[i]).strip() for c, i in index.items()}
@@ -194,6 +195,10 @@ def read_review(path):
             row[FINGERPRINT_COLUMN] = ""
         else:
             row[FINGERPRINT_COLUMN] = str(line[fingerprint_index]).strip()
+        number = line[number_index] if number_index is not None and number_index < len(line) else None
+        if isinstance(number, float) and number.is_integer():
+            number = int(number)
+        row["番号"] = "" if number is None else str(number).strip()
         if row["取り込み元ID"]:
             rows.append(row)
     return rows

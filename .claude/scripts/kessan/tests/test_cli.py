@@ -284,3 +284,32 @@ def test_unimport_and_discard_commands(tmp_path, capsys):
     assert "取り込みを取り消しました: inbox/通帳-2025-04.pdf" in out
     assert fee_id in out
     assert read_rows(year / "staging.csv") == []
+
+
+# --- F6：approve --review-file --numbers ---
+
+def test_approve_by_review_numbers(tmp_path, capsys):
+    import json
+    import pytest
+    year = make_instance(tmp_path)
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [
+        staging_row(日付="2025-04-05", 借方科目="雑費", 借方金額="500", 貸方科目="普通預金", 貸方補助="サンプル銀行",
+                    貸方金額="500", 摘要="ATM", 取り込み元ID="bank:a"),
+        staging_row(日付="2025-04-06", 借方科目="雑費", 借方金額="700", 貸方科目="普通預金", 貸方補助="サンプル銀行",
+                    貸方金額="700", 摘要="ATM2", 取り込み元ID="bank:b"),
+    ])
+    assert main(["review", "--year-dir", str(year)]) == 0
+    (review,) = (year / "output").glob("review-*.xlsx")
+    path = tmp_path / "set.json"
+    path.write_text(json.dumps({"bank:b": {"借方科目": "会議費"}}, ensure_ascii=False), encoding="utf-8")
+    assert main(["set-accounts", "--year-dir", str(year), "--file", str(path)]) == 0
+    capsys.readouterr()
+    assert main(["approve", "--year-dir", str(year), "--review-file", str(review), "--numbers", "1", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "承認: 1件" in out
+    assert "番号 2（bank:b）" in out
+    assert [r["承認"] for r in read_rows(year / "staging.csv")] == ["済", ""]
+    with pytest.raises(SystemExit):
+        main(["approve", "--year-dir", str(year), "--ids", "bank:a", "--review-file", str(review)])
+    assert main(["approve", "--year-dir", str(year), "--review-file", str(review)]) == 1
+    assert "--numbers" in capsys.readouterr().err

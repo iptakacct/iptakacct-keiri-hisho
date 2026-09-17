@@ -237,3 +237,35 @@ def test_apply_review_from_workbook_without_fingerprint_column_approves_nothing(
     assert (result.approved, result.changed) == (0, ["bank:a"])
     rows = {r["取り込み元ID"]: r for r in read_rows(year_dir / "staging.csv")}
     assert rows["bank:a"]["承認"] == ""
+
+
+# --- F6：チャットで確認用Excelの番号を言われたときの承認（指紋を確認する） ---
+
+def test_approve_numbers_maps_to_ids_and_checks_fingerprint(year_dir, accounts):
+    from accounts_update import approve_numbers
+    setup(year_dir)
+    path = write_review(year_dir, today=TODAY).path  # 1: bank:a / 2: receipt:r1 / 3: bank:auto
+    set_accounts(year_dir, accounts, {"receipt:r1": {"借方科目": "交際費"}}, set())
+    result = approve_numbers(year_dir, accounts, read_review(path), [1, 2])
+    assert (result.approved, result.changed, result.missing) == (1, [(2, "receipt:r1")], [])
+    rows = {r["取り込み元ID"]: r for r in read_rows(year_dir / "staging.csv")}
+    assert (rows["bank:a"]["承認"], rows["receipt:r1"]["承認"]) == ("済", "")
+
+
+def test_approve_numbers_rejects_unknown_number(year_dir, accounts):
+    from accounts_update import approve_numbers
+    setup(year_dir)
+    path = write_review(year_dir, today=TODAY).path
+    before = (year_dir / "staging.csv").read_bytes()
+    with pytest.raises(KessanError, match="番号 9"):
+        approve_numbers(year_dir, accounts, read_review(path), [1, 9])
+    assert (year_dir / "staging.csv").read_bytes() == before
+
+
+def test_approve_numbers_reports_rows_no_longer_in_staging(year_dir, accounts):
+    from accounts_update import approve_numbers
+    setup(year_dir)
+    path = write_review(year_dir, today=TODAY).path
+    setup(year_dir, rows=[pending_bank()])
+    result = approve_numbers(year_dir, accounts, read_review(path), [1, 2])
+    assert (result.approved, result.missing) == (1, [(2, "receipt:r1")])
