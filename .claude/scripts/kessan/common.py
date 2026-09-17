@@ -130,6 +130,32 @@ def normalize_key(value):
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
 
 
+REASON_SEPARATOR = "／"
+
+
+def split_reasons(text):
+    """要確認理由を「／」で分けた部分の一覧にする（前後の空白を除き、空の部分は捨てる）。"""
+    return [part.strip() for part in str(text or "").split(REASON_SEPARATOR) if part.strip()]
+
+
+def add_reasons(text, *new):
+    """要確認理由に new の部分を追記する（既にある部分は足さない。順序は保つ）。
+
+    スクリプトが付けた理由は追記だけで消さない。消してよいのは remove_reason で明示した部分だけ。
+    """
+    parts = split_reasons(text)
+    for reason in new:
+        for part in split_reasons(reason):
+            if part not in parts:
+                parts.append(part)
+    return REASON_SEPARATOR.join(parts)
+
+
+def remove_reason(text, reason):
+    """要確認理由から、reason と完全に一致する部分だけを除く（相手科目未設定を外すときに使う）。"""
+    return REASON_SEPARATOR.join(part for part in split_reasons(text) if part != reason)
+
+
 PERIOD_FILE = "period.yaml"
 
 

@@ -139,7 +139,8 @@ def test_unset_counter_account_with_space_chars_is_approved(year_dir, tmp_path, 
 
 
 def test_ai_candidate_that_differs_is_flagged(year_dir, tmp_path, accounts, abbreviations):
-    result = run(year_dir, tmp_path, accounts, abbreviations, [fee(借方科目="雑費")])
+    # set-accounts で相手科目を入れた後の行（相手科目未設定は外れている）
+    result = run(year_dir, tmp_path, accounts, abbreviations, [fee(借方科目="雑費", 要確認理由="")])
     assert (result.approved, result.conflicts) == (0, 1)
     (row,) = read_rows(year_dir / "staging.csv")
     assert (row["借方科目"], row["承認"], row["要確認理由"]) == ("雑費", "", "確立済みパターン「振込手数料」（支払手数料）と科目候補が違う")
@@ -153,7 +154,8 @@ def test_two_patterns_with_different_accounts_conflict(year_dir, tmp_path, accou
     text = PATTERNS_YAML + "  - 名前: 雑費の手数料\n    入出金: 出金\n    摘要キーワード: テスウ\n    科目: 雑費\n"
     result = run(year_dir, tmp_path, accounts, abbreviations, [fee()], text=text)
     assert (result.approved, result.conflicts) == (0, 1)
-    assert read_rows(year_dir / "staging.csv")[0]["要確認理由"] == "確立済みパターンが複数一致（振込手数料・雑費の手数料）"
+    # 要確認理由は追記だけ（相手科目はまだ空なので「相手科目未設定」も残る）
+    assert read_rows(year_dir / "staging.csv")[0]["要確認理由"] == "相手科目未設定／確立済みパターンが複数一致（振込手数料・雑費の手数料）"
 
 
 def test_nothing_to_change_does_not_rewrite_file(year_dir, tmp_path, accounts, abbreviations, monkeypatch):

@@ -17,7 +17,7 @@ import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, append_rows, load_period, parse_amount, parse_date, read_rows,
+    KessanError, add_reasons, append_rows, load_period, parse_amount, parse_date, read_rows, remove_reason,
 )
 from evidence import STATE_NEW_ENTRY, STATE_UNPAID, read_evidence
 from match import MATCH_WINDOW_DAYS
@@ -260,10 +260,9 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         staged = _staging_row(subject, sub, file_name, row, source_id)
         side = "借方" if row["入金"] else "貸方"
         match = bank_lines.get((side, subject, sub, row["日付"], row["入金"] or row["出金"]), set())
-        if match - {source_id}:
-            reason = staged["要確認理由"]
-            staged["要確認理由"] = (SUSPECTED_DOUBLE_IMPORT if reason == UNSET_COUNTER_ACCOUNT
-                                  else f"{reason}／{SUSPECTED_DOUBLE_IMPORT}")
+        if match - {source_id}:  # より強い理由を付けるときは「相手科目未設定」の部分だけ外す（他の理由は残す）
+            staged["要確認理由"] = add_reasons(remove_reason(staged["要確認理由"], UNSET_COUNTER_ACCOUNT),
+                                             SUSPECTED_DOUBLE_IMPORT)
         if row["出金"]:  # 支払側（出金）の新しい行は、対応しそうな証憑が無いか確認する
             near = _near_evidence(evidence_rows, row["日付"], row["出金"])
             extra_reasons = []
@@ -271,8 +270,7 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
                 extra_reasons.append(SUSPECTED_DOUBLE_BOOKED_RECEIPT)
             if any(r["状態"] == STATE_UNPAID for r in near):
                 extra_reasons.append(MATCHES_UNPAID_RECEIPT)
-            if extra_reasons:
-                staged["要確認理由"] = "／".join([staged["要確認理由"], *extra_reasons])
+            staged["要確認理由"] = add_reasons(staged["要確認理由"], *extra_reasons)
         new_rows.append((row, staged))
         if row["残高"] is not None:
             new_balances.append({

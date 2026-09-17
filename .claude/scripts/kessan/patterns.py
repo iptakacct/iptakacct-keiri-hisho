@@ -11,7 +11,10 @@ from pathlib import Path
 import yaml
 
 from bank_import import UNSET_COUNTER_ACCOUNT
-from common import STAGING_COLUMNS, KessanError, ensure_writable, parse_amount, project, read_rows, replace_rows
+from common import (
+    STAGING_COLUMNS, KessanError, add_reasons, ensure_writable, parse_amount, project, read_rows, remove_reason,
+    replace_rows, split_reasons,
+)
 from match import expand_abbreviations, name_in_description
 
 DIRECTIONS = ("入金", "出金")
@@ -127,8 +130,7 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
     approved = conflicts = 0
     changed = False
     for row in staging:
-        reason = row["要確認理由"].strip()
-        check_allowed = reason == "" or reason == UNSET_COUNTER_ACCOUNT
+        check_allowed = split_reasons(row["要確認理由"]) in ([], [UNSET_COUNTER_ACCOUNT])
         if (row["承認"].strip() == "済" or not row["取り込み元ID"].strip().startswith("bank:") or row["伝票番号"].strip()
                 or row["読み取り信頼度"].strip() != "高"
                 or not check_allowed):
@@ -150,14 +152,17 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
         else:
             row.update({
                 f"{counter}科目": targets[0][0], f"{counter}補助": targets[0][1],
-                "判定": ESTABLISHED, "承認": "済", "要確認理由": f"確立済みパターン「{matched[0].name}」",
+                "判定": ESTABLISHED, "承認": "済",
+                "要確認理由": add_reasons(remove_reason(row["要確認理由"], UNSET_COUNTER_ACCOUNT),
+                                     f"確立済みパターン「{matched[0].name}」"),
             })
             approved += 1
             changed = True
             continue
         conflicts += 1
-        if row["要確認理由"] != reason:
-            row["要確認理由"] = reason
+        updated = add_reasons(row["要確認理由"], reason)
+        if row["要確認理由"] != updated:
+            row["要確認理由"] = updated
             changed = True
     if changed:
         ensure_writable(year_dir, ["staging.csv"])

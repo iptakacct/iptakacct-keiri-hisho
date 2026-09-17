@@ -19,9 +19,10 @@ def run(year_dir, tmp_path, accounts, *documents, extra=""):
     return import_extracted(year_dir, write_sources(tmp_path, extra), accounts, paths, now=NOW)
 
 
-def bank_line(source_id, date, amount=5500, subject="普通預金", sub="サンプル銀行"):
+def bank_line(source_id, date, amount=5500, subject="普通預金", sub="サンプル銀行", **extra):
     return staging_row(日付=date, 借方金額=str(amount), 貸方科目=subject, 貸方補助=sub, 貸方金額=str(amount),
-                       摘要="カード テストブングテン", 取り込み元ID=source_id, 判定="要確認", 要確認理由="相手科目未設定")
+                       摘要="カード テストブングテン", 取り込み元ID=source_id, 判定="要確認",
+                       **{"要確認理由": "相手科目未設定", **extra})
 
 
 def write_staging(year_dir, rows):
@@ -336,3 +337,40 @@ def test_template_receipt_default_is_unset():
     from match import receipt_default
     template = Path(__file__).resolve().parents[4] / "テンプレート" / "context" / "company" / "kessan-sources.yaml"
     assert receipt_default(load_sources(template)) == ""
+
+
+# --- F1：証憑の突き合わせでスクリプトの要確認理由を消さない・日付金額の重複を全分岐で見る ---
+
+@pytest.mark.parametrize("existing", [
+    "ページの残高が連続しない",
+    "相手科目未設定／証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）",
+])
+def test_matched_receipt_keeps_existing_reasons(year_dir, tmp_path, accounts, existing):
+    write_staging(year_dir, [bank_line("bank:a", "2025-04-10", 要確認理由=existing)])
+    run(year_dir, tmp_path, accounts, receipt())
+    (row,) = read_rows(year_dir / "staging.csv")
+    kept = existing.replace("相手科目未設定／", "")
+    assert row["要確認理由"] == f"{kept}／証憑と一致"
+
+
+def test_rephotographed_receipt_matching_a_bank_line_is_flagged(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    first_id = make_evidence_id("2025-04-10", 5500, "テスト文具店")
+    rows = read_rows(year_dir / "staging.csv")
+    write_staging(year_dir, rows + [bank_line("bank:a", "2025-04-10")])
+    again = receipt(資料="inbox/領収書-0002.jpg", 取引先="テスト文房具店")
+    result = run(year_dir, tmp_path, accounts, again)
+    assert result.evidence == {"明細に対応": 1}
+    bank = read_rows(year_dir / "staging.csv")[1]
+    assert "証憑と一致" in bank["要確認理由"]
+    assert f"証憑の重複の疑い（証憑ID {first_id} と日付・金額が一致）" in bank["要確認理由"]
+
+
+def test_same_date_and_amount_without_a_row_to_flag_is_reported(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, receipt(支払方法の推定="立替"))
+    first_id = make_evidence_id("2025-04-10", 5500, "テスト文具店")
+    rows = read_rows(year_dir / "staging.csv")
+    write_staging(year_dir, rows + [bank_line("bank:a", "2025-04-09"), bank_line("bank:b", "2025-04-11")])
+    result = run(year_dir, tmp_path, accounts, receipt(資料="inbox/領収書-0002.jpg", 取引先="テスト文房具店"))
+    assert result.evidence == {"複数候補": 1}
+    assert result.receipt_same_date_amount == [("inbox/領収書-0002.jpg", first_id)]

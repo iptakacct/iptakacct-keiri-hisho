@@ -20,10 +20,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from bank_import import load_sources, normalize_description, stage_statement_rows
+from bank_import import UNSET_COUNTER_ACCOUNT, load_sources, normalize_description, stage_statement_rows
 from common import (
-    IMPORT_LOG_COLUMNS, STAGING_COLUMNS, KessanError, append_rows, cannot_write, ensure_writable, load_period,
-    project, read_rows, replace_rows,
+    IMPORT_LOG_COLUMNS, STAGING_COLUMNS, KessanError, add_reasons, append_rows, cannot_write, ensure_writable,
+    load_period, project, read_rows, remove_reason, replace_rows,
 )
 from evidence import (
     CANDIDATE_SEPARATOR, EVIDENCE_FILE, STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID,
@@ -53,6 +53,8 @@ class ExtractedImportResult:
     evidence: Counter = field(default_factory=Counter)        # 証憑の状態（明細に対応／新規仕訳／複数候補／未払候補）→ 件数
     receipt_duplicates: list = field(default_factory=list)    # (資料, 重複していた既存の証憑ID) の一覧。取り込みは止めない
     resumed: list = field(default_factory=list)               # import-log.csv の書き込み失敗後の再実行で、記録だけ埋めた資料
+    receipt_same_date_amount: list = field(default_factory=list)  # (資料, 日付・金額が同じ既存の証憑ID「・」区切り)。
+    # 要確認理由を書ける行が無かった（複数候補・未払候補・登録済みの明細に対応 等）ため、ここで報告する
 
     def add(self, r):
         self.added += r.added
@@ -154,6 +156,8 @@ def _import_receipt(year_dir, data, sources, result, now):
     candidates = find_candidates(lines, data, accounts_for_payment, attached_source_ids(evidence_rows))
     suspected = [r["証憑ID"] for r in evidence_rows
                  if r["日付"] == data["日付"] and r["金額"] == str(data["金額"]) and r["証憑ID"] != duplicate_of]
+    suspected_reason = (f"{SUSPECTED_DUPLICATE_RECEIPT}（証憑ID {'・'.join(suspected)} と日付・金額が一致）"
+                        if suspected else None)
 
     staging_changed = False
     new_row = None
@@ -165,10 +169,11 @@ def _import_receipt(year_dir, data, sources, result, now):
             r["借方科目"] = data["科目候補"]
             r["借方補助"] = data.get("補助候補", "") if data["科目候補"] else ""
             r["取引先"] = r["取引先"] or data["取引先"]
-            reason = MATCHED_RECEIPT
-            if duplicate_reason:
-                reason = f"{reason}／{duplicate_reason}"
-            r["要確認理由"] = reason
+            reasons = r["要確認理由"]
+            if r["借方科目"].strip() and r["貸方科目"].strip():
+                reasons = remove_reason(reasons, UNSET_COUNTER_ACCOUNT)
+            # 既存の理由（ページの残高が連続しない・二重計上の疑い等）は消さずに追記する
+            r["要確認理由"] = add_reasons(reasons, MATCHED_RECEIPT, suspected_reason, duplicate_reason)
             if data["自信度"] == "低":
                 r["読み取り信頼度"] = "低"
             staging_changed = True
@@ -182,10 +187,7 @@ def _import_receipt(year_dir, data, sources, result, now):
             state, source_id = STATE_NEW_ENTRY, receipt_source_id(evidence_id)
             if source_id not in {r["取り込み元ID"].strip() for r in lines}:
                 subject, sub, reason = credit
-                if suspected:
-                    reason = f"{reason}／{SUSPECTED_DUPLICATE_RECEIPT}（証憑ID {'・'.join(suspected)} と日付・金額が一致）"
-                if duplicate_reason:
-                    reason = f"{reason}／{duplicate_reason}"
+                reason = add_reasons(reason, suspected_reason, duplicate_reason)
                 amount = str(data["金額"])
                 new_row = dict.fromkeys(STAGING_COLUMNS, "")
                 new_row.update({
@@ -220,6 +222,8 @@ def _import_receipt(year_dir, data, sources, result, now):
         result.added += 1
     if duplicate_of:
         result.receipt_duplicates.append((data["資料"], duplicate_of))
+    if suspected and not (staging_changed or new_row):
+        result.receipt_same_date_amount.append((data["資料"], "・".join(suspected)))
 
 
 def import_extracted(year_dir, sources_path, accounts, files, now=None):

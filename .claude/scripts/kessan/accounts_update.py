@@ -9,7 +9,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from common import STAGING_COLUMNS, KessanError, ensure_writable, parse_amount, project, read_rows, replace_rows
+from bank_import import UNSET_COUNTER_ACCOUNT
+from common import (
+    STAGING_COLUMNS, KessanError, add_reasons, ensure_writable, parse_amount, project, read_rows, remove_reason,
+    replace_rows,
+)
 from review_xlsx import FINGERPRINT_COLUMN, row_fingerprint
 
 SET_FIELDS = ("借方科目", "借方補助", "貸方科目", "貸方補助", "取引先", "判定", "要確認理由")
@@ -80,6 +84,8 @@ def set_accounts(year_dir, accounts, updates, payment_accounts):
     """updates：{取り込み元ID: {借方科目, 借方補助, 貸方科目, 貸方補助, 取引先, 判定, 要確認理由}}（書く列だけでよい）。
 
     payment_accounts：kessan-sources.yaml の口座・カード・現金の (科目, 補助)。明細側の科目は書き換えさせない。
+    要確認理由は上書きせず、既存の理由（スクリプトが付けた二重計上の疑い等）に追記する。スクリプトが外すのは
+    「相手科目未設定」だけで、借方科目・貸方科目の両方が埋まったときに限る。
     反映した行数を返す。
     """
     year_dir = Path(year_dir)
@@ -94,7 +100,11 @@ def set_accounts(year_dir, accounts, updates, payment_accounts):
         raise KessanError("科目候補を反映できません（何も変更していません）:\n" + "\n".join(errors))
     for source_id, values in updates.items():
         (row,) = index[source_id]
-        row.update({k: v.strip() for k, v in values.items()})
+        row.update({k: v.strip() for k, v in values.items() if k != "要確認理由"})
+        reasons = row["要確認理由"]
+        if row["借方科目"].strip() and row["貸方科目"].strip():
+            reasons = remove_reason(reasons, UNSET_COUNTER_ACCOUNT)
+        row["要確認理由"] = add_reasons(reasons, values.get("要確認理由", ""))
         row["判定"] = AI_JUDGEMENT
     _write_staging(year_dir, staging)
     return len(updates)

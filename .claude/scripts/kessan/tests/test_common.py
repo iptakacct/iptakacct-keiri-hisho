@@ -165,3 +165,25 @@ def test_ensure_writable_reports_locked_file(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "open", locked_open)
     with pytest.raises(KessanError, match="evidence.csv に書き込めません（Excelで開いていたら閉じてから再実行）"):
         ensure_writable(tmp_path, ["none.csv", "evidence.csv"])
+
+
+# --- 要確認理由の部品（F1：スクリプトが付けた理由は追記のみで消さない） ---
+
+def test_split_reasons_drops_empty_parts_and_spaces():
+    from common import split_reasons
+    assert split_reasons(" 相手科目未設定 ／／証憑と一致／ ") == ["相手科目未設定", "証憑と一致"]
+    assert split_reasons("") == []
+    assert split_reasons(None) == []
+
+
+def test_add_reasons_appends_only_new_parts_in_order():
+    from common import add_reasons
+    assert add_reasons("ページの残高が連続しない", "証憑と一致") == "ページの残高が連続しない／証憑と一致"
+    assert add_reasons("A／B", "B", "C", "", None, "A") == "A／B／C"
+    assert add_reasons("", "X／Y") == "X／Y"
+
+
+def test_remove_reason_removes_only_the_exact_part():
+    from common import remove_reason
+    assert remove_reason("相手科目未設定／ページの残高が連続しない", "相手科目未設定") == "ページの残高が連続しない"
+    assert remove_reason("相手科目未設定（補足）", "相手科目未設定") == "相手科目未設定（補足）"

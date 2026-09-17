@@ -96,6 +96,9 @@ def _print_extracted_result(r):
     if r.receipt_duplicates:
         print("重複の疑いがある証憑（取り込みは止めていません）: "
               + "、".join(f"{name}（既存の証憑ID {existing_id}）" for name, existing_id in r.receipt_duplicates))
+    if r.receipt_same_date_amount:
+        print("日付・金額が同じ既存の証憑がある証憑（証憑の重複の疑い。要確認理由を書ける行が無いため、ここで確認）: "
+              + "、".join(f"{name}（既存の証憑ID {ids}）" for name, ids in r.receipt_same_date_amount))
     if r.resumed:
         print("前回 import-log.csv の書き込みに失敗した後の再実行で、記録だけ埋めた資料: " + "、".join(r.resumed))
     if r.already_imported:

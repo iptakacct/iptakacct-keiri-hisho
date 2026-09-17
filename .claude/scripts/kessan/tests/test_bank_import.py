@@ -337,3 +337,15 @@ def test_negative_deposit_with_withdrawal_is_both_sides(year_dir, tmp_path):
     text = HEADER + "2025/04/10,300,-500,両方,\n"
     with pytest.raises(KessanError, match="入金と出金の両方"):
         import_bank(year_dir, write_sources(tmp_path), "main", write_bank_csv(tmp_path, "neg.csv", text), now=NOW)
+
+
+def test_suspected_double_import_keeps_other_reasons(year_dir, tmp_path):
+    """F1: 二重取り込みの疑いを付けるとき、外すのは「相手科目未設定」だけで他の理由は残す。"""
+    from bank_import import stage_statement_rows
+    sources = write_sources(tmp_path)
+    import_bank(year_dir, sources, "main", write_bank_csv(tmp_path), now=NOW)
+    row = {"日付": "2025-04-05", "入金": 0, "出金": 3300, "摘要": "テスウリヨウ（再読）", "残高": None,
+           "読み取り信頼度": "低", "要確認理由": "ページの残高が連続しない"}
+    stage_statement_rows(year_dir, "main", "普通預金", "サンプル銀行", "inbox/通帳.pdf", [row], log_id="main", now=NOW)
+    assert read_rows(year_dir / "staging.csv")[-1]["要確認理由"] == (
+        "ページの残高が連続しない／取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）")

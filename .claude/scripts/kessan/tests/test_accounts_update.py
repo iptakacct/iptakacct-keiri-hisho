@@ -112,3 +112,35 @@ def test_approved_rows_can_be_posted(year_dir, accounts):
     assert (result.vouchers, result.remaining) == (["1"], 0)
     (posted,) = read_rows(year_dir / "journal.csv")
     assert (posted["借方科目"], posted["貸方科目"], posted["登録区分"]) == ("支払手数料", "普通預金", "確認済")
+
+
+# --- F1：スクリプトが付けた要確認理由は set-accounts で消えない ---
+
+DOUBLE_BOOKED = "証憑から計上済みの仕訳と金額・日付が近い（二重計上の疑い）"
+
+
+def test_set_accounts_cannot_erase_script_reasons_and_auto_approve_skips_row(year_dir, accounts, tmp_path):
+    from match import load_abbreviations
+    from patterns import auto_approve, load_patterns
+    write_staging(year_dir, [fee(要確認理由=f"相手科目未設定／{DOUBLE_BOOKED}")])
+    set_accounts(year_dir, accounts, {"bank:a": {"借方科目": "支払手数料", "要確認理由": ""}}, PAYMENT)
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert row["要確認理由"] == DOUBLE_BOOKED
+    path = tmp_path / "kessan-patterns.yaml"
+    path.write_text("patterns:\n  - 名前: 振込手数料\n    入出金: 出金\n    摘要キーワード: テスウリヨウ\n    科目: 支払手数料\n",
+                    encoding="utf-8")
+    result = auto_approve(year_dir, accounts, load_patterns(path, accounts), PAYMENT, load_abbreviations())
+    assert result.approved == 0
+    assert read_rows(year_dir / "staging.csv")[0]["承認"] == ""
+
+
+def test_set_accounts_appends_ai_reason_to_existing_reasons(year_dir, accounts):
+    write_staging(year_dir, [fee(要確認理由="相手科目未設定／ページの残高が連続しない")])
+    set_accounts(year_dir, accounts, {"bank:a": {"借方科目": "支払手数料", "要確認理由": "新規の摘要"}}, PAYMENT)
+    assert read_rows(year_dir / "staging.csv")[0]["要確認理由"] == "ページの残高が連続しない／新規の摘要"
+
+
+def test_set_accounts_keeps_unset_reason_while_counter_account_is_empty(year_dir, accounts):
+    write_staging(year_dir, [fee()])
+    set_accounts(year_dir, accounts, {"bank:a": {"取引先": "サンプル銀行", "要確認理由": "摘要が読めない"}}, PAYMENT)
+    assert read_rows(year_dir / "staging.csv")[0]["要確認理由"] == "相手科目未設定／摘要が読めない"
