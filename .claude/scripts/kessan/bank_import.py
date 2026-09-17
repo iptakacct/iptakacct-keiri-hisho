@@ -17,8 +17,8 @@ import yaml
 
 from common import (
     IMPORT_LOG_COLUMNS, STAGING_COLUMNS, STATEMENT_BALANCE_COLUMNS,
-    KessanError, add_reasons, append_rows, cannot_write, discarded_source_ids, ensure_writable, load_period, parse_amount, parse_date,
-    project, read_rows, remove_reason, replace_rows,
+    KessanError, add_reasons, append_rows, cannot_write, discarded_source_ids, ensure_writable, load_period, parse_amount,
+    parse_date, project, read_rows, remove_reason, replace_rows,
 )
 from evidence import STATE_NEW_ENTRY, STATE_UNPAID, read_evidence
 from match import MATCH_WINDOW_DAYS
@@ -210,14 +210,14 @@ def _near_evidence(evidence_rows, target_date_str, amount):
     return found
 
 
-def _overlapping_imports(log, account_id, rows):
+def _overlapping_imports(log, account_id, rows, file_name):
     dates = [r["日付"] for r in rows if r["入金"] or r["出金"]]
     if not dates:
         return []
     low, high = min(dates), max(dates)
     found = []
     for r in log:
-        if r["口座ID"] != account_id:
+        if r["口座ID"] != account_id or r["ファイル名"] == file_name:  # 同じ資料の再実行では、自分自身の記録を挙げない
             continue
         period = r["対象期間"].split("〜")
         if len(period) != 2:
@@ -227,14 +227,18 @@ def _overlapping_imports(log, account_id, rows):
     return found
 
 
-def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, log_id, now=None, always_log=False):
+def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, log_id, now=None, always_log=False,
+                         full_period=False):
     """古い順に並んだ明細の行を staging.csv に入れる（CSV・通帳・出納帳で共通）。
 
     rows: {日付, 入金, 出金, 摘要（normalize_description 済み）, 残高（無ければ None）} のリスト。
           行ごとに 読み取り信頼度・要確認理由 を持たせると、それを staging に書く（通帳のページ検算NGなど）
     source_key: 取り込み元IDの材料（口座ID。出納帳は「科目|補助」）
     log_id: import-log.csv の口座ID欄に書く値
-    always_log: 追加が0件でも import-log.csv に記録する（読み取り結果ファイルを取り込み済みにする印）
+    always_log: 追加が0件でも import-log.csv に記録する（取り込み済みの印。unimport の期間の重なりの確認にも使う）。
+                同じ資料名の記録が既にあれば、2行目は書かない
+    full_period: import-log.csv の対象期間を、追加した行ではなく資料の期間内・金額0以外の全部の行から作る
+                 （件数・入金合計・出金合計は追加した行の分のまま）
     """
     year_dir = Path(year_dir)
     start, end = load_period(year_dir)
@@ -246,7 +250,7 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
     bank_lines = _existing_bank_lines(existing_lines)
     log = read_rows(year_dir / "import-log.csv")
     logged = file_name in {r["ファイル名"] for r in log}
-    overlapping = _overlapping_imports(log, log_id, rows)
+    overlapping = _overlapping_imports(log, log_id, rows, file_name)
     recorded_balances = {(r["科目"], r["補助"], r["日付"], r["残高"], r["ファイル名"])
                          for r in read_rows(year_dir / "statement-balances.csv")}
     evidence_rows = read_evidence(year_dir)
@@ -312,9 +316,16 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
         r["要確認理由"] = add_reasons(r["要確認理由"], DOUBLE_BOOKED_ON_RECEIPT_ROW)
 
     log_rows = [row for row, _ in new_rows]
-    write_log = bool(new_rows) or always_log
+    period_rows = None
+    if full_period:
+        period_rows = [r for r in rows if (r["入金"] or r["出金"]) and start <= r["日付"] <= end]
+    elif not log_rows:
+        period_rows = [r for r in rows if r["入金"] or r["出金"]]
+    write_log = (bool(new_rows) or always_log) and not logged  # 同じ資料名の記録は1行だけ
     if not new_rows and resumed_rows and not logged:  # 取り込み記録が書けずに止まった後の再実行
         log_rows, write_log = resumed_rows, True
+        if not full_period:
+            period_rows = None
     if not (new_rows or new_balances or write_log):
         return ImportResult(added=0, duplicates=duplicate, zero_amount=zero, out_of_period=out_of_period,
                             overlapping_imports=overlapping, discarded=discarded)
@@ -335,7 +346,7 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
     if new_balances:
         later_writes.append(("statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances))
     if write_log:
-        later_writes.append(("import-log.csv", IMPORT_LOG_COLUMNS, [_log_row(log_rows, rows, file_name, log_id, now)]))
+        later_writes.append(("import-log.csv", IMPORT_LOG_COLUMNS, [_log_row(log_rows, period_rows, file_name, log_id, now)]))
     for name, columns, lines in later_writes:
         try:
             append_rows(year_dir / name, columns, lines)
@@ -351,8 +362,9 @@ def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, lo
                         overlapping_imports=overlapping, discarded=discarded)
 
 
-def _log_row(log_rows, all_rows, file_name, log_id, now):
-    dates = sorted(row["日付"] for row in log_rows) or sorted(r["日付"] for r in all_rows if r["入金"] or r["出金"])
+def _log_row(log_rows, period_rows, file_name, log_id, now):
+    """period_rows：対象期間を作る行（None なら、追加した行。追加が無ければ資料の金額0以外の全部の行）。"""
+    dates = sorted(r["日付"] for r in period_rows) if period_rows is not None else sorted(row["日付"] for row in log_rows)
     return {
         "取り込み日時": (now or datetime.now()).isoformat(timespec="seconds"),
         "ファイル名": file_name,
@@ -394,4 +406,4 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
     file_name = recorded_file_name(year_dir, file_path)
     rows = order_oldest_first(parse_statement(file_path, fmt), Path(file_path).name)
     return stage_statement_rows(year_dir, account_id, account["科目"], account.get("補助", ""), file_name, rows,
-                                log_id=account_id, now=now)
+                                log_id=account_id, now=now, always_log=True, full_period=True)

@@ -374,3 +374,27 @@ def test_unimport_changed_line_gets_reason_and_is_not_auto_approved(year_dir, tm
     r = auto_approve(year_dir, accounts, load_patterns(patterns_path, accounts), PAYMENT, load_abbreviations())
     assert r.approved == 0
     assert by_description(year_dir)["カード テストブングテン"]["承認"] == ""
+
+
+# --- 追加0件の銀行CSVも取り込み記録を残す（unimport の重なり検知から漏れない） ---
+
+def test_all_duplicate_bank_csv_is_logged_with_full_period_and_blocks_partial_unimport(year_dir, tmp_path, accounts):
+    run(year_dir, tmp_path, accounts, passbook())
+    sources, csv_path = write_sources(tmp_path), write_bank_csv(year_dir / "inbox")
+    first = import_bank(year_dir, sources, "main", csv_path, now=NOW)
+    assert (first.added, first.duplicates) == (0, 2)
+    csv_logs = [r for r in read_rows(year_dir / "import-log.csv") if r["ファイル名"] == "inbox/2025-04.csv"]
+    assert [(r["口座ID"], r["対象期間"], r["件数"], r["入金合計"], r["出金合計"]) for r in csv_logs] == [
+        ("main", "2025-04-01〜2025-04-05", "0", "0", "0")]
+
+    again = import_bank(year_dir, sources, "main", csv_path, now=NOW)
+    assert again.overlapping_imports == ["inbox/通帳-2025-04.pdf 2025-04-01〜2025-04-10"]  # 自分自身の記録は挙げない
+    assert [r["ファイル名"] for r in read_rows(year_dir / "import-log.csv")].count("inbox/2025-04.csv") == 1
+
+    before = snapshot(year_dir)
+    with pytest.raises(KessanError, match="inbox/2025-04.csv"):
+        unimport(year_dir, "inbox/通帳-2025-04.pdf")
+    assert snapshot(year_dir) == before
+    result = unimport(year_dir, ["inbox/通帳-2025-04.pdf", "inbox/2025-04.csv"])
+    assert result.import_log == 2
+    assert read_rows(year_dir / "staging.csv") == []
