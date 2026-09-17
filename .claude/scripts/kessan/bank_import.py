@@ -1,4 +1,4 @@
-"""銀行・カードのCSV明細を staging.csv に取り込む。
+"""銀行・カードのCSV明細を staging.csv に取り込む。通帳・出納帳の読み取り結果（extracted_import.py）もここの共通部分を使う。
 
 - 預金側の科目だけを埋め、相手科目は空のまま「要確認」にする（相手科目は段階2でAIが候補を付ける）
 - 取り込み元ID（明細の内容から作るハッシュ）で、登録済み・取り込み済みの行を二重に取り込まない
@@ -21,6 +21,7 @@ from common import (
 )
 
 SUSPECTED_DOUBLE_IMPORT = "取り込み済みの明細と日付・金額が一致（二重取り込みの疑い）"
+UNSET_COUNTER_ACCOUNT = "相手科目未設定"
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,14 @@ def _check_format(name, fmt):
         raise KessanError(f"明細形式「{name}」の columns に 日付 がありません")
     if "入金" not in columns and "出金" not in columns:
         raise KessanError(f"明細形式「{name}」の columns に 入金・出金 のどちらもありません")
+
+
+def normalize_description(text):
+    """摘要の正規化。半角カナ・全角英数などの表記ゆれで同じ明細が別物と判定されないようにする。
+
+    取り込み元IDの材料なので、CSV・通帳・出納帳のどれから取り込むときも必ずこれを通す。
+    """
+    return unicodedata.normalize("NFKC", str(text or "")).strip()
 
 
 def parse_statement(file_path, fmt):
@@ -108,8 +117,7 @@ def parse_statement(file_path, fmt):
             "日付": date,
             "入金": deposit,
             "出金": withdrawal,
-            # 半角カナ・全角英数などの表記ゆれで同じ明細が別物と判定されないよう正規化する
-            "摘要": unicodedata.normalize("NFKC", get("摘要")).strip(),
+            "摘要": normalize_description(get("摘要")),
             "残高": balance,
             "行番号": number,
         })
@@ -150,9 +158,8 @@ def make_source_id(account_id, row, occurrence):
     return "bank:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
 
-def _staging_row(account, file_name, row, source_id):
+def _staging_row(subject, sub, file_name, row, source_id):
     staged = dict.fromkeys(STAGING_COLUMNS, "")
-    subject, sub = account["科目"], account.get("補助", "")
     if row["入金"]:
         amount = str(row["入金"])
         staged.update({"借方科目": subject, "借方補助": sub, "借方金額": amount, "貸方金額": amount})
@@ -161,7 +168,8 @@ def _staging_row(account, file_name, row, source_id):
         staged.update({"貸方科目": subject, "貸方補助": sub, "貸方金額": amount, "借方金額": amount})
     staged.update({
         "日付": row["日付"], "摘要": row["摘要"], "証憑ファイル": file_name, "取り込み元ID": source_id,
-        "読み取り信頼度": "高", "判定": "要確認", "要確認理由": "相手科目未設定",
+        "読み取り信頼度": row.get("読み取り信頼度") or "高", "判定": "要確認",
+        "要確認理由": row.get("要確認理由") or UNSET_COUNTER_ACCOUNT,
     })
     return staged
 
@@ -196,26 +204,21 @@ def _overlapping_imports(log, account_id, rows):
     return found
 
 
-def import_bank(year_dir, sources_path, account_id, file_path, now=None):
-    year_dir = Path(year_dir)
-    sources = load_sources(sources_path)
-    accounts_cfg = {a["id"]: a for a in sources.get("accounts") or []}
-    if account_id not in accounts_cfg:
-        raise KessanError(f"口座IDが設定ファイルにありません: {account_id}（登録済み: {list(accounts_cfg)}）")
-    account = accounts_cfg[account_id]
-    fmt = (sources.get("formats") or {}).get(account.get("format"))
-    if fmt is None:
-        raise KessanError(f"口座ID {account_id} の明細形式「{account.get('format')}」が設定ファイルにありません")
-    _check_format(account.get("format"), fmt)
+def stage_statement_rows(year_dir, source_key, subject, sub, file_name, rows, log_id, now=None, always_log=False):
+    """古い順に並んだ明細の行を staging.csv に入れる（CSV・通帳・出納帳で共通）。
 
+    rows: {日付, 入金, 出金, 摘要（normalize_description 済み）, 残高（無ければ None）} のリスト。
+          行ごとに 読み取り信頼度・要確認理由 を持たせると、それを staging に書く（通帳のページ検算NGなど）
+    source_key: 取り込み元IDの材料（口座ID。出納帳は「科目|補助」）
+    log_id: import-log.csv の口座ID欄に書く値
+    always_log: 追加が0件でも import-log.csv に記録する（読み取り結果ファイルを取り込み済みにする印）
+    """
+    year_dir = Path(year_dir)
     start, end = load_period(year_dir)
-    file_name = Path(file_path).name
-    rows = order_oldest_first(parse_statement(file_path, fmt), file_name)
     existing_lines = [{**r, "_file": name} for name in ("journal.csv", "staging.csv") for r in read_rows(year_dir / name)]
     existing = {r["取り込み元ID"] for r in existing_lines if r.get("取り込み元ID")}
     bank_lines = _existing_bank_lines(existing_lines)
-    overlapping = _overlapping_imports(read_rows(year_dir / "import-log.csv"), account_id, rows)
-    subject, sub = account["科目"], account.get("補助", "")
+    overlapping = _overlapping_imports(read_rows(year_dir / "import-log.csv"), log_id, rows)
 
     seen = Counter()
     new_rows, new_balances = [], []
@@ -230,15 +233,17 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
         if not start <= row["日付"] <= end:
             out_of_period += 1
             continue
-        source_id = make_source_id(account_id, row, occurrence)
+        source_id = make_source_id(source_key, row, occurrence)
         if source_id in existing:
             duplicate += 1
             continue
-        staged = _staging_row(account, file_name, row, source_id)
+        staged = _staging_row(subject, sub, file_name, row, source_id)
         side = "借方" if row["入金"] else "貸方"
         match = bank_lines.get((side, subject, sub, row["日付"], row["入金"] or row["出金"]), set())
         if match - {source_id}:
-            staged["要確認理由"] = SUSPECTED_DOUBLE_IMPORT
+            reason = staged["要確認理由"]
+            staged["要確認理由"] = (SUSPECTED_DOUBLE_IMPORT if reason == UNSET_COUNTER_ACCOUNT
+                                  else f"{reason}／{SUSPECTED_DOUBLE_IMPORT}")
         new_rows.append((row, staged))
         if row["残高"] is not None:
             new_balances.append({
@@ -246,15 +251,16 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
                 "日付": row["日付"], "残高": str(row["残高"]), "ファイル名": file_name,
             })
 
-    if new_rows:
-        append_rows(year_dir / "staging.csv", STAGING_COLUMNS, [staged for _, staged in new_rows])
-        append_rows(year_dir / "statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances)
-        dates = sorted(row["日付"] for row, _ in new_rows)
+    if new_rows or always_log:
+        if new_rows:
+            append_rows(year_dir / "staging.csv", STAGING_COLUMNS, [staged for _, staged in new_rows])
+            append_rows(year_dir / "statement-balances.csv", STATEMENT_BALANCE_COLUMNS, new_balances)
+        dates = sorted(row["日付"] for row, _ in new_rows) or sorted(r["日付"] for r in rows if r["入金"] or r["出金"])
         append_rows(year_dir / "import-log.csv", IMPORT_LOG_COLUMNS, [{
             "取り込み日時": (now or datetime.now()).isoformat(timespec="seconds"),
             "ファイル名": file_name,
-            "口座ID": account_id,
-            "対象期間": f"{dates[0]}〜{dates[-1]}",
+            "口座ID": log_id,
+            "対象期間": f"{dates[0]}〜{dates[-1]}" if dates else "",
             "件数": str(len(new_rows)),
             "入金合計": str(sum(row["入金"] for row, _ in new_rows)),
             "出金合計": str(sum(row["出金"] for row, _ in new_rows)),
@@ -262,3 +268,22 @@ def import_bank(year_dir, sources_path, account_id, file_path, now=None):
         }])
     return ImportResult(added=len(new_rows), duplicates=duplicate, zero_amount=zero,
                         out_of_period=out_of_period, overlapping_imports=overlapping)
+
+
+def import_bank(year_dir, sources_path, account_id, file_path, now=None):
+    year_dir = Path(year_dir)
+    sources = load_sources(sources_path)
+    accounts_cfg = {a["id"]: a for a in sources.get("accounts") or []}
+    if account_id not in accounts_cfg:
+        raise KessanError(f"口座IDが設定ファイルにありません: {account_id}（登録済み: {list(accounts_cfg)}）")
+    account = accounts_cfg[account_id]
+    fmt = (sources.get("formats") or {}).get(account.get("format"))
+    if fmt is None:
+        raise KessanError(f"口座ID {account_id} の明細形式「{account.get('format')}」が設定ファイルにありません")
+    _check_format(account.get("format"), fmt)
+
+    load_period(year_dir)  # 年度フォルダの期間設定が無ければ、明細を読む前に止める
+    file_name = Path(file_path).name
+    rows = order_oldest_first(parse_statement(file_path, fmt), file_name)
+    return stage_statement_rows(year_dir, account_id, account["科目"], account.get("補助", ""), file_name, rows,
+                                log_id=account_id, now=now)

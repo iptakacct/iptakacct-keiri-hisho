@@ -13,6 +13,11 @@ PAYMENT_METHODS = ("口座", "カード", "現金", "立替", "後払い", "不�
 CONFIDENCE_LEVELS = ("高", "低")
 
 
+def extracted_files(year_dir):
+    """年度フォルダの extracted/*.json（読み取り結果ファイル）をファイル名の順に返す。"""
+    return sorted((Path(year_dir) / "extracted").glob("*.json"))
+
+
 def load_document(path):
     """JSONを読む。(データ, 誤りの一覧) を返す。読めなければデータは None。"""
     path = Path(path)
