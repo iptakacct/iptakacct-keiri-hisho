@@ -72,7 +72,7 @@ def test_invalid_documents_are_reported(year_dir, accounts, make, path, value, m
 
 def test_source_path_must_be_under_inbox_and_exist(year_dir, accounts):
     data = receipt(資料="領収書.jpg")
-    assert "「資料」は inbox/ からの相対パスで書く（値: 領収書.jpg）" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert "「資料」は inbox/ の下に置く相対パスで書く（値: 領収書.jpg）" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
     data = receipt(資料="inbox/none.jpg")
     assert "資料 inbox/none.jpg が年度フォルダにありません" in validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
 
@@ -87,6 +87,57 @@ def test_load_document_reports_broken_json(tmp_path):
     data, errors = load_document(path)
     assert data is None
     assert errors[0].startswith("JSONとして読めません")
+
+
+# --- Fix round 1: 強化バリデーション ---
+
+def test_passbook_row_with_both_zero_deposit_and_withdrawal_is_rejected(year_dir, accounts):
+    data = passbook()
+    write_document(year_dir, data)
+    data["ページ"][0]["行"][0]["入金"] = 0
+    data["ページ"][0]["行"][0]["出金"] = 0
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert any("入金・出金のどちらかに金額が必要" in e for e in errors), errors
+
+
+def test_cash_book_row_with_both_zero_deposit_and_withdrawal_is_rejected(year_dir, accounts):
+    data = cash_book()
+    write_document(year_dir, data)
+    data["行"][0]["入金"] = 0
+    data["行"][0]["出金"] = 0
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert any("入金・出金のどちらかに金額が必要" in e for e in errors), errors
+
+
+def test_receipt_required_fields_must_be_nonempty(year_dir, accounts):
+    for field in ["科目候補", "取引先", "内容"]:
+        data = receipt(**{field: ""})
+        write_document(year_dir, data)
+        errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+        assert any(f"「{field}」が空です" in e for e in errors), f"{field} should reject empty: {errors}"
+
+
+def test_cash_book_account_must_be_nonempty(year_dir, accounts):
+    data = cash_book()
+    write_document(year_dir, data)
+    data["科目"] = ""
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert any("「科目」が空です" in e for e in errors), errors
+
+
+def test_source_path_cannot_escape_inbox_via_traversal(year_dir, accounts):
+    # Create a file outside inbox to verify path traversal attempt is caught
+    outside = year_dir / "outside.jpg"
+    outside.write_bytes(b"")
+    data = receipt(資料="inbox/../outside.jpg")
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert any("inbox/ の下に置く" in e for e in errors), errors
+
+
+def test_source_path_cannot_be_absolute(year_dir, accounts):
+    data = receipt(資料="/absolute/path.jpg")
+    errors = validate_document(data, accounts, ACCOUNT_IDS, PERIOD, year_dir)
+    assert any("inbox/ の下に置く" in e for e in errors), errors
 
 
 # --- 通帳のページ検算 ---

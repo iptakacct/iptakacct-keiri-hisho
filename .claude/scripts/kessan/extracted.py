@@ -88,8 +88,8 @@ class _Checker:
             self.error(where, f"「{key}」は {'／'.join(choices)} のどれかで書く（値: {value!r}）")
         return value
 
-    def account(self, obj, key, accounts, where, required=True):
-        value = self.text(obj, key, where, required=required)
+    def account(self, obj, key, accounts, where, required=True, allow_empty=True):
+        value = self.text(obj, key, where, required=required, allow_empty=allow_empty)
         if value and value not in accounts:
             self.error(where, f"「{key}」の科目「{value}」が科目マスタにありません")
         return value
@@ -104,6 +104,8 @@ class _Checker:
         withdrawal = self.amount(row, "出金", where)
         if deposit and withdrawal:
             self.error(where, f"入金と出金の両方に金額があります（入金{deposit} 出金{withdrawal}）")
+        elif deposit is not None and withdrawal is not None and deposit == 0 and withdrawal == 0:
+            self.error(where, "入金・出金のどちらかに金額が必要です")
         self.text(row, "摘要", where)
         self.amount(row, "残高", where, required=balance_required)
 
@@ -126,10 +128,18 @@ def validate_document(data, accounts, account_ids, period, year_dir):
         return ["JSONの一番外側は {…}（オブジェクト）で書く"]
     source = c.text(data, "資料", "", allow_empty=False)
     if source:
-        if not source.startswith("inbox/"):
-            c.error("", f"「資料」は inbox/ からの相対パスで書く（値: {source}）")
-        elif not (Path(year_dir) / source).is_file():
-            c.error("", f"資料 {source} が年度フォルダにありません")
+        source_path = Path(source)
+        if source_path.is_absolute():
+            c.error("", f"「資料」は inbox/ の下に置く相対パスで書く（値: {source}）")
+        else:
+            resolved_source = (Path(year_dir) / source).resolve()
+            inbox_dir = (Path(year_dir) / "inbox").resolve()
+            try:
+                resolved_source.relative_to(inbox_dir)
+                if not resolved_source.is_file():
+                    c.error("", f"資料 {source} が年度フォルダにありません")
+            except ValueError:
+                c.error("", f"「資料」は inbox/ の下に置く相対パスで書く（値: {source}）")
     kind = c.choice(data, "種類", KINDS, "")
 
     if kind == "読めない":
@@ -155,17 +165,17 @@ def validate_document(data, accounts, account_ids, period, year_dir):
                 c.amount(page, "繰越残高", f"ページ{number}", required=False)
                 c.rows(page, f"ページ{number} ", balance_required=True)
     elif kind == "出納帳":
-        c.account(data, "科目", accounts, "")
+        c.account(data, "科目", accounts, "", allow_empty=False)
         c.text(data, "補助", "", required=False)
         c.rows(data, "", balance_required=False)
     elif kind in RECEIPT_KINDS:
         c.date(data, "日付", "")
         c.text(data, "日付原文", "", required=False)
         c.amount(data, "金額", "", positive=True)
-        c.text(data, "取引先", "")
-        c.text(data, "内容", "")
+        c.text(data, "取引先", "", allow_empty=False)
+        c.text(data, "内容", "", allow_empty=False)
         c.choice(data, "支払方法の推定", PAYMENT_METHODS, "")
-        c.account(data, "科目候補", accounts, "")
+        c.account(data, "科目候補", accounts, "", allow_empty=False)
         c.text(data, "補助候補", "", required=False)
         c.choice(data, "自信度", CONFIDENCE_LEVELS, "")
         c.text(data, "メモ", "", required=False)
