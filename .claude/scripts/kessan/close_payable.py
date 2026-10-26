@@ -16,8 +16,8 @@ from pathlib import Path
 
 import close
 from common import (
-    EVIDENCE_COLUMNS, KessanError, PERIOD_FILE, cannot_write, ensure_writable, parse_amount, parse_date, project,
-    read_rows, replace_rows,
+    EVIDENCE_COLUMNS, PAYABLE_ACCOUNT, PERIOD_FILE, KessanError, cannot_write, ensure_writable, parse_amount, parse_date,
+    project, read_rows, replace_rows,
 )
 from evidence import EVIDENCE_FILE, STATE_PAYABLE, STATE_UNPAID
 from match import name_in_description, payment_accounts
@@ -25,7 +25,6 @@ from tax import TAX_CATEGORIES, invoice_class, load_transitions, with_rate
 
 ITEM_PAYABLE = "未払"
 ITEM_RECEIVABLE = "未収"
-PAYABLE_ACCOUNT = "未払金"
 RECEIVABLE_ACCOUNT = "売掛金"
 SALES_ACCOUNT = "売上高"
 SALES_TAX = "課税売上10%"

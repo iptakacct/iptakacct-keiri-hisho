@@ -207,6 +207,8 @@ def test_as_new_unpaid_deferred_payment_credits_payable(year_dir, tmp_path, acco
     new = read_rows(year_dir / "staging.csv")[-1]
     assert (new["借方科目"], new["貸方科目"], new["貸方補助"], new["貸方金額"], new["日付"]) == (
         "消耗品費", "未払金", "テスト文具店", "1620", "2025-04-10")
+    assert "後払いの請求書" in new["要確認理由"] and "明細に該当なし" not in new["要確認理由"]
+    assert "取引先" not in new["要確認理由"].replace("後払い", "")  # 取引先が入っているので空欄の注意は出ない
     number = split_tax(year_dir, "receipt:e1", [(10, 1080), (8, 540)], {("現金", "")}, accounts)
     rows = [r for r in read_rows(year_dir / "staging.csv") if r["取り込み元ID"] == "receipt:e1"]
     assert {r["伝票番号"] for r in rows} == {number} and len(rows) == 3
@@ -219,3 +221,13 @@ def test_as_new_multiple_without_payment_still_refused(year_dir, tmp_path):
     with pytest.raises(KessanError, match="as-payable"):
         resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None)
     assert len(read_rows(year_dir / "staging.csv")) == 2
+
+
+def test_as_new_unpaid_without_partner_asks_to_fill_it(year_dir, tmp_path):
+    """後払いの未払金の行で取引先が空なら、補助（取引先）を入れるよう要確認理由に書く。"""
+    setup_multiple(year_dir, state="未払候補", 取り込み元ID="", 支払方法の推定="後払い", 取引先="")
+    resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None)
+    new = read_rows(year_dir / "staging.csv")[-1]
+    assert (new["貸方科目"], new["貸方補助"]) == ("未払金", "")
+    assert "後払いの請求書" in new["要確認理由"]
+    assert "未払金の補助（取引先）が空" in new["要確認理由"]

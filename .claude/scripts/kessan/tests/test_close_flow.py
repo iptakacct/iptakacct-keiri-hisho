@@ -145,6 +145,8 @@ def test_closing_flow(company_books, accounts, capsys):
     assert read_rows(year / "adjustments.csv") == []  # 承認するまで帳簿には入らない
 
     assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
+    # 消費税は概算なので --all では残る。この通しテストでは概算のまま明示して承認する
+    assert main(["close-approve", "--year-dir", str(year), "--ids", "close:消費税:2026-03-31"]) == 0
     capsys.readouterr()
     assert main(["close-post", "--year-dir", str(year)]) == 0
     assert "決算整理仕訳の登録: 8件（A1, A2, A3, A4, A5, A6, A7, A8）" in capsys.readouterr().out
@@ -167,3 +169,28 @@ def test_closing_flow(company_books, accounts, capsys):
     assert read_rows(year / "adjustments-staging.csv") == []
     assert len(read_rows(year / "adjustments.csv")) == len(posted)
     assert "違います" not in again
+
+
+def test_approve_all_holds_estimated_consumption_tax(company_books, capsys):
+    """原則課税で達人の額が未入力（概算）のとき、--all は消費税の候補を承認せずに残し、理由を出す。"""
+    year, nxt = company_books
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    capsys.readouterr()
+    assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "close:消費税:2026-03-31" in out and "概算" in out and "close-set-amount" in out
+    approval = {r["取り込み元ID"]: r["承認"] for r in read_rows(year / "adjustments-staging.csv")}
+    assert approval.pop("close:消費税:2026-03-31") == ""
+    assert approval and set(approval.values()) == {"済"}
+    # 明示すれば承認できる
+    assert main(["close-approve", "--year-dir", str(year), "--ids", "close:消費税:2026-03-31"]) == 0
+
+
+def test_approve_all_includes_consumption_tax_with_override(company_books, capsys):
+    year, nxt = company_books
+    assert main(["close-set-amount", "--year-dir", str(year), "--item", "消費税", "--amount", "51364"]) == 0
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    capsys.readouterr()
+    assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
+    assert "概算" not in capsys.readouterr().out
+    assert {r["承認"] for r in read_rows(year / "adjustments-staging.csv")} == {"済"}

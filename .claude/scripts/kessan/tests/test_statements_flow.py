@@ -67,6 +67,7 @@ def closed_year(company_books, accounts):  # noqa: F811
         ["close-set-amount", "--year-dir", str(year), "--item", "法人税等", "--amount", "70000"],
         ["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)],
         ["close-approve", "--year-dir", str(year), "--all"],
+        ["close-approve", "--year-dir", str(year), "--ids", "close:消費税:2026-03-31"],  # 概算は --all で残るので明示
         ["close-post", "--year-dir", str(year)],
     ):
         assert main(argv) == 0

@@ -9,8 +9,8 @@ from pathlib import Path
 
 from accounts import load_accounts
 from common import (
-    JOURNAL_COLUMNS, STAGING_COLUMNS, TAX_COLUMNS, KessanError, cannot_write, ensure_writable, parse_amount, project, read_rows,
-    remove_reasons, replace_rows,
+    JOURNAL_COLUMNS, PAYABLE_ACCOUNT, STAGING_COLUMNS, TAX_COLUMNS, KessanError, cannot_write, ensure_writable, parse_amount,
+    project, read_rows, remove_reasons, replace_rows,
 )
 from tax import ALLOCATION_VALUES, INVOICE_VALUES, TAX_CATEGORIES, load_tax_settings, with_rate
 from tax_fill import MIXED_RATE_REASON
@@ -211,7 +211,7 @@ def split_tax(year_dir, source_id, parts, payment_accounts, accounts=None):
         errors.append(f"{where}: 既に伝票番号（{row['伝票番号'].strip()}）が付いています")
     keys = {side: (row[f"{side}科目"].strip(), row[f"{side}補助"].strip()) for side in ("借方", "貸方")}
     paying = [side for side in ("借方", "貸方") if keys[side] in payment_accounts]
-    if not paying and source_id.startswith("receipt:") and keys["貸方"][0] == "未払金":
+    if not paying and source_id.startswith("receipt:") and keys["貸方"][0] == PAYABLE_ACCOUNT:
         paying = ["貸方"]  # 支払方法が決まらない証憑から作った未払金の仕訳（resolve-evidence --as-new）は、未払金の側を明細側として扱う
     if len(paying) != 1:
         errors.append(f"{where}: 明細側（口座・カード・現金）がちょうど1つの行だけ分けられます"

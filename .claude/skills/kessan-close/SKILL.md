@@ -60,7 +60,7 @@ $K close-candidates --year-dir $Y [--next-year-dir $N] [--prev-year-dir <前期�
 
 ## ④ オーナーに見せる
 
-`output/close-report.md` を元に、候補と所見を **番号付き・選択肢付き**で見せる（`.claude/rules/communication.md`「確認は答えるのに手間がかからない形で聞く」）。推奨を `a` に置き、理由を1行で添える。全部推奨どおりなら「全部OK」で進められるようにする。
+`output/close-report.md` を元に、候補と所見を **番号付き・選択肢付き**で見せる（`.claude/rules/communication.md`「確認は答えるのに手間がかからない形で聞く」）。推奨を `a` に置き、理由を1行で添える。全部推奨どおりなら「全部OK」で進められるようにする。消費税の概算の候補（原則課税・2割特例で、達人の額をまだ入れていないもの）は、推奨を「達人の額が出るまで承認しない」にする。「全部OK」はその候補を残して、ほかの候補を承認する意味になる（⑥の `--all` も概算の消費税は承認しない）。
 
 候補の表は 取り込み元ID・借方・借方税区分・貸方・貸方税区分・金額・根拠 を並べ、金額と税区分はスクリプトの出力（close-report.md）をそのまま使う。書き方の例：
 
@@ -114,7 +114,7 @@ $K close-candidates --year-dir $Y [--next-year-dir $N]     # 上書きを候補�
 
 ```bash
 $K close-approve --year-dir $Y --ids close:未払:ev1 close:前払:… 
-$K close-approve --year-dir $Y --all                        # オーナーが全部OKと答えたときだけ
+$K close-approve --year-dir $Y --all                        # オーナーが全部OKと答えたときだけ（消費税の概算の候補は承認せずに残す）
 $K close-unapprove --year-dir $Y --ids close:未払:ev1                        # 承認を取り下げる
 $K close-reject --year-dir $Y --ids close:未払:ev2 --reason "当期の費用ではない（オーナー確認済み）"
 $K close-unreject --year-dir $Y --ids close:未払:ev2                         # 却下を取り消す（オーナーが計上すると言い直したとき）

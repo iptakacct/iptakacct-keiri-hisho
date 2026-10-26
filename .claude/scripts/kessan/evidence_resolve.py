@@ -9,15 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common import (
-    EVIDENCE_COLUMNS, STAGING_COLUMNS, KessanError, append_rows, cannot_write, discarded_source_ids, ensure_writable,
-    project, read_rows, replace_rows,
+    EVIDENCE_COLUMNS, PAYABLE_ACCOUNT, STAGING_COLUMNS, KessanError, append_rows, cannot_write, discarded_source_ids,
+    ensure_writable, project, read_rows, replace_rows,
 )
 from evidence import (
     EVIDENCE_FILE, STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID, candidate_ids,
     known_source_ids, read_evidence, receipt_source_id,
 )
 from extracted_import import attach_receipt_to_row, can_attach_receipt, new_entry_row
-from match import NO_MATCH, credit_for_new_entry, load_abbreviations, payment_accounts, receipt_default
+from match import credit_for_new_entry, load_abbreviations, payment_accounts, receipt_default
+
+DEFERRED_PAYABLE = "後払いの請求書（未払金で計上。支払時は未払金の消込にする）"
+PARTNER_MISSING = "未払金の補助（取引先）が空（誰への未払かを帳簿に残すため、補助に取引先を入れる）"
 
 
 @dataclass(frozen=True)
@@ -91,18 +94,22 @@ def resolve_evidence(year_dir, evidence_id, *, match=None, as_payable=False, as_
             raise KessanError(f"証憑 {evidence_id} は状態が「{state}」で、--as-new にできるのは"
                               f"「{STATE_MULTIPLE}」と「{STATE_UNPAID}」だけ")
         data = _document(ev)
+        extra_reasons = ()
         credit = credit_for_new_entry(data["種類"], data["支払方法の推定"], receipt_default(sources),
                                       payment_accounts(sources))
         if credit is None:
             if state != STATE_UNPAID:
                 raise KessanError("支払方法が決まらないので新規仕訳にできない（as-payable を使う）")
             # 未払候補で支払方法が決まらない（後払い・不明）：貸方を未払金（補助＝取引先）にした仕訳にする
-            credit = ("未払金", data["取引先"].strip(), NO_MATCH)
+            partner = data["取引先"].strip()
+            credit = (PAYABLE_ACCOUNT, partner, DEFERRED_PAYABLE)
+            if not partner:
+                extra_reasons = (PARTNER_MISSING,)
         new_state, new_source = STATE_NEW_ENTRY, receipt_source_id(evidence_id)
         if new_source in discarded_source_ids(year_dir):
             raise KessanError(f"{new_source} はオーナーが破棄した行なので作り直せません（discard-log.csv）")
         if new_source not in known_ids:
-            new_row = new_entry_row(data, new_source, credit)
+            new_row = new_entry_row(data, new_source, credit, *extra_reasons)
 
     ensure_writable(year_dir, ("staging.csv", EVIDENCE_FILE))
     try:

@@ -45,7 +45,8 @@ OVERRIDE_ITEMS = ("消費税", "法人税等")
 POSTED_KIND = "決算整理"
 NEEDS_REVIEW = "要確認"
 SOURCE_PREFIX = "close:"
-TAX_PREFIX = "close:消費税:"
+TAX_ITEM = "消費税"
+TAX_PREFIX = f"close:{TAX_ITEM}:"
 CORP_PREFIX = "close:法人税等:"  # 法人税等は消費税の額を変えないので、消費税の登録順の判定では無視する
 REJECTED_KEY = "rejected"
 TAX_UNAPPROVED_REASON = "他の候補の却下で額が変わる（close-candidates を再実行）"
@@ -363,7 +364,8 @@ def _write_report(year_dir, candidates, notes, states, removed, now, rejected=()
     lines = [f"# 決算整理の候補（{now:%Y-%m-%d %H:%M}）", "",
              f"候補 {len(candidates)}件（要確認 {added}件 / 承認済み・登録済みのため据え置き {len(candidates) - added}件）"
              f" / 所見 {len(notes)}件 / 出なくなったため消した候補 {removed}件", "",
-             "内容を確かめて close-approve --ids <取り込み元ID>（全件なら --all）→ close-post で登録します。", ""]
+             "内容を確かめて close-approve --ids <取り込み元ID>（全件なら --all。ただし消費税の概算の候補は --all では承認せず残す）"
+             "→ close-post で登録します。", ""]
     if not items:
         lines += ["候補・所見はありません。", ""]
     for item in items:
@@ -452,6 +454,18 @@ def candidate_ids(year_dir):
     """adjustments-staging.csv にある候補の取り込み元ID（順序どおり、重複なし）。"""
     return list(dict.fromkeys(r["取り込み元ID"].strip() for r in read_rows(Path(year_dir) / STAGING_FILE)
                               if r["取り込み元ID"].strip()))
+
+
+def approve_all_ids(year_dir):
+    """--all で承認する取り込み元IDと、承認せずに残す消費税の候補の取り込み元ID。
+
+    消費税の額が close-overrides.yaml に無い（概算の候補）ときは、達人の額が決まるまで承認しないので残す。
+    """
+    ids = candidate_ids(year_dir)
+    if TAX_ITEM in load_overrides(year_dir):
+        return ids, []
+    held = [s for s in ids if s.startswith(TAX_PREFIX)]
+    return [s for s in ids if s not in held], held
 
 
 def approve_candidates(year_dir, source_ids):

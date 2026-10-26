@@ -16,6 +16,10 @@ class KessanError(Exception):
     """利用者に内容を伝えて処理を止めるべきエラー。"""
 
 
+# 後払いの証憑・決算整理の未払で使う科目（resolve-evidence --as-new・split-tax・未払の候補で共通）
+PAYABLE_ACCOUNT = "未払金"
+
+
 # 消費税の列（段階3a）。税込のまま持ち、税抜額・税額は集計時に計算する。免税の年度では空のまま
 TAX_COLUMNS = ["借方税区分", "借方インボイス", "借方個別対応", "貸方税区分", "貸方インボイス", "貸方個別対応"]
 JOURNAL_COLUMNS = [

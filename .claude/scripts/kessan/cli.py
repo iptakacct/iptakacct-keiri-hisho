@@ -48,7 +48,7 @@ from accounts_update import apply_review, approve, approve_numbers, load_updates
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
 from close import (
-    approve_candidates, candidate_ids, post_candidates, reject_candidates, run_close, set_amount, unapprove_candidates,
+    approve_all_ids, approve_candidates, post_candidates, reject_candidates, run_close, set_amount, unapprove_candidates,
     unpost_candidates, unreject_candidates,
 )
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
@@ -517,8 +517,15 @@ def main(argv=None):
             print(f"報告: {r.report_path}")
             return 0
         if args.command == "close-approve":
-            ids = candidate_ids(year_dir) if args.all else args.ids
-            print(f"承認: {approve_candidates(year_dir, ids)}行")
+            held = []
+            if args.all:
+                ids, held = approve_all_ids(year_dir)
+            else:
+                ids = args.ids
+            print(f"承認: {approve_candidates(year_dir, ids) if ids or not held else 0}行")
+            for sid in held:
+                print(f"承認せずに残しました: {sid}（消費税の額が概算のため。達人の額を close-set-amount --item 消費税 で入れて"
+                      f" close-candidates を流し直してから承認する。概算のまま登録するなら --ids {sid} で承認する）")
             return 0
         if args.command == "close-unapprove":
             print(f"承認を外しました: {unapprove_candidates(year_dir, args.ids)}行")
