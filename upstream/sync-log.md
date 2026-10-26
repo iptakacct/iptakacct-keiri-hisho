@@ -24,11 +24,13 @@
 - 特定クライアント・特定銀行の記録、特定リポジトリの許可リスト追加、新規スキル群（tax-deadlines・tax-onboarding・tax-planning・income-tax-prep・cashflow・consulting-kit・bpo-morning・smaregi-timecard）
 - leak-scanの短い固有語がコード中の英単語（「スキップした」の過去分詞）に誤反応するため、freee-api-postの結果キーを`excluded`に改名（上流との差分になる）
 
-**保留（オーナー確認）**
-- mf-api-post に書き込みと仕訳ガードを入れるか（入れるならガードの汎用版を先に設計）
-- 口座連携の無人チェック（bank-link-check／daily、`claude -p --chrome`をbypassPermissionsで動かす）を入れるか
-- 月次チェックの税務の節（tax_checks.py・.claude/tax-rules/）を移植するか
-- setup 0-a 税賠保険の期限の具体値（上流の値は特定団体の制度の可能性があり一般的な注意に弱めた）
+**オーナー決定（2026-10-26）**
+- mf-api-post の登録機能：当面入れない（仕訳ガードの汎用版の設計が先）
+- 口座連携の無人チェック（bank-link）：入れない
+- 月次チェックの税務の節：次回以降、税務系スキルとまとめて検討
+- setup 0-a 税賠保険の期限：一般的な注意のまま（具体値は入れない）
+
+**保留（残り）**
 - tax-profile.md を tax-deadlines 無しの縮約メモとして置くことでよいか
 - payroll_check／payroll_todo のスケジューラー用ラッパー（未整備）、給与機能に要る人事労務APIの権限（setup-guideは会計のみ）
 - communication.md のクリップボード手順がWindows前提（macOS並行運用時の書き分け）
