@@ -236,8 +236,6 @@ def test_init_upgrades_existing_files(tmp_path):
 def test_upgrade_rejects_ragged_rows(tmp_path):
     path = tmp_path / "a.csv"
     old = [c for c in JOURNAL_COLUMNS if c not in TAX_COLUMNS]
-    path.write_text(",".join(old) + "
-" + ",".join(["x"] * (len(old) + 1)) + "
-", encoding="utf-8-sig")
+    path.write_text(",".join(old) + "\n" + ",".join(["x"] * (len(old) + 1)) + "\n", encoding="utf-8-sig")
     with pytest.raises(KessanError, match="列数の合わない行"):
         append_rows(path, JOURNAL_COLUMNS, [])
