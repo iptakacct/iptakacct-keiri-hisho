@@ -259,19 +259,37 @@ def ensure_writable(year_dir, names):
             raise cannot_write(name) from None
 
 
-def init_year_dir(year_dir, start, end):
+def _write_period(path, data):
+    """一時ファイルに書いてから置き換える（途中で止まっても元の period.yaml は壊れない）。"""
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    os.replace(str(tmp_path), str(path))
+
+
+def init_year_dir(year_dir, start, end, tax=None):
+    """年度フォルダを用意する。tax（消費税の設定dict）があれば period.yaml に書く（期首日・期末日はそのまま）。"""
+    from tax import parse_tax_settings, tax_to_dict  # 循環importを避ける
     year_dir = Path(year_dir)
     start, end = _validate_period(start, end)
-    if (year_dir / PERIOD_FILE).exists():
+    tax_dict = tax_to_dict(parse_tax_settings(tax)) if tax is not None else None
+    period_path = year_dir / PERIOD_FILE
+    if period_path.exists():
         current = load_period(year_dir)
         if current != (start, end):
             raise KessanError(
                 f"{PERIOD_FILE} の期間（{current[0]}〜{current[1]}）と指定（{start}〜{end}）が違います"
                 "（年度フォルダを取り違えていないか確認）"
             )
+        if tax_dict is not None:
+            data = yaml.safe_load(period_path.read_text(encoding="utf-8")) or {}
+            data["消費税"] = tax_dict
+            _write_period(period_path, data)
     else:
         year_dir.mkdir(parents=True, exist_ok=True)
-        (year_dir / PERIOD_FILE).write_text(f'期首日: "{start}"\n期末日: "{end}"\n', encoding="utf-8")
+        data = {"期首日": start, "期末日": end}
+        if tax_dict is not None:
+            data["消費税"] = tax_dict
+        _write_period(period_path, data)
     for sub in ("inbox", "output"):
         (year_dir / sub).mkdir(parents=True, exist_ok=True)
     for name, columns in YEAR_FILES.items():

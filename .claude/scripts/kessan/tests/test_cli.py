@@ -418,3 +418,30 @@ def test_apply_review_reports_marks_other_than_done(tmp_path, capsys):
     capsys.readouterr()
     assert main(["apply-review", "--year-dir", str(year), "--file", str(review)]) == 0
     assert "承認欄に『済』以外が書かれた行：1件（承認していません）" in capsys.readouterr().out
+
+
+TAX_ARGS = ["--consumption-tax", "課税", "--tax-method", "原則", "--tax-calc", "割戻し", "--tax-allocation", "全額控除"]
+
+
+def test_init_with_consumption_tax(tmp_path):
+    from tax import TaxSettings, load_tax_settings
+    year = tmp_path / "y"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    before = (year / "journal.csv").read_bytes()
+    assert main(["init", "--year-dir", str(year), *PERIOD, *TAX_ARGS, "--small-exemption"]) == 0
+    assert load_tax_settings(year) == TaxSettings("課税", "原則", "割戻し", "全額控除", True)
+    assert (year / "journal.csv").read_bytes() == before
+
+
+def test_init_taxable_requires_method(tmp_path, capsys):
+    year = tmp_path / "y"
+    assert main(["init", "--year-dir", str(year), *PERIOD, "--consumption-tax", "課税", "--tax-calc", "割戻し"]) != 0
+    assert "--tax-method" in capsys.readouterr().err
+    assert not (year / "period.yaml").exists()
+
+
+def test_init_genzoku_requires_allocation(tmp_path, capsys):
+    year = tmp_path / "y"
+    assert main(["init", "--year-dir", str(year), *PERIOD, "--consumption-tax", "課税",
+                 "--tax-method", "原則", "--tax-calc", "割戻し"]) != 0
+    assert "--tax-allocation" in capsys.readouterr().err

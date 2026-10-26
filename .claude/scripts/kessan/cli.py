@@ -54,6 +54,11 @@ def _parser():
         if name == "init":
             p.add_argument("--start", required=True, help="期首日 YYYY-MM-DD")
             p.add_argument("--end", required=True, help="期末日 YYYY-MM-DD")
+            p.add_argument("--consumption-tax", choices=["免税", "課税"], help="消費税の区分（省略時は period.yaml を変えない）")
+            p.add_argument("--tax-method", choices=["原則", "簡易", "2割特例"])
+            p.add_argument("--tax-calc", choices=["割戻し", "積上げ"])
+            p.add_argument("--tax-allocation", choices=["全額控除", "個別対応", "一括比例配分"], help="方式=原則のとき必須")
+            p.add_argument("--small-exemption", action="store_true", help="少額特例（1万円未満の課税仕入）を使う会社")
         if name in ("import-bank", "import-extracted", "set-accounts"):
             p.add_argument("--sources", type=Path, help="省略時はインスタンスの context/company/kessan-sources.yaml")
             p.add_argument("--patterns", type=Path, help="省略時はインスタンスの context/company/kessan-patterns.yaml")
@@ -145,12 +150,30 @@ def _print_extracted_result(r):
             print(f"  - {e}")
 
 
+def _init_tax(args):
+    """init の消費税引数を period.yaml 用の dict にする。--consumption-tax が無ければ None（変更しない）。"""
+    if args.consumption_tax is None:
+        if args.tax_method or args.tax_calc or args.tax_allocation or args.small_exemption:
+            raise KessanError("--tax-method などは --consumption-tax 課税 と一緒に指定してください")
+        return None
+    if args.consumption_tax == "免税":
+        return {"区分": "免税"}
+    if not args.tax_method:
+        raise KessanError("--consumption-tax 課税 のときは --tax-method（原則／簡易／2割特例）が必要です")
+    if not args.tax_calc:
+        raise KessanError("--consumption-tax 課税 のときは --tax-calc（割戻し／積上げ）が必要です")
+    if args.tax_method == "原則" and not args.tax_allocation:
+        raise KessanError("--tax-method 原則 のときは --tax-allocation（全額控除／個別対応／一括比例配分）が必要です")
+    return {"区分": "課税", "方式": args.tax_method, "計算": args.tax_calc,
+            "控除": args.tax_allocation or "", "少額特例": args.small_exemption}
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
     year_dir = args.year_dir
     try:
         if args.command == "init":
-            init_year_dir(year_dir, args.start, args.end)
+            init_year_dir(year_dir, args.start, args.end, tax=_init_tax(args))
             print(f"年度フォルダを用意しました: {year_dir}")
             return 0
         if not (year_dir / "journal.csv").exists():
