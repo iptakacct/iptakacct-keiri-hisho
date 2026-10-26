@@ -252,3 +252,59 @@ def test_sy35_skeleton_order_preserved(year_dir, accounts):
     root, _ = sy35(year_dir, accounts, [sale("1", 110000), purchase("2", 22000, invoice="経過80")])
     skeleton = ET.parse(tatsujin_xml.SKELETON_DIR / "sy35-skeleton.xml").getroot()
     assert [e.tag for e in root.iter()] == [e.tag for e in skeleton.iter()]
+
+
+def _gensoku_books(year_dir, rows):
+    make_books(year_dir)
+    init_year_dir(year_dir, *PERIOD, tax=TAXABLE)
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+
+
+def test_export_passes_summary_notes(year_dir, accounts):
+    """集計の注意（課税売上割合95%未満なのに全額控除 等）を export の notes にも出す。経過措置70・30の注意は SY35 の警告と重ねない。
+
+    課税売上 税込110,000 → 税抜100,000、非課税売上（受取利息）100,000 → 課税売上割合 50%
+    """
+    _gensoku_books(year_dir, [
+        sale("1", 110000), sale("2", 100000, cat="非課税売上", account="受取利息"),
+        purchase("3", 11000, invoice="経過70"),
+    ])
+    notes = []
+    tatsujin_xml.export(year_dir, accounts, ["shohizei"], notes=notes)
+    assert any("課税売上割合が95%未満（50.00%）" in n for n in notes)
+    assert sum("70%・30%" in n for n in notes) == 1
+
+
+def test_export_warns_old_sy35_left_when_not_applicable(year_dir, accounts):
+    """原則課税をやめた年度（免税・簡易・2割）に古い SY35 が残っていれば警告する（消さない）。"""
+    _gensoku_books(year_dir, [sale("1", 110000)])
+    old = tatsujin_xml.export(year_dir, accounts, ["shohizei"])[0]
+    init_year_dir(year_dir, *PERIOD, tax={"区分": "課税", "方式": "簡易", "計算": "割戻し"})
+    notes = []
+    tatsujin_xml.export(year_dir, accounts, None, notes=notes)
+    assert old.exists()
+    assert any(old.name in n and "古いファイルが残っています。達人に渡さない" in n for n in notes)
+
+
+def test_export_no_old_file_warning_when_absent(year_dir, accounts):
+    make_books(year_dir)
+    notes = []
+    tatsujin_xml.export(year_dir, accounts, None, notes=notes)
+    assert not any("古いファイル" in n for n in notes)
+
+
+@pytest.mark.parametrize("account", ["有価証券売却益", "投資有価証券売却益"])
+def test_export_warns_securities_sales(year_dir, accounts, account):
+    """有価証券の売却益を非課税売上で入れていたら、達人の有価証券の欄（譲渡対価の5%）で確かめるよう警告する（欄は今のまま）。"""
+    _gensoku_books(year_dir, [sale("1", 1100000), sale("2", 50000, cat="非課税売上", account=account)])
+    notes = []
+    root = parse(tatsujin_xml.export(year_dir, accounts, ["shohizei"], notes=notes)[0].read_bytes())
+    assert filled(root)[("D020114", "HIKAZEIURIAGEYUUKAIGAIZEINUKI10")] == "50000"
+    assert any(account in n and "5%" in n and "有価証券" in n for n in notes)
+
+
+def test_export_no_securities_warning_for_other_nontaxable(year_dir, accounts):
+    _gensoku_books(year_dir, [sale("1", 1100000), sale("2", 50000, cat="非課税売上", account="受取利息")])
+    notes = []
+    tatsujin_xml.export(year_dir, accounts, ["shohizei"], notes=notes)
+    assert not any("有価証券" in n for n in notes)

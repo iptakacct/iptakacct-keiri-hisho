@@ -265,12 +265,18 @@ def swap_in(pairs, prefix="output/"):
                 path.unlink()
             except OSError:
                 pass
+        stranded = []
         for path, backup in backups.items():
             try:
                 os.replace(str(backup), str(path))
             except OSError:
-                pass
-        raise cannot_write(f"{prefix}{failed.name}") from None
+                stranded.append(backup)
+        error = cannot_write(f"{prefix}{failed.name}")
+        if stranded:
+            names = "、".join(str(b) for b in stranded)
+            raise KessanError(f"{error}。元のファイルを戻せませんでした（{names} に残っています。"
+                              "名前の末尾の .bak を消すと元に戻ります）") from None
+        raise error from None
     for backup in backups.values():
         try:
             backup.unlink()

@@ -22,6 +22,7 @@ KIND_ORDER = ("課税売上", "課税売上返還", "免税売上", "非課税�
 PURCHASE_KINDS = ("課税仕入", "課税仕入返還")
 FULL_RATIO = 100
 TAXABLE_SALES_LIMIT = 500_000_000  # 課税売上高（税抜）がこれを超えると全額控除できない
+NO_COLUMN_TRANSITION_NOTE = "経過措置70%・30%分は消費税の達人のXMLに欄が無いため、達人に手で入れる"
 
 SUMMARY_FILE = "consumption-tax-summary"
 SUMMARY_COLUMNS = ["区分", "税区分", "税率", "インボイス", "個別対応", "件数", "税込", "税抜", "消費税額", "国税", "地方税",
@@ -190,7 +191,7 @@ def summarize(year_dir, accounts, settings, transitions, rates, extra_entries=No
                              "個別対応方式か一括比例配分方式に直してください")
         estimate = sales_tax - deductible
     if any(x.invoice in ("経過70", "経過30") and x.count for x in lines):
-        notes.append("経過措置70%・30%分は消費税の達人のXMLに欄が無いため、達人に手で入れる")
+        notes.append(NO_COLUMN_TRANSITION_NOTE)
     return TaxSummary(lines, ratio, estimate, notes)
 
 

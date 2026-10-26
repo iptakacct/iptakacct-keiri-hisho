@@ -2,7 +2,7 @@
 
 試算表（期首残高＋journal＋adjustments）を科目マスタの表示区分で区分して並べる。科目の並びは科目マスタの順。
 損益の科目は繰越利益剰余金へ振り替えていないので、貸借対照表の繰越利益剰余金は帳簿の期末残高に当期純利益を足す。
-貸借一致と、損益計算書の当期純利益＝変動計算書の当期純利益を検算し、合わなければ何も出さずに KessanError。
+貸借一致と、損益計算書の当期純利益＝変動計算書の当期純利益、変動計算書の期末残高の合計＝純資産の部の合計を検算し、合わなければ何も出さずに KessanError。
 内訳書・概況書・達人XML（Task 4・5）は、ここで作る Statements を材料にする（数字の出どころを1か所にする）。
 """
 from collections import defaultdict
@@ -176,6 +176,11 @@ def build_statements(year_dir, accounts):
     if in_equity != net_income:
         raise KessanError(f"損益計算書の当期純利益（{net_income:,}円）と株主資本等変動計算書の当期純利益（{in_equity:,}円）が"
                           f"合いません（差額 {net_income - in_equity:,}円）。決算書は出していません")
+    equity_closing = sum(r.closing for r in equity)
+    net_assets = sum(s.total for s in bs if side[s.name] == "純資産")
+    if equity_closing != net_assets:
+        raise KessanError(f"株主資本等変動計算書の期末残高の合計（{equity_closing:,}円）と貸借対照表の純資産の部の合計"
+                          f"（{net_assets:,}円）が合いません（差額 {equity_closing - net_assets:,}円）。決算書は出していません")
 
     warnings = []
     pending = _pending_count(year_dir)

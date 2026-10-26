@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from common import KessanError, cannot_write, load_company_name, load_period, swap_in
+from common import KessanError, cannot_write, load_company_name, load_period, parse_amount, swap_in
 
 SKELETON_DIR = Path(__file__).parents[3] / "config/tatsujin"
 OUTPUT_DIR = "output/tatsujin"
@@ -418,7 +418,7 @@ def build_sy35(summary, settings, company, period):
 
 def _build_shohizei(ctx):
     from tax import load_rates, load_tax_settings, load_transitions
-    from tax_summary import summarize
+    from tax_summary import NO_COLUMN_TRANSITION_NOTE, summarize
     settings = load_tax_settings(ctx.year_dir)
     if not settings.taxable:
         raise NotApplicable("免税の年度です（period.yaml の消費税）")
@@ -426,8 +426,31 @@ def _build_shohizei(ctx):
         raise NotApplicable(f"{settings.method}の年度です。{SY35_MANUAL_METHODS}")
     summary = summarize(ctx.year_dir, ctx.accounts, settings, load_transitions(), load_rates())
     root, warnings = build_sy35(summary, settings, load_company_name(ctx.year_dir), load_period(ctx.year_dir))
-    ctx.notes.extend(f"消費税XML: {w}" for w in warnings)
+    # 集計の注意（5億円超・95%未満 等）も出す。経過措置70%・30%は build_sy35 が金額つきで出すので重ねない
+    notes = [n for n in summary.notes if n != NO_COLUMN_TRANSITION_NOTE]
+    ctx.notes.extend(f"消費税XML: {w}" for w in notes + warnings + _securities_warnings(ctx.year_dir))
     return root
+
+
+SECURITIES_SALE_ACCOUNTS = ("有価証券売却益", "投資有価証券売却益")
+
+
+def _securities_warnings(year_dir):
+    """有価証券の売却益に税区分（対象外以外）を付けた行があれば警告。SY35 では非課税売上の欄にそのまま入れている。"""
+    from ledger import entry_rows, entry_where
+    from tax import TAX_CATEGORIES
+    totals = {}
+    for r in entry_rows(year_dir):
+        for side in ("借方", "貸方"):
+            name = r[f"{side}科目"].strip()
+            category = TAX_CATEGORIES.get(r[f"{side}税区分"].strip())
+            if name not in SECURITIES_SALE_ACCOUNTS or category is None or category.kind == "対象外":
+                continue
+            amount = parse_amount(r[f"{side}金額"], entry_where(r))
+            totals[name] = totals.get(name, 0) + (amount if side == "貸方" else -amount)
+    return [f"{name}（{amount:,}円）を非課税売上の欄に入れました。有価証券の譲渡は、課税売上割合の計算では"
+            "売却益ではなく譲渡対価の5%を非課税売上に入れる決まりなので、達人の有価証券の欄で確かめて直してください"
+            for name, amount in totals.items()]
 
 
 # ---- 書き出し（種類の登録と export） ----
@@ -493,6 +516,11 @@ def export(year_dir, accounts, kinds=None, *, st=None, notes=None):
             if explicit:
                 raise KessanError(str(e)) from None
             ctx.notes.append(f"{name} は出しません: {e}")
+            # 以前の年度の設定で書いたファイルが残っていると取り違えるので知らせる（消さない）
+            old = sorted((year_dir / OUTPUT_DIR).glob(f"{name}-{kind.prefix}-*.xml"))
+            if old:
+                ctx.notes.append(f"{OUTPUT_DIR}/ に {name} の古いファイルが残っています。達人に渡さない"
+                                 f"（{', '.join(p.name for p in old)}）")
             continue
         built.append((output_path(year_dir, name, kind.prefix, period), render(root)))
     if notes is not None:

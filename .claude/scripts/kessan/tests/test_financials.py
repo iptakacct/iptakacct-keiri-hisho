@@ -180,6 +180,21 @@ def test_mismatch_net_income_raises(year_dir, accounts, monkeypatch):
         financials.build_statements(year_dir, accounts)
 
 
+def test_mismatch_equity_closing_vs_bs_raises(year_dir, accounts, monkeypatch):
+    """株主資本等変動計算書の期末残高の合計が、貸借対照表の純資産の部の合計と合わなければ止める（差額を出す）。"""
+    make_books(year_dir)
+    real = financials._equity_rows
+
+    def wrong(*args, **kwargs):
+        rows = real(*args, **kwargs)
+        rows[0].closing += 5
+        return rows
+
+    monkeypatch.setattr(financials, "_equity_rows", wrong)
+    with pytest.raises(KessanError, match="株主資本等変動計算書の期末残高.*純資産の部.*差額 5円"):
+        financials.build_statements(year_dir, accounts)
+
+
 def test_statements_warn_pending_and_no_income_tax(year_dir, accounts):
     """法人税等が0・候補が2件（1件は2行）残る・会社名なし → 警告3つ。それでも決算書は出る。"""
     make_books(year_dir, income_tax=False, company=None)

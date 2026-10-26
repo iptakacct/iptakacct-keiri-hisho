@@ -265,3 +265,29 @@ def test_load_company_name_missing_is_blank(tmp_path):
     assert load_company_name(tmp_path / "none") == ""
     init_year_dir(tmp_path / "y", "2025-04-01", "2026-03-31")
     assert load_company_name(tmp_path / "y") == ""
+
+
+def test_swap_in_reports_backups_it_could_not_restore(tmp_path, monkeypatch):
+    """2つ目の置き換えに失敗し、1つ目の .bak を元の名前に戻すのにも失敗したら、残った .bak のパスをエラーに出す。"""
+    import common
+    from common import swap_in
+    a, b = tmp_path / "a.xml", tmp_path / "b.xml"
+    a.write_text("old-a", encoding="utf-8")
+    b.write_text("old-b", encoding="utf-8")
+    ta, tb = tmp_path / "a.tmp", tmp_path / "b.tmp"
+    ta.write_text("new-a", encoding="utf-8")
+    tb.write_text("new-b", encoding="utf-8")
+    original = common.os.replace
+
+    def flaky(src, dst):
+        src, dst = str(src), str(dst)
+        if src == str(tb) or (src.endswith("a.xml.bak") and dst == str(a)):
+            raise PermissionError("locked")
+        return original(src, dst)
+
+    monkeypatch.setattr(common.os, "replace", flaky)
+    with pytest.raises(KessanError, match="b.xml に書き込めません") as e:
+        swap_in([(ta, a), (tb, b)])
+    assert str(tmp_path / "a.xml.bak") in str(e.value)
+    assert "b.xml.bak" not in str(e.value)  # 戻せた分は出さない
+    assert (tmp_path / "a.xml.bak").read_text(encoding="utf-8") == "old-a"

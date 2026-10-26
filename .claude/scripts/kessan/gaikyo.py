@@ -2,11 +2,14 @@
 
 - 主要科目（main）：UG16 雛形の SYUYOUKAMOKU の要素名 → 金額。区分の合計・段階利益は決算書（Statements）から、
   個別の項目は科目マスタの概況書項目が同じ科目の金額（決算書の金額。控除科目はマイナス）の合計
-- 月別（monthly）：期首月から12か月。journal と adjustments の行を日付の月で数える。期間外の月（12か月未満の年度の残り）は空
+- 月別（monthly）：期首日から1か月ずつ区切った12か月（20日締めの年度も暦の月ではなく期首日から数える）。journal と adjustments の行を
+  日付の入る月で数える。期間外の月（12か月未満の年度の残り）は空
 Excel の材料（output/gaikyo-material.xlsx）と UG16 の XML は、どちらも build の結果から作る。
 """
+import calendar
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
@@ -91,7 +94,7 @@ WITHHOLDING_ACCOUNT, WITHHOLDING_WORD = "預り金", "源泉"
 class Gaikyo:
     main: dict
     monthly: list  # 12か月分。期間内の月は {要素名: 金額}（TUKIBETU は月の数字）、期間外の月は {}
-    months: list = field(default_factory=list)  # 期間内の月（YYYY-MM）
+    months: list = field(default_factory=list)  # 期間内の月の表示（YYYY-MM。月初始まりでなければ 初日〜末日）
 
 
 def _main(st, accounts):
@@ -117,29 +120,49 @@ def _main(st, accounts):
     return main
 
 
-def _months(period):
-    """期首月から期末月までの YYYY-MM。12か月を超える年度は KessanError。"""
-    year, month = int(period[0][:4]), int(period[0][5:7])
-    end = period[1][:7]
+def _add_months(start, k):
+    """期首日から k か月後の日（その月に同じ日が無ければ月末）。"""
+    month0 = start.month - 1 + k
+    year, month = start.year + month0 // 12, month0 % 12 + 1
+    return date(year, month, min(start.day, calendar.monthrange(year, month)[1]))
+
+
+def _fiscal_months(period):
+    """事業年度を期首日から1か月ずつ区切った各月の (初日, 末日)。12か月を超える年度は KessanError。
+
+    期首日が月の初日でない年度（21日始まり・20日締めなど）も、暦の月ではなく期首日から数えた月で区切る。
+    """
+    start, end = (date.fromisoformat(d) for d in period)
     months = []
-    while True:
-        months.append(f"{year:04d}-{month:02d}")
-        if months[-1] >= end:
-            break
-        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-    if len(months) > 12:
-        raise KessanError(f"事業年度（{period[0]}〜{period[1]}）が12か月を超えています。概況書の月別は12か月までです")
+    while _add_months(start, len(months)) <= end:
+        first = _add_months(start, len(months))
+        months.append((first, min(_add_months(start, len(months) + 1) - timedelta(days=1), end)))
+        if len(months) > 12:
+            raise KessanError(f"事業年度（{period[0]}〜{period[1]}）が12か月を超えています。概況書の月別は12か月までです")
     return months
 
 
+def _month_label(first, last):
+    """材料の「月」列。月の初日から始まる月は YYYY-MM、それ以外は初日〜末日。"""
+    return first.strftime("%Y-%m") if first.day == 1 else f"{first.isoformat()}〜{last.isoformat()}"
+
+
 def monthly_amounts(year_dir, accounts):
-    """(期間内の月の一覧, 12か月分の月別の金額)。費用は借方−貸方、売上は貸方−借方、源泉徴収税額は貸方だけ。"""
-    months = _months(load_period(year_dir))
-    sums = {m: defaultdict(int) for m in months}
+    """(期間内の月の一覧, 12か月分の月別の金額)。費用は借方−貸方、売上は貸方−借方、源泉徴収税額は貸方だけ。
+
+    TUKIBETU は各月の初日の月の数字（21日始まりなら 3/21〜4/20 が 3）。
+    """
+    fiscal = _fiscal_months(load_period(year_dir))
+    sums = [defaultdict(int) for _ in fiscal]
     for r in entry_rows(year_dir):
-        bucket = sums.get(r["日付"].strip()[:7])
-        if bucket is None:
+        try:
+            day = date.fromisoformat(r["日付"].strip())
+        except ValueError:
             continue
+        k = next((i for i, (first, last) in enumerate(fiscal) if first <= day <= last), None)
+        if k is None:
+            continue
+        bucket = sums[k]
         for side in ("借方", "貸方"):
             name = r[f"{side}科目"].strip()
             acc = accounts.get(name)
@@ -157,8 +180,9 @@ def monthly_amounts(year_dir, accounts):
                 bucket[PERSONNEL] += debit
             if side == "貸方" and name == WITHHOLDING_ACCOUNT and WITHHOLDING_WORD in r["貸方補助"]:
                 bucket[WITHHOLDING] += amount
-    monthly = [{MONTH: int(m[5:7]), **{k: sums[m][k] for k in MONTHLY_LABELS}} for m in months]
-    return months, monthly + [{} for _ in range(12 - len(months))]
+    monthly = [{MONTH: first.month, **{k: sums[i][k] for k in MONTHLY_LABELS}} for i, (first, _) in enumerate(fiscal)]
+    labels = [_month_label(first, last) for first, last in fiscal]
+    return labels, monthly + [{} for _ in range(12 - len(fiscal))]
 
 
 def build(year_dir, accounts, st):

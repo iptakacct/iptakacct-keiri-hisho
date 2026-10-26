@@ -241,6 +241,45 @@ def test_monthly_short_year_and_odd_start(tmp_path, gaccounts):
         assert all(e.text is None for e in monthly if e.tag.endswith(f"_{n:02d}"))
 
 
+def _day21_books(year_dir):
+    """21日始まり・20日締めの年度（2025-03-21〜2026-03-20）。月別は期首日から1か月ずつ区切る（3/21〜4/20 が _01＝3月）。
+
+    3/25 売上 100,000・4/20 売上 10,000 → _01（3月）110,000
+    4/21 売上 20,000 → _02（4月）／1/20 売上 30,000 → _10（12月）／3/20 売上 40,000 → _12（2月）
+    """
+    init_year_dir(year_dir, "2025-03-21", "2026-03-20", company_name="テスト株式会社")
+    write_rows(year_dir / "opening-balances.csv", OPENING_COLUMNS, [
+        {"科目": "普通預金", "補助": "", "残高": "1000000"}, {"科目": "資本金", "補助": "", "残高": "1000000"}])
+    sales = [("1", "2025-03-25", 100000), ("2", "2025-04-20", 10000), ("3", "2025-04-21", 20000),
+             ("4", "2026-01-20", 30000), ("5", "2026-03-20", 40000)]
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [
+        line(no, date, debit=BANK + (amount,), credit=("売上高", "", amount)) for no, date, amount in sales])
+    return year_dir
+
+
+def test_monthly_fiscal_months_not_calendar(tmp_path, gaccounts):
+    year_dir = _day21_books(tmp_path / "day21")
+    g, _ = build(year_dir, gaccounts)
+    assert [m["TUKIBETU"] for m in g.monthly] == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2]
+    assert [m["URIAGESYUUNYUUKINGAKU1"] for m in g.monthly] == [
+        110000, 20000, 0, 0, 0, 0, 0, 0, 0, 30000, 0, 40000]
+    assert g.months[0] == "2025-03-21〜2025-04-20" and g.months[-1] == "2026-02-21〜2026-03-20"
+
+
+def test_statements_and_export_for_day21_year(tmp_path, capsys):
+    """20日締めの年度でも statements と export-tatsujin が止まらない（概況書の月別が13に分かれない）。"""
+    import cli
+    year_dir = _day21_books(tmp_path / "day21")
+    assert cli.main(["statements", "--year-dir", str(year_dir)]) == 0
+    assert cli.main(["export-tatsujin", "--year-dir", str(year_dir)]) == 0
+    out = capsys.readouterr().out
+    assert "gaikyo-UG16-20260320.xml" in out
+    tree = parse((year_dir / "output" / "tatsujin" / "gaikyo-UG16-20260320.xml").read_bytes())
+    monthly = tree.find("DATA/TUKIBETUURIAGEDAKA")
+    assert monthly.find("TUKIBETU_01").text == "3" and monthly.find("TUKIBETU_12").text == "2"
+    assert monthly.find("URIAGESYUUNYUUKINGAKU1_01").text == "110000"
+
+
 def test_monthly_rejects_period_over_12_months(tmp_path, gaccounts):
     year_dir = tmp_path / "long"
     init_year_dir(year_dir, "2025-04-01", "2026-04-30")
