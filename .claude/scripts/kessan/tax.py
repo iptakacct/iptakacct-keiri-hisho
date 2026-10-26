@@ -141,7 +141,7 @@ def load_transitions(path=TRANSITION_PATH):
         if start > end:
             raise KessanError(f"経過措置の開始が終了より後です: {start}〜{end}")
         label, ratio = r.get("区分"), r.get("割合")
-        if label not in INVOICE_VALUES or isinstance(ratio, bool) or not isinstance(ratio, int) \n                or not label.startswith("経過") or label != f"経過{ratio}":
+        if label not in INVOICE_VALUES or isinstance(ratio, bool) or not isinstance(ratio, int) or label != f"経過{ratio}":
             raise KessanError(f"経過措置の区分・割合が不正です: {r}")
         out.append(Transition(start, end, label, ratio))
     out.sort(key=lambda t: t.start)
