@@ -345,3 +345,21 @@ def test_small_amount_already_expensed_is_not_staged(year_dir, accounts, company
     assert staged(year_dir) == []
     assert any("close:減価償却:ノートPC" in n.message and "工具器具備品" in n.message and "マイナス" in n.message
                for n in result.notes)
+
+
+def test_intangible_straight_line_to_zero(year_dir, accounts, company):
+    ledger(company, "会計ソフト,ソフトウエア,2025-04-01,2025-04-01,300000,定額法,5,240000,,")
+    r = one(year_dir, accounts, company)  # 300,000 × 0.200 = 60,000。残り60,000をそのまま償却して0円
+    assert (r["借方科目"], r["借方金額"], r["貸方科目"], r["貸方金額"]) == ("減価償却費", "60000", "ソフトウエア", "60000")
+    ledger(company, "会計ソフト,ソフトウエア,2025-04-01,2025-04-01,300000,定額法,5,300000,,")
+    run(year_dir, accounts, company)
+    assert staged(year_dir) == []  # 償却済み
+    ledger(company, "会計ソフト,ソフトウエア,2025-04-01,2025-04-01,300000,定額法,5,270000,,")
+    (r,) = [x for x in (run(year_dir, accounts, company), staged(year_dir))[1]]
+    assert r["借方金額"] == "30000"  # 残りを超えない（備忘価額の1円を残さない）
+
+
+def test_intangible_declining_rejected(accounts, company):
+    ledger(company, "会計ソフト,ソフトウエア,2025-04-01,2025-04-01,300000,定率法,5,0,,")
+    with pytest.raises(KessanError, match="無形固定資産は定額法だけ"):
+        close_depreciation.load_assets(company / "fixed-assets.csv", accounts)

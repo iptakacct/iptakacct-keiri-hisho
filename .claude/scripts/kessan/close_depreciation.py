@@ -184,6 +184,8 @@ def load_assets(path, accounts):
         method = _text(r["償却方法"])
         if method not in METHODS:
             problems.append(f"償却方法「{method}」は {'／'.join(METHODS)} のどれかにしてください")
+        if method == DECLINING and account is not None and account.section == INTANGIBLE:
+            problems.append("無形固定資産は定額法だけです（定率法にできない）")
         if method == LUMP and 0 < price >= LUMP_LIMIT:
             problems.append(f"一括償却は取得価額が{LUMP_LIMIT:,}円未満の資産だけです")
         if method == SMALL and 0 < price >= SMALL_LIMIT:
@@ -263,14 +265,14 @@ def _lump(asset, period_months):
     return min(asset.price * period_months // 36, asset.price - asset.prior)
 
 
-def _skip(asset, start, end):
+def _skip(asset, start, end, intangible=False):
     """償却しない資産（供用前・除却済み・償却済み）。所見も出さない。一括償却は除却しても続くので除却日を見ない。"""
     if asset.in_service > end:
         return True
     if asset.method != LUMP and asset.retired and asset.retired < start:
         return True
     if asset.method in (STRAIGHT, DECLINING):
-        return asset.price - asset.prior <= 1
+        return asset.price - asset.prior <= (0 if intangible else 1)  # 無形固定資産は備忘価額を残さず0円まで
     return asset.price - asset.prior <= 0
 
 
@@ -286,7 +288,8 @@ def _candidates(ctx, assets):
     if any(a.method == SMALL for a in assets):
         notes.append(close.Note(ITEM, "少額減価償却資産の特例は中小企業者等だけ（適用できるか確認）"))
     for asset in assets:
-        if _skip(asset, start, end):
+        intangible = ctx.accounts[asset.account].section == INTANGIBLE
+        if _skip(asset, start, end, intangible):
             continue
         months = _months(asset, start, end)
         if asset.method in (STRAIGHT, DECLINING) and period_months < 12:
@@ -297,7 +300,7 @@ def _candidates(ctx, assets):
             continue
         if asset.method == STRAIGHT:
             amount = _floor(Decimal(asset.price) * rates[STRAIGHT][asset.life] * months / 12)
-            amount = max(0, min(amount, asset.price - asset.prior - 1))
+            amount = max(0, min(amount, asset.price - asset.prior - (0 if intangible else 1)))
         elif asset.method == DECLINING:
             amount, unsure = _declining(asset, rates, start, end, months)
             if unsure:
@@ -313,7 +316,6 @@ def _candidates(ctx, assets):
                                           "（除却の仕訳は手で。除却後は台帳から外すか除却日を残す）"))
         if amount <= 0:
             continue
-        intangible = ctx.accounts[asset.account].section == INTANGIBLE
         credit = ACCUMULATED if asset.method in (STRAIGHT, DECLINING) and not intangible else asset.account
         if asset.method in (STRAIGHT, DECLINING):
             basis = f"{asset.method}・耐用年数{asset.life}年・{months}か月分"

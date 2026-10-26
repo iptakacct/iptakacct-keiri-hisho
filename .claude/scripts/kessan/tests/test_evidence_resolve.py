@@ -193,3 +193,29 @@ def test_resolve_as_new_refuses_discarded_receipt(year_dir, tmp_path):
     with pytest.raises(KessanError, match="破棄"):
         resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None)
     assert len(read_rows(year_dir / "staging.csv")) == 2
+
+
+def test_as_new_unpaid_deferred_payment_credits_payable(year_dir, tmp_path, accounts):
+    from tax_edit import split_tax
+    (year_dir / "period.yaml").write_text(
+        '期首日: "2025-04-01"\n期末日: "2026-03-31"\n'
+        "消費税:\n  区分: 課税\n  方式: 原則\n  計算: 割戻し\n  控除: 全額控除\n", encoding="utf-8")
+    setup_multiple(year_dir, state="未払候補", 取り込み元ID="", 支払方法の推定="後払い", 金額="1620")
+    assert resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None).state == "新規仕訳"
+    (ev,) = read_rows(year_dir / "evidence.csv")
+    assert (ev["状態"], ev["取り込み元ID"]) == ("新規仕訳", "receipt:e1")
+    new = read_rows(year_dir / "staging.csv")[-1]
+    assert (new["借方科目"], new["貸方科目"], new["貸方補助"], new["貸方金額"], new["日付"]) == (
+        "消耗品費", "未払金", "テスト文具店", "1620", "2025-04-10")
+    number = split_tax(year_dir, "receipt:e1", [(10, 1080), (8, 540)], {("現金", "")}, accounts)
+    rows = [r for r in read_rows(year_dir / "staging.csv") if r["取り込み元ID"] == "receipt:e1"]
+    assert {r["伝票番号"] for r in rows} == {number} and len(rows) == 3
+    assert [r["借方金額"] for r in rows[:2]] == ["1080", "540"]
+    assert (rows[2]["貸方科目"], rows[2]["貸方補助"], rows[2]["貸方金額"]) == ("未払金", "テスト文具店", "1620")
+
+
+def test_as_new_multiple_without_payment_still_refused(year_dir, tmp_path):
+    setup_multiple(year_dir, 支払方法の推定="後払い")
+    with pytest.raises(KessanError, match="as-payable"):
+        resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None)
+    assert len(read_rows(year_dir / "staging.csv")) == 2

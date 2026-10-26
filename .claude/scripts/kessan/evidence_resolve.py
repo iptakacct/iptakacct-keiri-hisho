@@ -2,7 +2,7 @@
 
 - match：複数候補の証憑を、候補のうちの1つの明細行に決める（明細行に証憑を付ける処理は import-extracted と同じ）
 - as_payable：決算整理で未払として扱う（未払候補にする）
-- as_new：証憑から新しい仕訳の候補を staging に作る（支払方法が決まらないものは作れない）
+- as_new：証憑から新しい仕訳の候補を staging に作る（支払方法が決まらない未払候補は貸方を未払金にする。複数候補は作れない）
 書き込みの順序は import-extracted と同じ（staging.csv → evidence.csv）。
 """
 from dataclasses import dataclass
@@ -17,7 +17,7 @@ from evidence import (
     known_source_ids, read_evidence, receipt_source_id,
 )
 from extracted_import import attach_receipt_to_row, can_attach_receipt, new_entry_row
-from match import credit_for_new_entry, load_abbreviations, payment_accounts, receipt_default
+from match import NO_MATCH, credit_for_new_entry, load_abbreviations, payment_accounts, receipt_default
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,10 @@ def resolve_evidence(year_dir, evidence_id, *, match=None, as_payable=False, as_
         credit = credit_for_new_entry(data["種類"], data["支払方法の推定"], receipt_default(sources),
                                       payment_accounts(sources))
         if credit is None:
-            raise KessanError("支払方法が決まらないので新規仕訳にできない（as-payable を使う）")
+            if state != STATE_UNPAID:
+                raise KessanError("支払方法が決まらないので新規仕訳にできない（as-payable を使う）")
+            # 未払候補で支払方法が決まらない（後払い・不明）：貸方を未払金（補助＝取引先）にした仕訳にする
+            credit = ("未払金", data["取引先"].strip(), NO_MATCH)
         new_state, new_source = STATE_NEW_ENTRY, receipt_source_id(evidence_id)
         if new_source in discarded_source_ids(year_dir):
             raise KessanError(f"{new_source} はオーナーが破棄した行なので作り直せません（discard-log.csv）")

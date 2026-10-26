@@ -335,7 +335,7 @@ def test_unpaid_mixed_rate_evidence_is_note(year_dir, accounts):
     evidence(year_dir, 税率="混在", 証憑ファイル="inbox/請求書-1.pdf")
     r = run(year_dir, accounts)
     assert staged(year_dir, "close:未払:ev1") == []
-    assert any("税率が混在する証憑（inbox/請求書-1.pdf）は resolve-evidence --as-new で仕訳にしてから split-tax で分ける"
+    assert any("税率が混在する証憑（inbox/請求書-1.pdf）は resolve-evidence --as-new で未払金の仕訳にしてから split-tax --id で分け"
                in n.message for n in r.notes)
 
 
@@ -424,3 +424,13 @@ def test_report_has_tax_columns(year_dir, accounts):
     evidence(year_dir)
     r = run(year_dir, accounts)
     assert "| 外注費 | 課税仕入10% | 未払金 |  |" in r.report_path.read_text(encoding="utf-8")
+
+
+def test_mixed_rate_payable_note_points_to_as_new_payable(year_dir, accounts):
+    (year_dir / "period.yaml").write_text(TAXABLE_PERIOD, encoding="utf-8")
+    books(year_dir, taxable=True)
+    evidence(year_dir, 税率="混在", 証憑ファイル="inbox/請求書-1.pdf")
+    r = run(year_dir, accounts)
+    (note,) = [n.message for n in r.notes if "税率が混在" in n.message]
+    assert "resolve-evidence --as-new で未払金の仕訳にしてから split-tax --id で分け、approve・post する" in note
+    assert "翌期の支払は未払金の消込にする" in note

@@ -211,6 +211,8 @@ def split_tax(year_dir, source_id, parts, payment_accounts, accounts=None):
         errors.append(f"{where}: 既に伝票番号（{row['伝票番号'].strip()}）が付いています")
     keys = {side: (row[f"{side}科目"].strip(), row[f"{side}補助"].strip()) for side in ("借方", "貸方")}
     paying = [side for side in ("借方", "貸方") if keys[side] in payment_accounts]
+    if not paying and source_id.startswith("receipt:") and keys["貸方"][0] == "未払金":
+        paying = ["貸方"]  # 支払方法が決まらない証憑から作った未払金の仕訳（resolve-evidence --as-new）は、未払金の側を明細側として扱う
     if len(paying) != 1:
         errors.append(f"{where}: 明細側（口座・カード・現金）がちょうど1つの行だけ分けられます"
                       f"（借方 {' '.join(keys['借方'])}／貸方 {' '.join(keys['貸方'])}）")

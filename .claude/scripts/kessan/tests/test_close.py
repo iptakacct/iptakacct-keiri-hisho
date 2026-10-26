@@ -577,3 +577,41 @@ def test_reconcile_tolerates_extra_staging_column(year_dir, accounts):
     write_rows(year_dir / STAGING, list(rows[0]) + ["メモ"], [{**r, "メモ": "手書き"} for r in rows])
     close.run_close(year_dir, accounts, items=[item])
     assert [(r["取り込み元ID"], r["承認"]) for r in staging(year_dir)] == [("close:テスト:k1", "済")]
+
+
+def test_report_posted_table_shows_adjustments_rows(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000, reason="再計算の理由XYZ")])
+    close.run_close(year_dir, accounts, items=[item])
+    close.approve_candidates(year_dir, ["close:テスト:k1"])
+    close.post_candidates(year_dir, accounts, items=[item])
+    r = close.run_close(year_dir, accounts, items=[item])
+    section = r.report_path.read_text(encoding="utf-8").split("### close:テスト:k1", 1)[1]
+    assert "登録済み" in section.splitlines()[0] and "支払手数料" in section and "1,000" in section
+    assert "再計算の理由XYZ" not in section
+    item.candidates = [fee("k1", 1500, reason="再計算の理由XYZ")]
+    section = close.run_close(year_dir, accounts, items=[item]).report_path.read_text(encoding="utf-8").split(
+        "### close:テスト:k1", 1)[1]
+    table, below = section.split("再計算の結果", 1)
+    assert "再計算の理由XYZ" not in table and "1,000" in table
+    assert "再計算の理由XYZ" in below and "1,500" in below
+
+
+def test_set_tax_on_posted_close_voucher_no_mismatch_note(year_dir, accounts):
+    from tax_edit import set_journal_tax
+    (year_dir / "period.yaml").write_text(TAXABLE_PERIOD, encoding="utf-8")
+    base_books(year_dir)
+    item = FakeItem([close.Candidate(item="テスト", key="t1", date="2026-03-31", reason="r", lines=[
+        {"借方科目": "支払手数料", "借方金額": "1000", "借方税区分": "対象外", "貸方科目": "未払金", "貸方金額": "1000",
+         "貸方税区分": "対象外", "摘要": "手数料t1"}])])
+    close.run_close(year_dir, accounts, items=[item])
+    close.approve_candidates(year_dir, ["close:テスト:t1"])
+    close.post_candidates(year_dir, accounts, items=[item])
+    voucher = read_rows(year_dir / "adjustments.csv")[0]["伝票番号"]
+    set_journal_tax(year_dir, [{"伝票番号": voucher, "行": 1, "借方税区分": "課税仕入10%", "借方インボイス": "適格"}])
+    r = close.run_close(year_dir, accounts, items=[item])
+    assert not [n for n in r.notes if "違います" in n.message]
+    item.candidates[0].lines[0]["借方金額"] = "1500"
+    item.candidates[0].lines[0]["貸方金額"] = "1500"
+    r = close.run_close(year_dir, accounts, items=[item])
+    assert [n for n in r.notes if "違います" in n.message]

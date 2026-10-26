@@ -193,16 +193,16 @@ def _validate_candidates(candidates, accounts, period):
         raise KessanError("決算整理の候補が不正です（何も書いていません）:\n" + "\n".join(errors))
 
 
-def _shape(rows):
-    """内容の比較用：日付・科目・補助・金額・税区分・摘要を並べたもの。"""
+def _shape(rows, tax=False):
+    """内容の比較用：日付・科目・補助・金額・摘要を並べたもの。登録済みとの比較では税の列を含めない（tax=False。set-tax で直した仕訳を「違う」としない）。"""
     def amount(v):
         try:
             return parse_amount(v, "金額")
         except KessanError:
             return v
     return sorted((r["日付"].strip(), r["借方科目"].strip(), r["借方補助"].strip(), str(amount(r["借方金額"])),
-                   r["借方税区分"].strip(), r["貸方科目"].strip(), r["貸方補助"].strip(), str(amount(r["貸方金額"])),
-                   r["貸方税区分"].strip(), r["摘要"].strip()) for r in rows)
+                   r["借方税区分"].strip() if tax else "", r["貸方科目"].strip(), r["貸方補助"].strip(),
+                   str(amount(r["貸方金額"])), r["貸方税区分"].strip() if tax else "", r["摘要"].strip()) for r in rows)
 
 
 def _candidate_issues(ctx, candidate):
@@ -275,7 +275,7 @@ def _reconcile(year_dir, candidates):
     # 承認済みでも再計算で内容が変わった候補は、最新の内容に置き換えて承認を外す（古い額のまま登録しない）
     by_id = {c.source_id: c for c in candidates}
     changed = {sid for sid, c in by_id.items()
-               if sid in approved_ids and sid not in posted and _shape(current[sid]) != _shape(_candidate_rows(c, ""))}
+               if sid in approved_ids and sid not in posted and _shape(current[sid], True) != _shape(_candidate_rows(c, ""), True)}
     new_rows, states, shown = [], {}, {}
     for sid, rows in _by_source(kept_rows).items():
         if sid in changed:
@@ -371,7 +371,8 @@ def _write_report(year_dir, candidates, notes, states, removed, now, rejected=()
         for c in (c for c in candidates if c.item == item):
             sid = c.source_id
             rows = shown.get(sid) or c.lines
-            reason = str(rows[0].get("要確認理由") or c.reason)
+            # 候補の行ならその理由、staging・adjustments.csv の行ならその行の理由（再計算の理由を混ぜない）
+            reason = c.reason if rows is c.lines else str(rows[0].get("要確認理由") or "")
             lines += [f"### {sid}（{STATE_LABELS[states[sid]]}）", ""] + _table(c.date, rows, sid, reason) + [""]
             if rows is not c.lines and _shape(rows) != _shape(_candidate_rows(c, "")):
                 lines += ["再計算の結果（上の内容と違う。直すなら close-unpost で登録を取り消してから close-candidates）:", ""]

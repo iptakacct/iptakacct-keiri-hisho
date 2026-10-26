@@ -162,7 +162,8 @@ def _payables(ctx, outgoing):
             continue
         if ctx.tax_settings.taxable and ev["税率"].strip() == MIXED_RATE:
             notes.append(close.Note(ITEM_PAYABLE, f"{label}: 税率が混在する証憑（{ev['証憑ファイル']}）は resolve-evidence --as-new"
-                                                   " で仕訳にしてから split-tax で分ける"))
+                                                   " で未払金の仕訳にしてから split-tax --id で分け、approve・post する"
+                                                   "（翌期の支払は未払金の消込にする）"))
             continue
         account = ctx.accounts.get(ev["科目候補"].strip())
         if account is None:
