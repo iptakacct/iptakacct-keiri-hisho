@@ -287,3 +287,100 @@ def test_rerun_after_posting_new_interim_payment_is_reported(year_dir, accounts)
     write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
     r = run(year_dir, accounts)
     assert any("違います" in n.message for n in r.notes)
+
+
+def test_set_amount_after_approve_replaces_stale_tax_candidate(year_dir, accounts):
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    run(year_dir, accounts)
+    close.approve_candidates(year_dir, [ID_TAX])  # 概算 7,200 で承認
+    close.set_amount(year_dir, "消費税", 9999)
+    # 上書き額を変えたら、承認済みの消費税の候補は承認が外れる
+    assert [r["承認"] for r in read_rows(year_dir / "adjustments-staging.csv") if r["取り込み元ID"] == ID_TAX] == ["", "", ""]
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "租税公課", "", 9999, "対象外"),
+        ("貸", "仮払税金", "", 3000, ""),
+        ("貸", "未払消費税等", "", 6999, ""),
+    ]
+    assert close.post_candidates(year_dir, accounts) == []  # 承認し直すまで登録しない
+    close.approve_candidates(year_dir, [ID_TAX])
+    assert close.post_candidates(year_dir, accounts) == ["A1"]
+    posted = read_rows(year_dir / "adjustments.csv")
+    assert [r["借方金額"] for r in posted if r["借方科目"] == "租税公課"] == ["9999"]
+
+
+def test_approved_tax_candidate_replaced_when_recomputed_differently(year_dir, accounts):
+    # 上書き額を通さずに額が変わった（帳簿が増えた）ときも、承認済みの候補を最新の内容に置き換えて承認を外す
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    run(year_dir, accounts)
+    close.approve_candidates(year_dir, [ID_TAX])
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("9", "2026-03-20", debit=("仮払税金", "", 500), credit=("現金", "", 500), 摘要="追加の納付"))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    run(year_dir, accounts)
+    staged = [r for r in read_rows(year_dir / "adjustments-staging.csv") if r["取り込み元ID"] == ID_TAX]
+    assert all(r["承認"] == "" and "再計算で内容が変わった" in r["要確認理由"] for r in staged)
+    assert ("貸", "仮払税金", "", 3500, "") in candidate_lines(year_dir, ID_TAX)
+
+
+def test_set_amount_corp_does_not_unapprove_consumption_tax(year_dir, accounts):
+    taxable(year_dir)
+    books(year_dir)
+    run(year_dir, accounts)
+    close.approve_candidates(year_dir, [ID_TAX])
+    close.set_amount(year_dir, "法人税等", 1000)
+    assert {r["承認"] for r in read_rows(year_dir / "adjustments-staging.csv") if r["取り込み元ID"] == ID_TAX} == {"済"}
+
+
+def test_consumption_tax_negative_override_is_refund(year_dir, accounts):
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    close.set_amount(year_dir, "消費税", -1500)
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "未収入金", "消費税", 4500, ""),
+        ("貸", "仮払税金", "", 3000, ""),
+        ("貸", "雑収入", "", 1500, "対象外"),
+    ]
+
+
+def test_corporate_tax_negative_override_is_refund(year_dir, accounts):
+    taxable(year_dir)
+    books(year_dir)
+    corp_interim(year_dir, 20000)
+    close.set_amount(year_dir, "法人税等", -5000)  # 中間納付 20,000 のうち 5,000 が戻る → 法人税等 15,000
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_CORP) == [
+        ("借", "未収入金", "法人税等", 5000, ""),
+        ("借", "法人税等", "", 15000, "対象外"),
+        ("貸", "仮払税金", "法人税等", 20000, ""),
+    ]
+    # 戻りが中間納付を超える（前期の分も戻る）ときは、法人税等を貸方に
+    close.set_amount(year_dir, "法人税等", -25000)
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_CORP) == [
+        ("借", "未収入金", "法人税等", 25000, ""),
+        ("貸", "仮払税金", "法人税等", 20000, ""),
+        ("貸", "法人税等", "", 5000, "対象外"),
+    ]
+    close.approve_candidates(year_dir, [ID_CORP])
+    assert close.post_candidates(year_dir, accounts) == ["A1"]
+
+
+def test_unpost_other_item_requires_tax_too(year_dir, accounts):
+    import pytest
+    import close_tax
+    from common import KessanError
+    taxable(year_dir)
+    books(year_dir)
+    items = [EarlierItem(), close_tax]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, ["close:未払:k1", ID_TAX])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A1", "A2"]
+    with pytest.raises(KessanError, match="消費税と一緒に取り消す"):
+        close.unpost_candidates(year_dir, ["close:未払:k1"], items=items)
+    assert {r["伝票番号"] for r in read_rows(year_dir / "adjustments.csv")} == {"A1", "A2"}
+    assert close.unpost_candidates(year_dir, [ID_TAX], items=items) == ["A2"]  # 消費税だけなら取り消せる
+    assert close.unpost_candidates(year_dir, ["close:未払:k1"], items=items) == ["A1"]

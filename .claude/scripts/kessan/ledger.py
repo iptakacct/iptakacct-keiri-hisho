@@ -26,11 +26,12 @@ def load_opening(year_dir):
     return dict(opening)
 
 
-def compute_balances(year_dir, accounts, until=None):
+def compute_balances(year_dir, accounts, until=None, extra=()):
+    """extra：帳簿に足して数える行（まだ書いていない仕訳。登録前の検算に使う）。"""
     totals = defaultdict(lambda: {"期首残高": 0, "借方発生": 0, "貸方発生": 0})
     for key, amount in load_opening(year_dir).items():
         totals[key]["期首残高"] += amount
-    for r in entry_rows(year_dir):
+    for r in entry_rows(year_dir) + list(extra):
         if until and r["日付"] > until:
             continue
         for side, column in (("借方", "借方発生"), ("貸方", "貸方発生")):

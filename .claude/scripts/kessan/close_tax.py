@@ -6,6 +6,8 @@
   年税額が0以下でも、中間納付の残高があるか年税額がマイナス（還付）なら、未収入金（補助 消費税）の候補にする。
 - 法人税等：段階3では見積もらない。close-overrides.yaml の `法人税等`（達人で計算した期末の未払額）があるときだけ候補にする。
   仮払税金（補助「法人税等」）の残高（中間納付）があれば、法人税等＝未払額＋中間納付として仮払税金を消す。
+  上書き額がマイナスなら還付：未収入金（補助 法人税等）に還付額、仮払税金（法人税等）を消し、法人税等＝中間納付−還付額
+  （マイナスなら貸方）にする。消費税の上書き額がマイナスのときは、上の還付の形（未収入金・雑収入）になる。
 """
 import close
 from common import parse_amount
@@ -108,6 +110,8 @@ def _corporate_tax(ctx, overrides):
         return [], notes
     unpaid = overrides[ITEM_CORP]
     total = unpaid + interim
+    if unpaid < 0:
+        return [_corporate_refund(ctx, -unpaid, interim)], []
     if total <= 0:
         return [], [close.Note(ITEM_CORP, "法人税等の未払額が0円で中間納付も無いため候補を作りません")]
     if interim:
@@ -121,6 +125,24 @@ def _corporate_tax(ctx, overrides):
     reason = (f"法人税等 {_yen(total)}（期末の未払額 {_yen(unpaid)}：上書き額（達人で計算した額）"
               f"＋中間納付 {_yen(interim)}）")
     return [close.Candidate(ITEM_CORP, ctx.period[1], ctx.period[1], lines, reason)], []
+
+
+def _corporate_refund(ctx, refund, interim):
+    """上書き額がマイナス（還付）：未収入金（法人税等）に還付額、仮払税金（法人税等）を消し、差額を法人税等にする。
+
+    法人税等＝中間納付−還付額。プラスなら借方、マイナス（前期分も戻る）なら貸方。
+    """
+    expense = interim - refund
+    lines = [{"借方科目": "未収入金", "借方補助": CORP_SUB, "借方金額": refund, "摘要": "法人税等の還付"}]
+    if expense > 0:
+        lines.append({"借方科目": "法人税等", "借方金額": expense, "借方税区分": _pl_tax(ctx), "摘要": "法人税、住民税及び事業税"})
+    if interim:
+        lines.append({"貸方科目": PREPAID, "貸方補助": CORP_SUB, "貸方金額": interim, "摘要": "法人税等の中間納付"})
+    if expense < 0:
+        lines.append({"貸方科目": "法人税等", "貸方金額": -expense, "貸方税区分": _pl_tax(ctx), "摘要": "法人税、住民税及び事業税"})
+    reason = (f"法人税等 {_yen(expense)}（還付 {_yen(refund)}：上書き額（達人で計算した額。マイナスは還付）"
+              f"、中間納付 {_yen(interim)}）")
+    return close.Candidate(ITEM_CORP, ctx.period[1], ctx.period[1], lines, reason)
 
 
 def collect(ctx):

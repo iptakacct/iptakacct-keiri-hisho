@@ -158,11 +158,12 @@ def test_closing_flow(company_books, accounts, capsys):
     assert not has_ng(run_checks(year, accounts))
 
     # 登録後に流し直しても候補は増えず、消費税の額も変わらない（登録済みの内容と再計算が一致する）。
-    # 未払・未収は帳簿に入ったので出なくなる（未収は期末の売掛金で説明できる入金として所見になる）
+    # 未払は証憑が未払計上になったので出なくなる。未収は翌期がまだ売上高のままなので登録済みとして据え置き
+    # （登録済みの未収を「期末の売掛金で説明できる」と数え直さない）
     assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
     again = capsys.readouterr().out
-    assert "要確認 0件 / 承認済み・登録済みのため据え置き 6件" in again
-    assert "期末の売掛金で説明できる可能性があるので候補にしない" in again
+    assert "要確認 0件 / 承認済み・登録済みのため据え置き 7件" in again
+    assert "期末の売掛金で説明できる" not in again
     assert read_rows(year / "adjustments-staging.csv") == []
     assert len(read_rows(year / "adjustments.csv")) == len(posted)
     assert "違います" not in again

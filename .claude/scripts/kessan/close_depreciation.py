@@ -10,7 +10,8 @@
 月数は、事業供用日が当期内なら供用月から期末月まで、前期以前なら期間の月数。除却日が当期内ならその月まで。
 償却率は `config/depreciation/rates.yaml`（国税庁の償却率等表）から読む。端数は円未満切り捨て。
 
-候補は 借方 減価償却費／貸方 減価償却累計額（定額法・定率法）、または 貸方 その資産の科目（一括償却・少額特例の直接控除）。
+候補は 借方 減価償却費／貸方 減価償却累計額（有形固定資産の定額法・定率法）、または 貸方 その資産の科目
+（無形固定資産と、一括償却・少額特例は直接控除）。
 消費税の課税の年度は、減価償却費の側を 対象外 にする（貸方は空）。
 所見：当期の journal に、台帳に無い固定資産らしい取得（固定資産の科目の借方、10万円以上の消耗品費など）があるとき。
 """
@@ -36,7 +37,8 @@ LUMP_LIMIT = 200000  # 一括償却は20万円未満
 SMALL_LIMIT = 300000  # 少額減価償却資産の特例は30万円未満
 SMALL_CAP = 3000000  # 少額特例の年間上限
 LUMP_YEARS = 3
-FIXED_SECTIONS = ("有形固定資産", "無形固定資産")
+INTANGIBLE = "無形固定資産"  # 減価償却累計額を使わず、資産の科目から直接引く
+FIXED_SECTIONS = ("有形固定資産", INTANGIBLE)
 NOT_DEPRECIABLE = ("減価償却累計額", "土地")
 WATCH_EXPENSES = ("消耗品費", "工具器具備品", "ソフトウエア")
 WATCH_AMOUNT = 100000
@@ -311,7 +313,8 @@ def _candidates(ctx, assets):
                                           "（除却の仕訳は手で。除却後は台帳から外すか除却日を残す）"))
         if amount <= 0:
             continue
-        credit = ACCUMULATED if asset.method in (STRAIGHT, DECLINING) else asset.account
+        intangible = ctx.accounts[asset.account].section == INTANGIBLE
+        credit = ACCUMULATED if asset.method in (STRAIGHT, DECLINING) and not intangible else asset.account
         if asset.method in (STRAIGHT, DECLINING):
             basis = f"{asset.method}・耐用年数{asset.life}年・{months}か月分"
         elif asset.method == LUMP:

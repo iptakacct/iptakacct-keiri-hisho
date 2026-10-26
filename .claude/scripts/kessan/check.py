@@ -131,10 +131,11 @@ def check_duplicates(entries):
     return findings
 
 
-def check_negative_balances(year_dir, accounts):
+def check_negative_balances(year_dir, accounts, extra=()):
+    """extra：帳簿に足して数える行（登録前の決算整理仕訳など）。"""
     return [
         Finding("NG", "マイナス残高", f"{name}（{_sub_label(sub)}）: 期末残高{v['期末残高']}")
-        for (name, sub), v in compute_balances(year_dir, accounts).items()
+        for (name, sub), v in compute_balances(year_dir, accounts, extra=extra).items()
         if accounts[name].category in ("資産", "負債") and v["期末残高"] < 0
     ]
 

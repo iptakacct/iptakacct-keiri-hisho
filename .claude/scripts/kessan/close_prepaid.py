@@ -3,7 +3,8 @@
 登録簿 `kessan-prepaid.yaml`（context/company）に登録した年払いの費用（保険料など）を対象にする。
 - 前払：当期の journal.csv の行のうち、借方が登録簿の科目で、摘要キーワード・取引先が摘要・取引先に合うものごとに、
   支払日の属する月から `月数` か月を役務の期間とし、期末日の月より後の月数 m を数える。前払額 = 金額 × m ÷ 月数（円未満切り捨て）。
-  期末日付けの候補（借方 前払費用（補助＝名前）／貸方 その科目）。0円なら候補なし。
+  期末日付けの候補（借方 前払費用（補助＝名前）／貸方 その科目）。0円なら候補なし。同じ取り込み元IDの行（1伝票を分けた支払）は
+  登録簿の項目ごとに合計して1候補にする（キーは取り込み元ID。1つの支払が2項目に分かれるときは「取り込み元ID:名前」）。
 - 前払戻し：期首残高の 前払費用 の補助ごとに、登録簿の同じ名前の科目へ戻す候補（期首日付け）。名前が登録簿に無ければ所見。
 - 所見：登録簿に無いが、1件5万円以上の保険料・地代家賃などの支払（年払いなら登録簿へ）。
 
@@ -107,8 +108,10 @@ def _tax(ctx):
 
 
 def _prepaid(ctx, registry):
+    """登録簿に合う支払を (取り込み元ID, 登録簿の名前) ごとにまとめて候補にする（1伝票を複数行に分けた支払は合計する）。"""
     candidates, notes, matched = [], [], set()
     end = ctx.period[1]
+    groups = {}  # (取り込み元ID, 名前) -> {登録簿の項目, 日付, 摘要, 金額, 科目}
     for r in ctx.entries:
         if r.get("_file") != JOURNAL_FILE:
             continue
@@ -128,14 +131,22 @@ def _prepaid(ctx, registry):
             notes.append(close.Note(ITEM_PREPAID, f"{when} {memo} {amount:,}円は{entry['名前']}に当たりますが、"
                                                   "取り込み元IDが無いため前払の候補にできません"))
             continue
-        if amount <= 0:
-            notes.append(close.Note(ITEM_PREPAID, f"{when} {memo} {amount:,}円は{entry['名前']}に当たりますが、"
-                                                  "金額が正でないため前払の候補にしません（返金・取消なら前払の額を確かめる）"))
-            continue
         if len(hits) > 1:
             notes.append(close.Note(ITEM_PREPAID, f"{when} {memo} は登録簿の複数の項目に当たるため候補にしません"
                                                   f"（{'・'.join(h['名前'] for h in hits)}。登録簿の摘要キーワード・取引先を見直す）"))
             continue
+        group = groups.setdefault((sid, entry["名前"]), {"entry": entry, "日付": when, "摘要": memo, "金額": 0, "科目": account})
+        group["金額"] += amount
+    names_by_sid = {}
+    for sid, name in groups:
+        names_by_sid.setdefault(sid, []).append(name)
+    for (sid, name), group in groups.items():
+        entry, when, memo, amount, account = group["entry"], group["日付"], group["摘要"], group["金額"], group["科目"]
+        if amount <= 0:
+            notes.append(close.Note(ITEM_PREPAID, f"{when} {memo} {amount:,}円は{entry['名前']}に当たりますが、"
+                                                  "金額が正でないため前払の候補にしません（返金・取消なら前払の額を確かめる）"))
+            continue
+        key = sid if len(names_by_sid[sid]) == 1 else f"{sid}:{name}"  # 1つの支払が登録簿の2項目に分かれるときは名前を足す
         m = _months_after(when, entry["月数"], end)
         prepaid = amount * m // entry["月数"]
         if prepaid <= 0:
@@ -145,7 +156,7 @@ def _prepaid(ctx, registry):
                 "貸方科目": account, "貸方金額": prepaid, "貸方税区分": tax,
                 "摘要": f"前払費用 {entry['名前']}（{when} 支払分の{m}か月分）"}
         candidates.append(close.Candidate(
-            ITEM_PREPAID, sid, end, [line],
+            ITEM_PREPAID, key, end, [line],
             f"{when} {memo} {amount:,}円を{entry['月数']}か月分として、期末後の{m}か月分を前払"))
     return candidates, notes, matched
 

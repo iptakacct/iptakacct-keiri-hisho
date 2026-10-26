@@ -222,3 +222,38 @@ def test_ambiguous_and_negative_rows_noted(year_dir, accounts, company):
     assert candidates == []
     text = "\n".join(n.message for n in notes)
     assert "複数の項目に当たるため候補にしません" in text and "金額が正でない" in text and "マイナス" in text
+
+
+def test_split_voucher_lines_with_same_source_id_are_summed(year_dir, accounts, company):
+    registry(company)
+    books(year_dir, [
+        line("1", "2025-10-01", debit=("保険料", "", 80000), credit=("普通預金", "サンプル銀行", 120000), 摘要="ソンポ ホケンリヨウ",
+             取り込み元ID="bank:main:1"),
+        line("1", "2025-10-01", debit=("保険料", "", 40000), 摘要="ソンポ ホケンリヨウ", 取り込み元ID="bank:main:1"),
+    ])
+    run(year_dir, accounts, company)
+    (r,) = staged(year_dir)
+    assert (r["取り込み元ID"], r["借方金額"]) == ("close:前払:bank:main:1", "60000")  # 120,000 × 6/12
+
+
+def test_same_source_id_two_registry_items_get_separate_keys(year_dir, accounts, company):
+    registry(company, "prepaid:\n  - {名前: 損害保険, 科目: 保険料, 摘要キーワード: ソンポ}\n"
+                      "  - {名前: 事務所家賃, 科目: 地代家賃, 摘要キーワード: ヤチン}\n")
+    books(year_dir, [
+        line("1", "2025-10-01", debit=("保険料", "", 120000), credit=("普通預金", "サンプル銀行", 360000), 摘要="ソンポ",
+             取り込み元ID="bank:main:1"),
+        line("1", "2025-10-01", debit=("地代家賃", "", 240000), 摘要="ヤチン", 取り込み元ID="bank:main:1"),
+    ])
+    run(year_dir, accounts, company)
+    assert sorted((r["取り込み元ID"], r["借方金額"]) for r in staged(year_dir)) == [
+        ("close:前払:bank:main:1:事務所家賃", "120000"), ("close:前払:bank:main:1:損害保険", "60000")]
+
+
+def test_reversal_already_booked_is_not_staged(year_dir, accounts, company):
+    registry(company)
+    books(year_dir, [line("1", "2025-04-01", debit=("保険料", "", 30000), credit=("前払費用", "損害保険", 30000),
+                          摘要="前払費用の戻し（手で記帳）")])
+    opening(year_dir, [("前払費用", "損害保険", 30000), ("資本金", "", 30000)])
+    result = run(year_dir, accounts, company)
+    assert staged(year_dir) == []
+    assert any(n.item == "前払戻し" and "前払費用" in n.message and "マイナス" in n.message for n in result.notes)

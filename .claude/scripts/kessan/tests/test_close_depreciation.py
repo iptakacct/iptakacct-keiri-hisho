@@ -28,10 +28,15 @@ def books(year_dir, rows=()):
     write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, base + list(rows))
 
 
+def asset_opening(year_dir):
+    # 直接控除（一括償却・少額特例・無形固定資産）で資産の残高がマイナスにならないよう、期首に資産の残高を置く
+    (year_dir / "opening-balances.csv").write_text(
+        "科目,補助,残高\n工具器具備品,,10000000\nソフトウエア,,10000000\n資本金,,20000000\n", encoding="utf-8-sig")
+
+
 def run(year_dir, accounts, company):
-    books_exist = (year_dir / "journal.csv").exists()
-    if not books_exist:
-        books(year_dir)
+    if not read_rows(year_dir / "journal.csv"):
+        asset_opening(year_dir)
     return close.run_close(year_dir, accounts, items=[close_depreciation], sources=SOURCES, company_dir=company)
 
 
@@ -323,3 +328,20 @@ def test_rates_reject_non_rates(tmp_path, value):
     with pytest.raises(KessanError) as e:
         close_depreciation.load_rates(bad)
     assert "耐用年数4年" in str(e.value)
+
+
+def test_intangible_straight_line_credits_asset_directly(year_dir, accounts, company):
+    ledger(company, "会計ソフト,ソフトウエア,2025-04-01,2025-04-01,600000,定額法,5,0,,")
+    r = one(year_dir, accounts, company)  # 600,000 × 0.200
+    assert (r["借方科目"], r["借方金額"], r["貸方科目"], r["貸方金額"]) == ("減価償却費", "120000", "ソフトウエア", "120000")
+
+
+def test_small_amount_already_expensed_is_not_staged(year_dir, accounts, company):
+    ledger(company, "ノートPC,工具器具備品,2025-09-01,2025-09-01,250000,少額特例,,0,,")
+    books(year_dir, [line("1", "2025-09-01", debit=("消耗品費", "", 250000), credit=("普通預金", "サンプル銀行", 250000),
+                          摘要="ノートPC")])
+    (year_dir / "opening-balances.csv").write_text("科目,補助,残高\n", encoding="utf-8-sig")  # 資産の残高が無い
+    result = run(year_dir, accounts, company)
+    assert staged(year_dir) == []
+    assert any("close:減価償却:ノートPC" in n.message and "工具器具備品" in n.message and "マイナス" in n.message
+               for n in result.notes)

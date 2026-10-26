@@ -25,10 +25,12 @@
   python ../.claude/scripts/kessan/cli.py close-approve --year-dir <Y> (--ids close:消費税:2026-03-31 … | --all)
   python ../.claude/scripts/kessan/cli.py close-unapprove --year-dir <Y> --ids close:…   （承認を外す）
   python ../.claude/scripts/kessan/cli.py close-reject --year-dir <Y> --ids close:未払:… --reason "不要な理由"
+  python ../.claude/scripts/kessan/cli.py close-unreject --year-dir <Y> --ids close:未払:…   （却下を取り消す）
   python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
+  python ../.claude/scripts/kessan/cli.py close-unpost --year-dir <Y> --ids close:…   （登録済みの決算整理仕訳を取り消す）
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
-          / 3 post（set-tax・登録済み伝票の split-tax・close-post）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
+          / 3 post（set-tax・登録済み伝票の split-tax・close-post・close-unpost）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
           （import-bank・import-extracted・set-accounts の反映後に自動承認だけが失敗したときは、反映が完了した旨を出して 1。
             import-extracted で形式エラーのファイルもあったときは 4）
 """
@@ -42,6 +44,7 @@ from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
 from close import (
     approve_candidates, candidate_ids, post_candidates, reject_candidates, run_close, set_amount, unapprove_candidates,
+    unpost_candidates, unreject_candidates,
 )
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from evidence_resolve import resolve_evidence
@@ -60,7 +63,8 @@ from undo import discard, unimport
 
 COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary",
-            "close-candidates", "close-approve", "close-unapprove", "close-post", "close-set-amount", "close-reject")
+            "close-candidates", "close-approve", "close-unapprove", "close-post", "close-set-amount", "close-reject",
+            "close-unreject", "close-unpost")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -117,7 +121,7 @@ def _parser():
         if name == "discard":
             p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
             p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")
-        if name in ("post", "check", "set-tax", "tax-summary", "close-candidates", "close-post"):
+        if name in ("post", "check", "set-tax", "tax-summary", "close-candidates", "close-post", "close-unpost"):
             p.add_argument("--prev-year-dir", type=Path)
         if name == "close-candidates":
             p.add_argument("--next-year-dir", type=Path, help="翌期の年度フォルダ（未払・未収の照合に使う）")
@@ -132,9 +136,13 @@ def _parser():
         if name == "close-reject":
             p.add_argument("--ids", required=True, nargs="+", help="却下する候補の取り込み元ID（close:…）")
             p.add_argument("--reason", required=True, help="却下の理由（close-report.md に載る）")
+        if name == "close-unreject":
+            p.add_argument("--ids", required=True, nargs="+", help="却下を取り消す候補の取り込み元ID（close:…）")
+        if name == "close-unpost":
+            p.add_argument("--ids", required=True, nargs="+", help="登録を取り消す決算整理仕訳の取り込み元ID（close:…）")
         if name == "close-set-amount":
             p.add_argument("--item", required=True, help="消費税 か 法人税等")
-            p.add_argument("--amount", required=True, type=int, help="達人で計算した額（円、0以上）")
+            p.add_argument("--amount", required=True, type=int, help="達人で計算した額（円。還付はマイナス）")
     return parser
 
 
@@ -496,6 +504,17 @@ def main(argv=None):
         if args.command == "close-reject":
             reject_candidates(year_dir, args.ids, args.reason)
             print(f"却下: {len(args.ids)}件（以後の close-candidates では出しません）")
+            return 0
+        if args.command == "close-unreject":
+            unreject_candidates(year_dir, args.ids)
+            print(f"却下を取り消しました: {len(args.ids)}件（close-candidates でまた候補に出ます）")
+            return 0
+        if args.command == "close-unpost":
+            numbers = unpost_candidates(year_dir, args.ids)
+            print(f"決算整理仕訳の登録を取り消しました: {len(numbers)}件（{', '.join(numbers)}。close-candidates で候補に出直します）")
+            if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)):
+                print("取り消しは完了済みですが、検算でNGがあります（check-result.md を確認）")
+                return EXIT_POSTED_WITH_NG
             return 0
         if args.command == "close-post":
             numbers = post_candidates(year_dir, accounts, prev_year_dir=args.prev_year_dir)

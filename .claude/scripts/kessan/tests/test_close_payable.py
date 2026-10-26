@@ -177,7 +177,7 @@ def test_receivable_from_next_year_income(year_dir, accounts, next_dir):
     (r,) = staged(year_dir, f"close:未収:{ID_BANK_IN}")
     assert (r["日付"], r["借方科目"], r["借方金額"], r["貸方科目"], r["貸方金額"], r["取引先"]) == (
         "2026-03-31", "売掛金", "110000", "売上高", "110000", "テストシヨウジ")
-    assert r["要確認理由"] == "当期分の売上か確認（翌期の入金から推定）"
+    assert r["要確認理由"].startswith("当期分の売上か確認（翌期の入金から推定）。")
     assert {x["取り込み元ID"] for x in read_rows(year_dir / "adjustments-staging.csv")} == {f"close:未収:{ID_BANK_IN}"}
 
 
@@ -308,3 +308,119 @@ def test_rejected_candidate_excluded_from_tax_estimate(year_dir, accounts):
     with_unpaid = tax_amount()
     close.reject_candidates(year_dir, ["close:未払:ev1"], "計上しない")
     assert tax_amount() == with_unpaid + 5000  # 未払の候補（税込55,000＝税5,000）を除いた概算になる
+
+
+TAXABLE_PERIOD = ('期首日: "2025-04-01"\n期末日: "2026-03-31"\n消費税:\n  区分: 課税\n  方式: 原則\n  計算: 割戻し\n'
+                  '  控除: 全額控除\n')
+
+
+def test_unpost_reverts_evidence_state(year_dir, accounts):
+    books(year_dir)
+    evidence(year_dir)
+    run(year_dir, accounts)
+    close.approve_candidates(year_dir, ["close:未払:ev1"])
+    close.post_candidates(year_dir, accounts, items=[close_payable])
+    assert close.unpost_candidates(year_dir, ["close:未払:ev1"], items=[close_payable]) == ["A1"]
+    (ev,) = read_rows(year_dir / "evidence.csv")
+    assert (ev["状態"], ev["取り込み元ID"]) == (STATE_UNPAID, "")
+    close_payable.after_unpost(year_dir, ["close:未払:ev1"])  # 何度呼んでも同じ
+    assert read_rows(year_dir / "evidence.csv") == [ev]
+    run(year_dir, accounts)  # 未払の候補として出直す
+    assert staged(year_dir, "close:未払:ev1")[0]["承認"] == ""
+
+
+def test_unpaid_mixed_rate_evidence_is_note(year_dir, accounts):
+    (year_dir / "period.yaml").write_text(TAXABLE_PERIOD, encoding="utf-8")
+    books(year_dir, taxable=True)
+    evidence(year_dir, 税率="混在", 証憑ファイル="inbox/請求書-1.pdf")
+    r = run(year_dir, accounts)
+    assert staged(year_dir, "close:未払:ev1") == []
+    assert any("税率が混在する証憑（inbox/請求書-1.pdf）は resolve-evidence --as-new で仕訳にしてから split-tax で分ける"
+               in n.message for n in r.notes)
+
+
+def test_unpaid_before_period_start_is_note(year_dir, accounts):
+    books(year_dir)
+    evidence(year_dir, 日付="2025-03-20")
+    r = run(year_dir, accounts)
+    assert staged(year_dir, "close:未払:ev1") == []
+    assert any(n.item == "未払" and "ev1" in n.message and "期首日より前" in n.message for n in r.notes)
+
+
+def test_unpaid_pl_account_without_default_tax_is_not_staged(year_dir, accounts):
+    (year_dir / "period.yaml").write_text(TAXABLE_PERIOD, encoding="utf-8")
+    books(year_dir, taxable=True)
+    evidence(year_dir, 科目候補="固定資産売却損")  # 既定税区分が無い費用の科目
+    r = run(year_dir, accounts)
+    assert staged(year_dir, "close:未払:ev1") == []
+    assert any("close:未払:ev1" in n.message and "税区分が空" in n.message for n in r.notes)
+
+
+def test_unpaid_reason_tells_to_fix_next_year_voucher(year_dir, accounts, next_dir):
+    books(year_dir)
+    evidence(year_dir)
+    next_journal(next_dir, [line("1", "2026-04-30", debit=("外注費", "", 55000), credit=("普通預金", "サンプル銀行", 55000),
+                                 摘要="フリコミ テストシヨウジ", 取り込み元ID=ID_BANK)])
+    run(year_dir, accounts, next_dir)
+    assert f"翌期の伝票 {ID_BANK} は登録後に 未払金 の消込に直す" in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+    next_journal(next_dir, [payment_out()])  # 既に未払金の消込になっていれば言わない
+    run(year_dir, accounts, next_dir)
+    assert "消込に直す" not in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+
+
+def test_receivable_reason_tells_to_fix_next_year_voucher(year_dir, accounts, next_dir):
+    books(year_dir)
+    next_journal(next_dir, [income()])
+    run(year_dir, accounts, next_dir)
+    assert f"翌期の伝票 {ID_BANK_IN} は登録後に 売掛金 の消込に直す" in staged(year_dir, f"close:未収:{ID_BANK_IN}")[0]["要確認理由"]
+
+
+def test_receivable_next_year_fixed_before_posting_is_note(year_dir, accounts, next_dir):
+    books(year_dir)
+    next_journal(next_dir, [income()])
+    run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}")
+    next_journal(next_dir, [income(counter="売掛金")])  # 当期で登録する前に、翌期を売掛金の回収に直してしまった
+    r = run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}") == []
+    assert any(n.item == "未収" and f"close:未収:{ID_BANK_IN}" in n.message and "売掛金" in n.message for n in r.notes)
+
+
+def test_receivable_no_misleading_note_after_posting(year_dir, accounts, next_dir):
+    books(year_dir)
+    next_journal(next_dir, [income()])
+    run(year_dir, accounts, next_dir)
+    close.approve_candidates(year_dir, [f"close:未収:{ID_BANK_IN}"])
+    close.post_candidates(year_dir, accounts, items=[close_payable])
+    r = run(year_dir, accounts, next_dir)  # 翌期はまだ売上高のまま
+    assert not any("期末の売掛金で説明できる" in n.message for n in r.notes)
+    assert r.candidates_kept == 1
+
+
+def taxable_sales(year_dir, taxes):
+    rows = [line("1", "2025-04-01", debit=("普通預金", "サンプル銀行", 1000000), credit=("資本金", "", 1000000))]
+    for i, tax in enumerate(taxes, start=2):
+        rows.append(line(str(i), "2025-09-01", debit=("普通預金", "サンプル銀行", 1000), credit=("売上高", "", 1000),
+                         取引先="テストシヨウジ", 貸方税区分=tax))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+
+
+def test_receivable_tax_follows_partner_sales(year_dir, accounts, next_dir):
+    (year_dir / "period.yaml").write_text(TAXABLE_PERIOD, encoding="utf-8")
+    taxable_sales(year_dir, ["課税売上8%軽", "課税売上8%軽"])
+    next_journal(next_dir, [income()])
+    r = run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}")[0]["貸方税区分"] == "課税売上8%軽"
+    assert not any("課税売上10%" in n.message for n in r.notes)
+    taxable_sales(year_dir, ["課税売上8%軽", "非課税売上"])
+    r = run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}")[0]["貸方税区分"] == "課税売上10%"
+    assert any(n.item == "未収" and "課税売上10%" in n.message for n in r.notes)
+
+
+def test_report_has_tax_columns(year_dir, accounts):
+    (year_dir / "period.yaml").write_text(TAXABLE_PERIOD, encoding="utf-8")
+    books(year_dir, taxable=True)
+    evidence(year_dir)
+    r = run(year_dir, accounts)
+    assert "| 外注費 | 課税仕入10% | 未払金 |  |" in r.report_path.read_text(encoding="utf-8")

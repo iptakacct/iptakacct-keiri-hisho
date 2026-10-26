@@ -6,14 +6,19 @@
   渡されるIDには他の項目の候補も含まれるので、自分の `close:<項目>:` のIDだけを扱う。**何度呼ばれても同じ結果になるように書く**
   （close-post の後に加えて、close-candidates のたびに adjustments.csv に登録済みの `close:` のIDすべてで呼び直し、
   前回の失敗を直すため）。
+- `after_unpost(year_dir, source_ids: list[str]) -> None`（任意）：close-unpost で登録を取り消す前に呼ばれる（after_post で
+  変えた状態を戻す）。自分の `close:<項目>:` のIDだけを扱い、何度呼ばれても同じ結果になるように書く。
 
 collect は ITEMS の順に呼ばれ、前の項目が同じ回に出した候補は `ctx.pending` に入っている（消費税の概算に含めるため）。
 
 候補はすべて「要確認」で adjustments-staging.csv に入れ、自動承認しない。取り込み元IDは `close:<項目>:<キー>`。
-同じ取り込み元IDが承認済み（staging）か登録済み（adjustments.csv）なら作り直さない。未承認なら最新の内容で置き換え、
+同じ取り込み元IDが登録済み（adjustments.csv）なら作り直さない。承認済み（staging）は内容が同じなら据え置き、
+再計算で内容が変わったら最新の内容に置き換えて承認を外す（古い額のまま登録しない）。未承認なら最新の内容で置き換え、
 もう出なくなった未承認の候補は消す。staging 内の伝票番号は C1, C2…、登録すると adjustments.csv で A1, A2…。
+候補を1件だけ帳簿に足すとBS科目がマイナスになる・税区分が検算でNGになるものは staging に入れず、所見にする。
 """
 import os
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import cached_property
@@ -21,7 +26,8 @@ from pathlib import Path
 
 import yaml
 
-from check import has_ng, run_checks, unresolved_evidence, write_report
+from accounts import normal_delta
+from check import check_negative_balances, check_tax, has_ng, run_checks, unresolved_evidence, write_report
 from common import (
     JOURNAL_COLUMNS, STAGING_COLUMNS, KessanError, add_reasons, cannot_write, ensure_writable, load_period, parse_amount, project,
     read_rows, replace_rows,
@@ -100,16 +106,18 @@ class CloseContext:
     def pending_entries(self):
         """ctx.pending のうち未登録の候補を、journal と同じ列の行にしたもの（登録済みの候補は帳簿の側で数える）。"""
         posted = {r["取り込み元ID"].strip() for r in self.entries}
-        rows = []
-        for c in self.pending:
-            if c.source_id in posted:
-                continue
-            for line in c.lines:
-                row = dict.fromkeys(JOURNAL_COLUMNS, "")
-                row.update({k: "" if v is None else str(v) for k, v in line.items()})
-                row.update({"伝票番号": c.source_id, "日付": c.date, "取り込み元ID": c.source_id, "_file": STAGING_FILE})
-                rows.append(row)
-        return rows
+        return [row for c in self.pending if c.source_id not in posted for row in _as_entries(c, STAGING_FILE)]
+
+
+def _as_entries(candidate, file):
+    """候補の行を、帳簿（entry_rows）と同じ形の行にする。伝票番号は取り込み元ID。"""
+    rows = []
+    for line in candidate.lines:
+        row = dict.fromkeys(JOURNAL_COLUMNS, "")
+        row.update({k: "" if v is None else str(v) for k, v in line.items()})
+        row.update({"伝票番号": candidate.source_id, "日付": candidate.date, "取り込み元ID": candidate.source_id, "_file": file})
+        rows.append(row)
+    return rows
 
 
 @dataclass(frozen=True)
@@ -197,7 +205,30 @@ def _shape(rows):
                    r["貸方税区分"].strip(), r["摘要"].strip()) for r in rows)
 
 
+def _candidate_issues(ctx, candidate):
+    """候補を1件だけ帳簿に足したときの問題（BS科目がマイナスになる・税区分が検算でNG）のメッセージ。無ければ空。"""
+    rows = _as_entries(candidate, ADJUSTMENTS_FILE)
+    moves = defaultdict(lambda: [0, 0])  # (科目, 補助) -> [借方, 貸方]
+    for r in rows:
+        for i, side in enumerate(("借方", "貸方")):
+            name = r[f"{side}科目"].strip()
+            if name:
+                moves[(name, r[f"{side}補助"].strip())][i] += parse_amount(r[f"{side}金額"], candidate.source_id)
+    issues = []
+    for (name, sub), (debit, credit) in moves.items():
+        account = ctx.accounts.get(name)
+        if account is None or account.category not in ("資産", "負債"):
+            continue
+        before = ctx.balances.get((name, sub), {}).get("期末残高", 0)
+        after = before + normal_delta(account, debit, credit)
+        if after < 0 and after < before:
+            issues.append(f"{_account_label(name, sub)}の期末残高が{after:,}円（マイナス）になる")
+    issues += [f.message for f in check_tax(rows, ctx.accounts, ctx.tax_settings) if f.level == "NG"]
+    return issues
+
+
 STALE_REASON = "今回の再計算では出ていない（不要なら削除、必要なら承認し直す）"
+CHANGED_REASON = "再計算で内容が変わった（確認して承認し直す）"
 
 
 def _item_of(source_id):
@@ -218,8 +249,11 @@ def _by_source(rows):
 
 
 def _reconcile(year_dir, candidates):
-    """staging の既存行と突き合わせる。(新しい staging の行, 状態 {取り込み元ID: 状態}, 所見, 消した数)。"""
-    existing = read_rows(Path(year_dir) / STAGING_FILE)
+    """staging の既存行と突き合わせる。
+
+    (新しい staging の行, 状態 {取り込み元ID: 状態}, 所見, 消した数, 報告に載せる行 {取り込み元ID: staging か登録済みの行})。
+    """
+    existing = [project(r, STAGING_COLUMNS) for r in read_rows(Path(year_dir) / STAGING_FILE)]
     posted = _by_source(read_rows(Path(year_dir) / ADJUSTMENTS_FILE))
     current = _by_source(existing)
     approved_ids = {sid for sid, rows in current.items() if any(r["承認"].strip() == "済" for r in rows)}
@@ -238,27 +272,42 @@ def _reconcile(year_dir, candidates):
                 r.update({"承認": "", "判定": NEEDS_REVIEW, "要確認理由": add_reasons(r["要確認理由"], STALE_REASON)})
         notes.append(Note(_item_of(sid), f"{sid} は承認済みでしたが今回の再計算では出ていないため、承認を外しました"
                                          f"（不要なら close-reject で却下、必要なら承認し直す）"))
-    new_rows, states = list(kept_rows), {}
+    # 承認済みでも再計算で内容が変わった候補は、最新の内容に置き換えて承認を外す（古い額のまま登録しない）
+    by_id = {c.source_id: c for c in candidates}
+    changed = {sid for sid, c in by_id.items()
+               if sid in approved_ids and sid not in posted and _shape(current[sid]) != _shape(_candidate_rows(c, ""))}
+    new_rows, states, shown = [], {}, {}
+    for sid, rows in _by_source(kept_rows).items():
+        if sid in changed:
+            c = by_id[sid]
+            rows = _candidate_rows(c, rows[0]["伝票番号"])
+            for r in rows:
+                r["要確認理由"] = add_reasons(c.reason, CHANGED_REASON)
+        shown[sid] = rows
+        new_rows += rows
     for c in candidates:
         sid = c.source_id
         fresh = _candidate_rows(c, "")
         if sid in posted:
             states[sid] = "登録済み"
+            shown[sid] = posted[sid]
             if _shape(posted[sid]) != _shape(fresh):
-                notes.append(Note(c.item, f"{sid} は登録済みの内容と再計算の結果が違います"
-                                          "（adjustments.csv を確かめ、直すなら登録済みの伝票を手で直す）"))
+                notes.append(Note(c.item, f"{sid} は登録済みの内容と再計算の結果が違います（直すなら close-unpost --ids {sid} で"
+                                          "登録を取り消してから close-candidates をやり直す）"))
+        elif sid in changed:
+            states[sid] = "変更"
+            notes.append(Note(c.item, f"{sid} は承認済みでしたが再計算で内容が変わったため、最新の内容に置き換えて承認を外しました"
+                                      "（確認して承認し直す）"))
         elif sid in approved_ids:
             states[sid] = "承認済み"
-            if _shape(current[sid]) != _shape(fresh):
-                notes.append(Note(c.item, f"{sid} は承認済みのため作り直していませんが、再計算の結果と違います"
-                                          f"（作り直すなら close-unapprove で承認を外してから close-candidates）"))
         else:
             states[sid] = "新規"
             for r in fresh:
                 r["伝票番号"] = f"C{next_no}"
             next_no += 1
             new_rows += fresh
-    return new_rows, states, notes, removed
+            shown[sid] = fresh
+    return new_rows, states, notes, removed, shown
 
 
 # ---- 報告 ----
@@ -271,29 +320,46 @@ def _account_label(name, sub):
     return f"{name}（{sub}）" if sub else name
 
 
-def _table_rows(candidate):
+def _table_rows(lines, where):
+    """行（候補の lines か、staging・adjustments.csv の行）を (借方, 借方税区分, 貸方, 貸方税区分, 金額) の並びにする。"""
+    def side(line, name):
+        return (str(line.get(f"{name}科目") or "").strip(), str(line.get(f"{name}補助") or "").strip(),
+                parse_amount(line.get(f"{name}金額", ""), where), str(line.get(f"{name}税区分") or "").strip())
+
     out = []
-    for line in candidate.lines:
-        debit = (str(line.get("借方科目", "")).strip(), str(line.get("借方補助", "")).strip(),
-                 parse_amount(line.get("借方金額", ""), candidate.source_id))
-        credit = (str(line.get("貸方科目", "")).strip(), str(line.get("貸方補助", "")).strip(),
-                  parse_amount(line.get("貸方金額", ""), candidate.source_id))
+    for line in lines:
+        debit, credit = side(line, "借方"), side(line, "貸方")
         if debit[0] and credit[0] and debit[2] == credit[2]:
-            out.append((_account_label(*debit[:2]), _account_label(*credit[:2]), debit[2]))
+            out.append((_account_label(*debit[:2]), debit[3], _account_label(*credit[:2]), credit[3], debit[2]))
             continue
         if debit[0]:
-            out.append((_account_label(*debit[:2]), "", debit[2]))
+            out.append((_account_label(*debit[:2]), debit[3], "", "", debit[2]))
         if credit[0]:
-            out.append(("", _account_label(*credit[:2]), credit[2]))
+            out.append(("", "", _account_label(*credit[:2]), credit[3], credit[2]))
     return out
 
 
-STATE_LABELS = {"新規": "要確認（未承認）", "承認済み": "承認済み（作り直していません）", "登録済み": "登録済み"}
+TABLE_HEADER = ["| 日付 | 借方 | 借方税区分 | 貸方 | 貸方税区分 | 金額 | 要確認理由 |", "|---|---|---|---|---|---|---|"]
 
 
-def _write_report(year_dir, candidates, notes, states, removed, now, rejected=()):
+def _table(date, lines, where, reason):
+    out = list(TABLE_HEADER)
+    for i, (debit, debit_tax, credit, credit_tax, amount) in enumerate(_table_rows(lines, where)):
+        out.append(f"| {date} | {_cell(debit)} | {_cell(debit_tax)} | {_cell(credit)} | {_cell(credit_tax)} | {amount:,} "
+                   f"| {_cell(reason if i == 0 else '')} |")
+    return out
+
+
+STATE_LABELS = {"新規": "要確認（未承認）", "変更": "要確認（再計算で内容が変わったため承認を外した）",
+                "承認済み": "承認済み（作り直していません）", "登録済み": "登録済み"}
+NEEDS_APPROVAL = ("新規", "変更")
+
+
+def _write_report(year_dir, candidates, notes, states, removed, now, rejected=(), shown=None):
+    """shown：候補ごとに載せる行（承認済みは staging の行、登録済みは adjustments.csv の行）。無ければ候補の行。"""
+    shown = shown or {}
     items = list(dict.fromkeys([c.item for c in candidates] + [n.item for n in notes]))
-    added = sum(states[c.source_id] == "新規" for c in candidates)
+    added = sum(states[c.source_id] in NEEDS_APPROVAL for c in candidates)
     lines = [f"# 決算整理の候補（{now:%Y-%m-%d %H:%M}）", "",
              f"候補 {len(candidates)}件（要確認 {added}件 / 承認済み・登録済みのため据え置き {len(candidates) - added}件）"
              f" / 所見 {len(notes)}件 / 出なくなったため消した候補 {removed}件", "",
@@ -303,12 +369,13 @@ def _write_report(year_dir, candidates, notes, states, removed, now, rejected=()
     for item in items:
         lines += [f"## {item}", ""]
         for c in (c for c in candidates if c.item == item):
-            lines += [f"### {c.source_id}（{STATE_LABELS[states[c.source_id]]}）", "",
-                      "| 日付 | 借方 | 貸方 | 金額 | 要確認理由 |", "|---|---|---|---|---|"]
-            for i, (debit, credit, amount) in enumerate(_table_rows(c)):
-                reason = c.reason if i == 0 else ""
-                lines.append(f"| {c.date} | {_cell(debit)} | {_cell(credit)} | {amount:,} | {_cell(reason)} |")
-            lines.append("")
+            sid = c.source_id
+            rows = shown.get(sid) or c.lines
+            reason = str(rows[0].get("要確認理由") or c.reason)
+            lines += [f"### {sid}（{STATE_LABELS[states[sid]]}）", ""] + _table(c.date, rows, sid, reason) + [""]
+            if rows is not c.lines and _shape(rows) != _shape(_candidate_rows(c, "")):
+                lines += ["再計算の結果（上の内容と違う。直すなら close-unpost で登録を取り消してから close-candidates）:", ""]
+                lines += _table(c.date, c.lines, sid, c.reason) + [""]
         item_notes = [n for n in notes if n.item == item]
         if item_notes:
             lines += [f"- {n.message}" for n in item_notes] + [""]
@@ -337,7 +404,7 @@ def run_close(year_dir, accounts, *, next_year_dir=None, prev_year_dir=None, sou
         r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE)
         if r["取り込み元ID"].strip().startswith(SOURCE_PREFIX)))
     if posted_ids:
-        failures = _run_after_post(modules, year_dir, posted_ids)
+        failures = _run_hooks(modules, "after_post", year_dir, posted_ids)
         if failures:
             raise KessanError("登録済みの決算整理仕訳の後処理（after_post）で止まりました:\n" + "\n".join(failures))
     unresolved = unresolved_evidence(year_dir, entry_rows(year_dir))
@@ -352,20 +419,30 @@ def run_close(year_dir, accounts, *, next_year_dir=None, prev_year_dir=None, sou
         found, found_notes = module.collect(ctx)
         dropped += [(c.source_id, rejected[c.source_id]) for c in found if c.source_id in rejected]
         found = [c for c in found if c.source_id not in rejected]  # 却下済みは staging にも ctx.pending にも入れない
-        candidates += found
         notes += found_notes
-        ctx.pending.extend(found)
+        usable = []
+        for c in found:
+            # 1件だけ足してもBS科目がマイナス・税区分がNGになる候補は入れない（登録すると検算がNGになり先へ進めなくなる）。
+            # 登録済みの候補は帳簿に入っているので、足し直して数えない
+            issues = [] if c.source_id in posted_ids else _candidate_issues(ctx, c)
+            if issues:
+                notes.append(Note(c.item, f"{c.source_id} は候補にしません：{'。'.join(issues)}"
+                                          "（元の仕訳・台帳・登録簿・証憑を確かめて直してから close-candidates をやり直す）"))
+            else:
+                usable.append(c)
+        candidates += usable
+        ctx.pending.extend(usable)
     _validate_candidates(candidates, accounts, ctx.period)
 
-    rows, states, extra_notes, removed = _reconcile(year_dir, candidates)
+    rows, states, extra_notes, removed, shown = _reconcile(year_dir, candidates)
     notes += extra_notes
     ensure_writable(year_dir, [STAGING_FILE])
     try:
         replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, rows)
     except OSError:
         raise cannot_write(STAGING_FILE) from None
-    report = _write_report(year_dir, candidates, notes, states, removed, now or datetime.now(), dropped)
-    added = sum(s == "新規" for s in states.values())
+    report = _write_report(year_dir, candidates, notes, states, removed, now or datetime.now(), dropped, shown)
+    added = sum(s in NEEDS_APPROVAL for s in states.values())
     return CloseResult(candidates_added=added, candidates_kept=len(states) - added, candidates_removed=removed,
                        notes=notes, report_path=report, candidates_rejected=len(dropped))
 
@@ -412,7 +489,7 @@ def unapprove_candidates(year_dir, source_ids):
     posted = {r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE)}
     done = [s for s in ids if s in posted]
     if done:
-        raise KessanError("登録済みの候補は承認を外せません（登録済みの伝票は手で直す）: " + "、".join(done))
+        raise KessanError("登録済みの候補は承認を外せません（close-unpost で登録を取り消してから）: " + "、".join(done))
     rows = read_rows(year_dir / STAGING_FILE)
     present = {r["取り込み元ID"].strip() for r in rows}
     missing = [s for s in ids if s not in present]
@@ -458,6 +535,14 @@ def post_candidates(year_dir, accounts, now=None, *, prev_year_dir=None, items=N
                if any(not r["取り込み元ID"].strip() for r in lines)]
     if errors:
         raise KessanError("承認済みの候補を登録できません（何も登録していません）:\n" + "\n".join(errors))
+    # 登録した後の帳簿を組み立てて、マイナス残高・税区分の検算を先に流す（登録で検算がNGになる形は書かない）
+    extra = [{**project(r, JOURNAL_COLUMNS), "_file": ADJUSTMENTS_FILE} for r in approved]
+    findings = check_negative_balances(year_dir, accounts, extra) + check_tax(
+        entry_rows(year_dir) + extra, accounts, load_tax_settings(year_dir), read_evidence(year_dir))
+    ng = [f.message for f in findings if f.level == "NG"]
+    if ng:
+        raise KessanError("承認済みの候補を登録すると検算がNGになるため、何も登録していません"
+                          "（close-unapprove で外すか、原因を直して close-candidates をやり直す）:\n" + "\n".join(ng))
     ensure_writable(year_dir, [ADJUSTMENTS_FILE, STAGING_FILE])
 
     adjustments = read_rows(year_dir / ADJUSTMENTS_FILE)
@@ -486,25 +571,63 @@ def post_candidates(year_dir, accounts, now=None, *, prev_year_dir=None, items=N
         replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in remaining])
     except OSError:
         failures.append(f"{STAGING_FILE} の更新に失敗（閉じてから close-candidates を実行すると、登録済みの候補は staging から消えます）")
-    failures += _run_after_post(ITEMS if items is None else items, year_dir, list(dict.fromkeys(posted_ids)))
+    failures += _run_hooks(ITEMS if items is None else items, "after_post", year_dir, list(dict.fromkeys(posted_ids)))
     if failures:
         raise KessanError(f"決算整理仕訳の登録は完了済み（{', '.join(numbers)}）ですが、登録後の処理で止まったものがあります"
                           "（次の close-candidates で後処理をやり直します）:\n" + "\n".join(failures))
     return numbers
 
 
-def _run_after_post(modules, year_dir, posted_ids):
-    """各項目の after_post を呼ぶ。1つが失敗しても残りは呼び、失敗のメッセージの一覧を返す。"""
+def _run_hooks(modules, name, year_dir, source_ids):
+    """各項目の after_post／after_unpost を呼ぶ。1つが失敗しても残りは呼び、失敗のメッセージの一覧を返す。"""
     failures = []
     for module in modules:
-        hook = getattr(module, "after_post", None)
+        hook = getattr(module, name, None)
         if hook is None:
             continue
         try:
-            hook(year_dir, posted_ids)
-        except Exception as e:  # noqa: BLE001  登録は確定済みなので、どの失敗でも他の後処理を止めない
+            hook(year_dir, source_ids)
+        except Exception as e:  # noqa: BLE001  どの失敗でも他の項目の処理を止めず、まとめて伝える
             failures.append(f"{getattr(module, '__name__', type(module).__name__)}: {e}")
     return failures
+
+
+def unpost_candidates(year_dir, source_ids, *, items=None):
+    """登録済みの決算整理仕訳（close: の取り込み元ID）を adjustments.csv から取り除く。取り除いた伝票番号の一覧を返す。
+
+    他の伝票の番号は振り直さない。先に各項目の after_unpost（証憑の状態を戻す等）を呼び、1つでも失敗したら何も取り除かない
+    （戻した状態は、伝票が残っている限り次の close-candidates の after_post で元に戻る）。
+    消費税の伝票が登録済みなら、他の項目の伝票は消費税と一緒でないと取り消せない（消費税の額が変わるため）。
+    """
+    year_dir = Path(year_dir)
+    ids = list(dict.fromkeys(s.strip() for s in source_ids if s and s.strip()))
+    if not ids:
+        raise KessanError("登録を取り消す伝票の取り込み元IDがありません")
+    bad = [s for s in ids if not s.startswith(SOURCE_PREFIX)]
+    if bad:
+        raise KessanError("決算整理の候補（close:…）から登録した伝票ではない取り込み元ID（何も取り消していません。"
+                          "手で入れた伝票は手で直す）: " + "、".join(bad))
+    adjustments = read_rows(year_dir / ADJUSTMENTS_FILE)
+    present = list(dict.fromkeys(r["取り込み元ID"].strip() for r in adjustments))
+    missing = [s for s in ids if s not in present]
+    if missing:
+        raise KessanError(f"{ADJUSTMENTS_FILE} に無い取り込み元ID（何も取り消していません）: " + "、".join(missing))
+    posted_tax = [s for s in present if s.startswith(TAX_PREFIX) and s not in ids]
+    if posted_tax and any(not s.startswith((TAX_PREFIX, CORP_PREFIX)) for s in ids):
+        raise KessanError("消費税の伝票が登録済みのため、他の項目の伝票は消費税と一緒に取り消す（消費税の額が変わるため。"
+                          "--ids に " + "、".join(posted_tax) + " も足す）")
+    ensure_writable(year_dir, [ADJUSTMENTS_FILE])
+    failures = _run_hooks(ITEMS if items is None else items, "after_unpost", year_dir, ids)
+    if failures:
+        raise KessanError("登録を取り消す前の処理（after_unpost）で止まったため、何も取り消していません"
+                          "（原因を直してからもう一度 close-unpost）:\n" + "\n".join(failures))
+    numbers = list(dict.fromkeys(r["伝票番号"].strip() for r in adjustments if r["取り込み元ID"].strip() in ids))
+    try:
+        replace_rows(year_dir / ADJUSTMENTS_FILE, JOURNAL_COLUMNS,
+                     [project(r, JOURNAL_COLUMNS) for r in adjustments if r["取り込み元ID"].strip() not in ids])
+    except OSError:
+        raise cannot_write(ADJUSTMENTS_FILE) from None
+    return numbers
 
 
 # ---- 上書き額（達人で計算した額） ----
@@ -512,8 +635,8 @@ def _run_after_post(modules, year_dir, posted_ids):
 def _check_amount(item, amount, where):
     if item not in OVERRIDE_ITEMS:
         raise KessanError(f"{where}: 項目は {'／'.join(OVERRIDE_ITEMS)} のどちらかにしてください（現在: {item}）")
-    if not isinstance(amount, int) or isinstance(amount, bool) or amount < 0:
-        raise KessanError(f"{where}: {item}の金額は0以上の整数にしてください（現在: {amount!r}）")
+    if not isinstance(amount, int) or isinstance(amount, bool):
+        raise KessanError(f"{where}: {item}の金額は整数にしてください（還付はマイナス。現在: {amount!r}）")
 
 
 def _load_raw(year_dir):
@@ -558,20 +681,38 @@ def _save_raw(year_dir, data):
         raise KessanError(f"{OVERRIDES_FILE} に書き込めません") from None
 
 
+AMOUNT_CHANGED_REASON = "上書き額を変えた（close-candidates を再実行して承認し直す）"
+
+
 def set_amount(year_dir, item, amount):
-    """達人で計算した額を close-overrides.yaml に保存する（次の close-candidates で候補に使う）。"""
+    """達人で計算した額を close-overrides.yaml に保存する（次の close-candidates で候補に使う）。マイナスは還付。
+
+    その項目の承認済みの候補は承認を外す（古い額のまま登録しない）。
+    """
+    year_dir = Path(year_dir)
     _check_amount(item, amount, "close-set-amount")
     load_overrides(year_dir)
     load_rejected(year_dir)
     data = _load_raw(year_dir)
+    prefix = f"{SOURCE_PREFIX}{item}:"
+    staging = read_rows(year_dir / STAGING_FILE)
+    targets = [r for r in staging if r["取り込み元ID"].strip().startswith(prefix) and r["承認"].strip() == "済"]
+    if targets:
+        for r in targets:
+            r.update({"承認": "", "判定": NEEDS_REVIEW, "要確認理由": add_reasons(r["要確認理由"], AMOUNT_CHANGED_REASON)})
+        ensure_writable(year_dir, [STAGING_FILE])
+        try:
+            replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in staging])
+        except OSError:
+            raise cannot_write(STAGING_FILE) from None
     data[item] = amount
-    _save_raw(year_dir, data)
+    _save_raw(year_dir, data)  # staging を先に書く（上書き額だけ変わって承認済みの古い額が残る形にしない）
 
 
 def reject_candidates(year_dir, source_ids, reason):
     """候補を却下する：以後の close-candidates はその取り込み元IDの候補を出さない（close-report.md に理由つきで載せる）。
 
-    staging にある行は消す。登録済み（adjustments.csv）のIDは却下できない（登録済みの伝票は手で直す）。
+    staging にある行は消す。登録済み（adjustments.csv）のIDは却下できない（close-unpost で登録を取り消してから）。
     """
     year_dir = Path(year_dir)
     ids = list(dict.fromkeys(s.strip() for s in source_ids if s and s.strip()))
@@ -586,7 +727,7 @@ def reject_candidates(year_dir, source_ids, reason):
     posted = {r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE)}
     done = [s for s in ids if s in posted]
     if done:
-        raise KessanError("登録済みの候補は却下できません（登録済みの伝票を手で直す）: " + "、".join(done))
+        raise KessanError("登録済みの候補は却下できません（close-unpost で登録を取り消してから）: " + "、".join(done))
     load_overrides(year_dir)
     rejected = load_rejected(year_dir)
     staging = read_rows(year_dir / STAGING_FILE)
@@ -616,6 +757,22 @@ def reject_candidates(year_dir, source_ids, reason):
         except OSError:
             raise cannot_write(STAGING_FILE) from None
     _save_raw(year_dir, data)  # staging を先に書く（失敗しても却下だけ記録されて承認済みの行が残る形にならない）
+
+
+def unreject_candidates(year_dir, source_ids):
+    """却下を取り消す（次の close-candidates からまた候補に出る）。却下していないIDが1つでもあれば何も変えない。"""
+    year_dir = Path(year_dir)
+    ids = list(dict.fromkeys(s.strip() for s in source_ids if s and s.strip()))
+    if not ids:
+        raise KessanError("却下を取り消す候補の取り込み元IDがありません")
+    load_overrides(year_dir)
+    rejected = load_rejected(year_dir)
+    unknown = [s for s in ids if s not in rejected]
+    if unknown:
+        raise KessanError("却下していない取り込み元ID（何も変えていません）: " + "、".join(unknown))
+    data = _load_raw(year_dir)
+    data[REJECTED_KEY] = {k: v for k, v in rejected.items() if k not in ids}
+    _save_raw(year_dir, data)
 
 
 # 項目の順：未払・未収 → 前払 → 減価償却 → 役員報酬・残高の所見（候補なし） → 消費税・法人税等
