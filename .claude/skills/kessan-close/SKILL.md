@@ -153,10 +153,10 @@ $K statements --year-dir $Y                       # 決算書（Excel）・個�
 $K export-tatsujin --year-dir $Y                  # 達人へ渡すXML（決算書・内訳書・概況書・消費税）。--kind で種類を絞れる
 ```
 
-1. `statements` を流し、警告を読む。法人税等が未計上のときは「法人税等が未計上」と出る。**税引前の決算書でよいので、そのまま `export-tatsujin` も出す**（法人税の達人で税額を計算するのに、税引前の決算書が要る）
+1. `statements` を流し、警告を読む。法人税等が未計上のときは「法人税等が未計上」と出る。**そのまま `export-tatsujin` で4種類（決算書・内訳書・概況書・消費税）を出す**。このとき達人に渡すのは決算書（税引前でよい。法人税の達人で税額を計算するのに要る）だけでよい
 2. 出した `output/tatsujin/kessan-HJ21-….xml` を、オーナーが法人税の達人に読み込んで法人税等の額を計算する
 3. オーナーから額を聞いたら、`close-set-amount --item 法人税等 --amount <期末の未払額>` → `close-candidates` → オーナーの承認 → `close-post`（⑤〜⑦）
-4. `statements` と `export-tatsujin` を**出し直す**。今度は法人税等が入った決算書になる。内訳書・概況書・消費税のXMLも、このとき渡す
+4. `statements` と `export-tatsujin` を**出し直す**。今度は法人税等が入った決算書になる。**内訳書・概況書・消費税のXMLは、法人税等が入ったこの出し直しのものを達人に渡す**
 5. 概況書・内訳書の材料のExcel（`uchiwake-material.xlsx`・`gaikyo-material.xlsx`）は、XMLで読めなかったときの手入力の元になる
 
 **警告の読み方**（`statements` と `export-tatsujin` が出す。どれも出力は止めない。オーナーに伝えて判断を仰ぐ）
