@@ -1,7 +1,7 @@
 # 達人シリーズへの引き渡し：取り込み仕様メモ
 
 - 調査日：2026-09-16
-- ステータス：公開資料で調査済み／実機確認待ち
+- ステータス：公開資料で調査済み／freeeの内訳書XMLは実物で確認（§3.5、2026-10-26）／決算書XMLの中身と達人の実機確認待ち
 
 ## 0. 前提の訂正（重要）
 
@@ -47,6 +47,62 @@
   2. **「電子申告の達人」**側に「帳票」画面→「帳票データ取込」→「**勘定科目内訳明細書CSV取込**」があり、国税庁の標準フォーム（Excel）をベースにCSVを作成して取込む。**確認できた対応帳票は4種類のみ**：預貯金等、売掛金（未収入金）、棚卸資産、買掛金（未払金・未払費用）。内訳明細書は全16種類あるため、残り12種類がCSV取込に対応するかは未確認。
      - 出典：[【電子申告の達人】勘定科目内訳明細書(CSVファイル)は取込できますか？](https://www.occ21.co.jp/news/10228/)
 - **必要な製品・オプション：** 「電子申告の達人」経由の取込には電子申告の達人が必要。「内訳概況書の達人」自体のCSV取込に別売オプションが必要かは未確認。
+
+## 3.5 会計ソフトが出す達人用ファイルの実物（2026-10-26 調査）
+
+会計ソフトは、達人へ渡すファイルを「達人の中間ファイル（XML）」で出している。kessan も同じ形を作れば、達人の同じ取り込みメニューに乗る見込み。
+
+### マネーフォワード クラウド会計
+- 出す場所：「決算・申告」→「達人シリーズ連携」。決算書（法人税の達人用）・内訳書・概況書（内訳概況書の達人用）・消費税（消費税の達人用、年度別3種）をそれぞれエクスポート
+- 達人側：法人税の達人「業務メニュー」→「ユーティリティ」→「データのインポート」→「中間ファイル（決算書用）からのインポート」。その後「決算」→「決算書の作成」→「取込設定」で科目の対応を確認（未設定の科目は「ユーザー独自の科目」として入る。「1.売上高」は「総額表示」にする）
+- 実物は未取得（ブラウザでログイン中のMFアカウントに対象の会社が無かった）
+- 出典：[マネーフォワード クラウド会計 達人シリーズ連携](https://biz.moneyforward.com/support/account/?p=426)
+
+### freee会計（実物を取得して確認）
+- 出す場所：「決算申告」→「連携用データの作成」（`/tax_return/corporate`）。対象年度を選び、次の2つを「インポート用ファイルのダウンロード(XML形式)」で出す
+  - 法人税の達人用の決算書データ：貸借対照表・損益計算書・株主資本等変動計算書（`houjinzei_no_tatsujin.xml?fy_id=…&use_corporation_tax_bs=…&use_corporation_tax_pl=…&use_corporation_tax_ss=…`）
+  - 内訳概況書の達人用の勘定科目内訳明細書データ：内訳書16種類すべてが対象（`uchiwake_no_tatsujin.xml?fy_id=…`）
+  - 消費税の達人用は2019-10-01以降終了の事業年度では不可（電子申告の達人へ e-Tax 用ファイルで渡す）
+- 文字コード：**Shift_JIS**（XML宣言 `encoding="Shift_JIS"`）
+- 共通の外枠：
+  ```xml
+  <REPORT>
+    <SYSTEM>
+      <GYOUMUPREFIX>HJ21</GYOUMUPREFIX>   <!-- 決算書=HJ21、内訳書=UG13 -->
+      <VERSION>1</VERSION>
+      <FUNCTIONID>3</FUNCTIONID>          <!-- 決算書=3、内訳書=1 -->
+      <CONNECTEDPROGRAMVER>1.00.00</CONNECTEDPROGRAMVER>
+      <PROGRAMNAME>freee</PROGRAMNAME>
+      <PROGRAMVER>1.00.00</PROGRAMVER>
+    </SYSTEM>
+    <BASIC>
+      <KOMONSAKINAME></KOMONSAKINAME>
+      <JIGYOUNENDOFROM>YYYYMMDD</JIGYOUNENDOFROM>
+      <JIGYOUNENDOTO>YYYYMMDD</JIGYOUNENDOTO>
+      <!-- 決算書のみ：表示パターン -->
+      <PATTERN>
+        <BS><CA><Doubtful/></CA><PPE><DepImp/></PPE><IOA><Doubtful/><DepImp/></IOA></BS>
+        <PL><Sales/><Cos/><Sga/></PL>
+      </PATTERN>
+    </BASIC>
+    <DATA>…</DATA>
+  </REPORT>
+  ```
+- 内訳書の `DATA`：**内訳書の行ではなく、勘定科目ごとの期末残高と、その補助科目ごとの残高の一覧**。どの内訳書に載せるかの振り分けは達人側で行う
+  ```xml
+  <KANJYOKAMOKU Count="1">            <!-- Count は1からの通し番号 -->
+    <KANJYOKAMOKU_CODE>…</KANJYOKAMOKU_CODE>
+    <KANJYOKAMOKU_NAME>受取利息</KANJYOKAMOKU_NAME>
+    <KANJYOKAMOKU_ZANDAKA>1605</KANJYOKAMOKU_ZANDAKA>   <!-- 円・整数・符号付き -->
+    <HOJYOKAMOKU Count="1">
+      <HOJYOKAMOKU_CODE>…</HOJYOKAMOKU_CODE>
+      <HOJYOKAMOKU_NAME>（口座名・取引先名）</HOJYOKAMOKU_NAME>
+      <HOJYOKAMOKU_ZANDAKA>1605</HOJYOKAMOKU_ZANDAKA>
+    </HOJYOKAMOKU>
+  </KANJYOKAMOKU>
+  ```
+  BS・PLの科目が混在して並ぶ。`KANJYOKAMOKU_CODE` は freee の内部ID（科目の区分ごとに同じ値が重複する。普通預金は `0`）で、達人の科目コードではない
+- 決算書の `DATA`：取得した会社（ひとり法人プラン）では、どの年度・どの指定でも**空**だった。中身の構造は未確認（決算書の作成が済んでいないと空になる可能性。MFの実物か、決算書を作成済みのfreeeの会社で取り直す）
 
 ## 4. オーナーに実機で確認してほしいこと
 
