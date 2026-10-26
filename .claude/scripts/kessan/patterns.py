@@ -109,14 +109,14 @@ def load_patterns(path, accounts):
     return patterns
 
 
-def _matches(pattern, row, direction, amount, abbreviations):
+def _matches(pattern, row, direction, amount, abbreviations, payees=None):
     if pattern.direction != direction:
         return False
-    if pattern.keyword and not name_in_description(pattern.keyword, row["摘要"], abbreviations):
+    if pattern.keyword and not name_in_description(pattern.keyword, row["摘要"], abbreviations, payees):
         return False
     # 取引先は摘要（銀行・通帳・出納帳に印字された文字）とだけ照合する。staging.csv の取引先欄はAIが
     # set-accounts で書けるので、そこで一致させるとAIの判断で自動承認できてしまう
-    if pattern.partner and not name_in_description(pattern.partner, row["摘要"], abbreviations):
+    if pattern.partner and not name_in_description(pattern.partner, row["摘要"], abbreviations, payees):
         return False
     if pattern.amount_range and not pattern.amount_range[0] <= amount <= pattern.amount_range[1]:
         return False
@@ -177,7 +177,7 @@ def _tax_values(row, counter, pattern, accounts, settings, ev=None):
     return values, None
 
 
-def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, tax_settings=None):
+def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, tax_settings=None, payees=None):
     """staging.csv の未承認の明細行をパターンと照合し、一致した行を自動承認する。"""
     year_dir = Path(year_dir)
     staging = read_rows(year_dir / "staging.csv")
@@ -196,7 +196,7 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, 
         direction, counter, statement = side
         reason = None
         amount = parse_amount(row[f"{statement}金額"], f"staging.csv 取り込み元ID {row['取り込み元ID']}")
-        matched = [p for p in patterns if _matches(p, row, direction, amount, abbreviations)]
+        matched = [p for p in patterns if _matches(p, row, direction, amount, abbreviations, payees)]
         if not matched:
             continue
         targets = sorted({(p.subject, p.sub, p.tax, p.invoice) for p in matched})

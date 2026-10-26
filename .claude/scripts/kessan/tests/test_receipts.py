@@ -406,3 +406,12 @@ def test_evidence_keeps_due_date_payment_method_and_confidence(year_dir, tmp_pat
     invoice, paid = read_rows(year_dir / "evidence.csv")
     assert (invoice["支払期日"], invoice["支払方法の推定"], invoice["自信度"]) == ("2025-05-31", "後払い", "低")
     assert (paid["支払期日"], paid["支払方法の推定"], paid["自信度"]) == ("", "立替", "高")
+
+
+def test_receipt_match_uses_payees(year_dir, tmp_path, accounts):
+    write_staging(year_dir, [bank_line("bank:a", "2025-04-10")])
+    paths = [write_document(year_dir, receipt(取引先="テスト文具店"))]
+    import_extracted(year_dir, write_sources(tmp_path), accounts, paths, now=NOW,
+                     payees={"テスト文具店": ["テストブングテン"]})
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert row["要確認理由"] == "証憑と一致"

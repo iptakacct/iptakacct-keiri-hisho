@@ -124,7 +124,7 @@ def _write_failure(done, failed):
     )
 
 
-def _import_receipt(year_dir, data, sources, result, now, abbreviations):
+def _import_receipt(year_dir, data, sources, result, now, abbreviations, payees=None):
     """証憑1件を取り込む。書き込みの順序：staging.csv → evidence.csv → import-log.csv。
 
     途中で止まって再実行しても、receipt:<証憑ID> の行が staging.csv・journal.csv にあれば
@@ -180,7 +180,7 @@ def _import_receipt(year_dir, data, sources, result, now, abbreviations):
                 reasons = remove_reason(reasons, UNSET_COUNTER_ACCOUNT)
             # 既存の理由（ページの残高が連続しない・二重計上の疑い等）は消さずに追記する
             # 金額・日付だけで一致した行かもしれないので、取引先名が摘要に無ければその旨も付ける
-            partner_reason = (None if name_in_description(data["取引先"], r["摘要"], abbreviations)
+            partner_reason = (None if name_in_description(data["取引先"], r["摘要"], abbreviations, payees)
                               else PARTNER_NOT_IN_DESCRIPTION)
             r["要確認理由"] = add_reasons(reasons, MATCHED_RECEIPT, partner_reason, suspected_reason, duplicate_reason)
             if data["自信度"] == "低":
@@ -240,7 +240,7 @@ def _import_receipt(year_dir, data, sources, result, now, abbreviations):
         result.receipt_same_date_amount.append((data["資料"], "・".join(suspected)))
 
 
-def import_extracted(year_dir, sources_path, accounts, files, now=None):
+def import_extracted(year_dir, sources_path, accounts, files, now=None, payees=None):
     year_dir = Path(year_dir)
     sources = load_sources(sources_path)
     receipt_default(sources)  # 設定の誤りは、どのファイルも取り込む前に止める
@@ -277,7 +277,7 @@ def import_extracted(year_dir, sources_path, accounts, files, now=None):
         elif data["種類"] == "出納帳":
             _import_cash_book(year_dir, data, result, now)
         else:
-            _import_receipt(year_dir, data, sources, result, now, abbreviations)
+            _import_receipt(year_dir, data, sources, result, now, abbreviations, payees)
         result.imported.append(path.name)
     return result
 

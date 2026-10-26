@@ -1,6 +1,7 @@
 import pytest
 
 from common import KessanError
+from common import KessanError
 from match import expand_abbreviations, load_abbreviations, name_in_description
 
 
@@ -46,3 +47,44 @@ def test_name_in_description_normalizes_both_sides(abbreviations, name, descript
 def test_missing_abbreviation_file_raises(tmp_path):
     with pytest.raises(KessanError, match="法人格略語の表がありません"):
         load_abbreviations(tmp_path / "none.md")
+
+
+def test_reading_key_normalizes(abbreviations):
+    from match import reading_key
+    a = reading_key("ｶ)ﾃｽﾄｼｮｳｼﾞ", abbreviations)
+    b = reading_key("株式会社テストショウジ", abbreviations)
+    c = reading_key("カ）テストシヨウジ", abbreviations)
+    assert a == b == c
+    assert reading_key("テスト・サービス", abbreviations) == reading_key("テストサ-ビス", abbreviations)
+    assert reading_key("てすとしょうじ", abbreviations) == reading_key("テストシヨウジ", abbreviations)
+
+
+def test_name_matches_via_payees(abbreviations):
+    payees = {"テスト商事": ["テストシヨウジ", "テストシヨウジ（カ"]}
+    assert name_in_description("テスト商事", "フリコミ テストシヨウジ", abbreviations, payees) is True
+    assert name_in_description("テスト商事", "フリコミ テストシヨウジ", abbreviations) is False
+    assert name_in_description("別商事", "フリコミ テストシヨウジ", abbreviations, payees) is False
+
+
+def test_load_payees_validates_and_merges(tmp_path):
+    from match import load_payees
+    assert load_payees(tmp_path / "none.yaml") == {}
+    path = tmp_path / "p.yaml"
+    path.write_text("payees:\n  - {取引先: A社, 名義: [エー]}\n  - {取引先: A社, 名義: [エー, ビー]}\n", encoding="utf-8")
+    assert load_payees(path) == {"A社": ["エー", "ビー"]}
+    for bad in ("payees: x\n", "payees:\n  - {取引先: A社}\n", "payees:\n  - {取引先: A社, 名義: エー}\n"):
+        path.write_text(bad, encoding="utf-8")
+        with pytest.raises(KessanError):
+            load_payees(path)
+
+
+def test_load_payees_rejects_unknown_shape(tmp_path):
+    from match import add_payee, load_payees
+    path = tmp_path / "p.yaml"
+    for bad in ("- a\n", "other: 1\n"):
+        path.write_text(bad, encoding="utf-8")
+        with pytest.raises(KessanError):
+            load_payees(path)
+        with pytest.raises(KessanError):
+            add_payee(path, "A社", "エー")
+        assert path.read_text(encoding="utf-8") == bad

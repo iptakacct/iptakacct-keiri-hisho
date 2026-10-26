@@ -36,7 +36,7 @@ from check import has_ng, run_checks, write_report
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from extracted import extracted_files
 from extracted_import import import_extracted, inbox_status
-from match import load_abbreviations, payment_accounts
+from match import add_payee, load_abbreviations, load_payees, payment_accounts
 from patterns import auto_approve, load_patterns
 from post import post_approved
 from review_xlsx import read_review, write_review
@@ -47,7 +47,7 @@ from tax_fill import fill_tax
 from trial_balance import write_trial_balance
 from undo import discard, unimport
 
-COMMANDS = ("init", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "review", "apply-review",
+COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
@@ -70,6 +70,10 @@ def _parser():
         if name in ("import-bank", "import-extracted", "set-accounts", "split-tax"):
             p.add_argument("--sources", type=Path, help="省略時はインスタンスの context/company/kessan-sources.yaml")
             p.add_argument("--patterns", type=Path, help="省略時はインスタンスの context/company/kessan-patterns.yaml")
+        if name == "add-payee":
+            p.add_argument("--name", required=True, help="取引先（領収書・請求書の名前）")
+            p.add_argument("--kana", required=True, help="通帳・カードの摘要に出る名義")
+            p.add_argument("--payees", type=Path, help="省略時はインスタンスの context/company/kessan-payees.yaml")
         if name == "import-bank":
             p.add_argument("--account-id", required=True)
             p.add_argument("--file", required=True, type=Path)
@@ -132,6 +136,18 @@ def _run_check(year_dir, accounts, prev_year_dir):
     return findings
 
 
+def _payees_path(year_dir, args):
+    return _company_file(year_dir, getattr(args, "payees", None), "kessan-payees.yaml")
+
+
+def _load_payees(year_dir, args):
+    """支払先の対応表（kessan-payees.yaml）。無ければ空。"""
+    try:
+        return load_payees(_payees_path(year_dir, args))
+    except IndexError:  # インスタンスの外に作った年度フォルダ
+        return {}
+
+
 def _auto_approve(year_dir, accounts, args):
     """確立済みパターンに一致した明細行を自動承認する（import-bank・import-extracted・set-accounts の後）。"""
     patterns = load_patterns(_company_file(year_dir, args.patterns, "kessan-patterns.yaml"), accounts)
@@ -139,7 +155,7 @@ def _auto_approve(year_dir, accounts, args):
         return
     sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
     r = auto_approve(year_dir, accounts, patterns, payment_accounts(sources), load_abbreviations(),
-                     tax_settings=load_tax_settings(year_dir))
+                     tax_settings=load_tax_settings(year_dir), payees=_load_payees(year_dir, args))
     print(f"確立済みパターン: 自動承認 {r.approved}件 / パターンと科目候補が合わず要確認 {r.conflicts}件")
 
 
@@ -248,6 +264,13 @@ def main(argv=None):
         _upgrade_year_files(year_dir)
         accounts = _load_accounts(year_dir)
 
+        if args.command == "add-payee":
+            path = _payees_path(year_dir, args)
+            if add_payee(path, args.name, args.kana):
+                print(f"支払先を追加しました: {args.name} ← {args.kana}（{path}）")
+            else:
+                print(f"すでに登録済みです: {args.name} ← {args.kana}")
+            return 0
         if args.command == "inbox-status":
             statuses = inbox_status(year_dir)
             for path, status in statuses:
@@ -269,7 +292,8 @@ def main(argv=None):
             return _auto_approve_after(year_dir, accounts, args, "取り込みは完了しています")
         if args.command == "import-extracted":
             sources = _company_file(year_dir, args.sources, "kessan-sources.yaml")
-            r = import_extracted(year_dir, sources, accounts, args.file or extracted_files(year_dir))
+            r = import_extracted(year_dir, sources, accounts, args.file or extracted_files(year_dir),
+                                 payees=_load_payees(year_dir, args))
             _print_extracted_result(r)
             code = _auto_approve_after(year_dir, accounts, args, "取り込みは完了しています")
             return EXIT_SOME_FILES_REJECTED if r.rejected else code

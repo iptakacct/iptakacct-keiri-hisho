@@ -65,7 +65,7 @@ def test_taxable_year_end_to_end(tmp_path, capsys):
 
     csv_path = write_bank_csv(year / "inbox", text=BANK)
     assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 0
-    write_document(year, receipt(資料="inbox/領収書-カフェ.jpg", 日付="2025-04-10", 金額=5400, 取引先="テストカフェ",
+    write_document(year, receipt(資料="inbox/領収書-カフェ.jpg", 日付="2025-04-10", 金額=5400, 取引先="テスト喫茶",
                                  内容="打合せ", 科目候補="会議費", 税率=8, 登録番号="T1234567890123"))
     write_document(year, receipt(資料="inbox/領収書-マート.jpg", 日付="2025-04-12", 金額=1620, 取引先="テストマート",
                                  内容="備品と食品", 科目候補="消耗品費", 税率="混在", 登録番号="T1234567890123"))
@@ -160,7 +160,7 @@ def test_auto_approved_rows_follow_receipt_rate(tmp_path, capsys):
     rows = by_description(year)
     assert rows["カード テストカフエ"]["承認"] == "済" and rows["カード テストマート"]["承認"] == "済"
 
-    write_document(year, receipt(資料="inbox/領収書-カフェ.jpg", 日付="2025-04-10", 金額=5400, 取引先="テストカフェ",
+    write_document(year, receipt(資料="inbox/領収書-カフェ.jpg", 日付="2025-04-10", 金額=5400, 取引先="テスト喫茶",
                                  内容="打合せ", 科目候補="会議費", 税率=8, 登録番号="T1234567890123"))
     write_document(year, receipt(資料="inbox/領収書-マート.jpg", 日付="2025-04-12", 金額=1620, 取引先="テストマート",
                                  内容="備品と食品", 科目候補="消耗品費", 税率="混在", 登録番号="T1234567890123"))

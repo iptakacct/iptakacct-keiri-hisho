@@ -3,10 +3,14 @@
 取引先名の照合では、銀行摘要の法人格略語（`.claude/rules/company-name-abbreviations.md`）を読み替える。
 略語の表・摘要・取引先名は、どれも NFKC で正規化してから照合する（全角「カ）」と半角「ｶ)」を同じに扱う）。
 """
+import os
 import re
+import tempfile
 import unicodedata
 from datetime import date
 from pathlib import Path
+
+import yaml
 
 from common import KessanError, parse_amount, parse_date
 
@@ -57,10 +61,83 @@ def expand_abbreviations(text, abbreviations):
     return re.sub(r"\s+", "", s)
 
 
-def name_in_description(name, description, abbreviations):
-    """取引先名が摘要に含まれるか（両側を正規化・略語を読み替えてから部分一致）。"""
-    needle = expand_abbreviations(name, abbreviations)
-    return bool(needle) and needle in expand_abbreviations(description, abbreviations)
+_SMALL_KANA = str.maketrans("ァィゥェォッャュョヮ", "アイウエオツヤユヨワ")
+
+
+def reading_key(text, abbreviations):
+    """照合用の正規形。expand_abbreviations の結果を、読みの揺れを吸収した形にする。
+
+    ひらがな→カタカナ、小書きカナ→並字（ショ→シヨ）、長音記号・中黒・記号の除去。
+    法人格略語の読み替えは外さない（両側を同じ関数に通すので、カ）と株式会社は同じ形になる）。
+    """
+    s = expand_abbreviations(text, abbreviations)
+    s = "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in s)
+    s = s.translate(_SMALL_KANA)
+    return "".join(c for c in s if c != "ー" and unicodedata.category(c)[0] not in ("P", "S", "Z", "C"))
+
+
+def load_payees(path):
+    """支払先の対応表（context/company/kessan-payees.yaml）を {取引先: [名義...]} にする。無ければ空。"""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as e:
+        raise KessanError(f"{path.name} を読めません: {e}") from None
+    if not isinstance(data, dict) or set(data) - {"payees"}:
+        raise KessanError(f"{path.name} は「payees:」の一覧だけで書いてください（上書きしないよう止めました）")
+    items = data.get("payees")
+    if items is None:
+        items = []
+    if not isinstance(items, list):
+        raise KessanError(f"{path.name} の payees は一覧で書いてください")
+    payees = {}
+    for i, item in enumerate(items, 1):
+        name = item.get("取引先") if isinstance(item, dict) else None
+        kana = item.get("名義") if isinstance(item, dict) else None
+        if (not isinstance(name, str) or not name.strip() or not isinstance(kana, list)
+                or not all(isinstance(k, str) and k.strip() for k in kana)):
+            raise KessanError(f"{path.name} の{i}件目の書き方に誤りがあります（取引先: 文字列、名義: 文字列の一覧）")
+        merged = payees.setdefault(name.strip(), [])
+        merged.extend(k.strip() for k in kana if k.strip() not in merged)
+    return payees
+
+
+def add_payee(path, name, kana):
+    """対応表に 取引先・名義 の組を1件足す（同じ組があれば何もしない。取引先が既にあれば名義を追記）。足したら True。"""
+    path = Path(path)
+    name, kana = str(name or "").strip(), str(kana or "").strip()
+    if not name or not kana:
+        raise KessanError("--name（取引先）と --kana（名義）は空にできません")
+    payees = load_payees(path)  # 書き方が誤っているファイルは、ここで止めて上書きしない
+    if kana in payees.get(name, []):
+        return False
+    payees.setdefault(name, []).append(kana)
+    data = {"payees": [{"取引先": n, "名義": k} for n, k in payees.items()]}
+    text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=None)
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8", newline=chr(10)) as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except OSError as e:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+        raise KessanError(f"{path.name} に書けません（開いているアプリを閉じてください）: {e}") from None
+    return True
+
+
+def name_in_description(name, description, abbreviations, payees=None):
+    """取引先名が摘要に含まれるか（reading_key で両側を揃えてから部分一致）。
+
+    payees（支払先の対応表）に name の名義があれば、その名義のどれかが含まれても一致とする。
+    """
+    haystack = reading_key(description, abbreviations)
+    names = [name] + list((payees or {}).get(str(name or "").strip(), []))
+    return any(needle and needle in haystack for needle in (reading_key(n, abbreviations) for n in names))
 
 
 # --- 証憑と明細行の突き合わせ ---

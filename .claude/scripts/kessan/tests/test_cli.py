@@ -601,3 +601,17 @@ def test_review_reports_unapproved_rows(tmp_path, capsys):
     assert main(["review", "--year-dir", str(year)]) == 0
     assert "証憑の税率と合わず承認を外した行: 1件" in capsys.readouterr().out
     assert read_rows(year / "staging.csv")[0]["承認"] == ""
+
+
+def test_add_payee_cli(tmp_path, capsys):
+    year = tmp_path / "インスタンス" / "work" / "kessan" / "2026-03期"
+    assert main(["init", "--year-dir", str(year), *PERIOD]) == 0
+    path = tmp_path / "インスタンス" / "context" / "company" / "kessan-payees.yaml"
+    args = ["add-payee", "--year-dir", str(year), "--name", "テスト商事", "--kana", "テストシヨウジ"]
+    assert main(args) == 0
+    assert main(args) == 0
+    assert "すでに登録済み" in capsys.readouterr().out
+    assert main(args[:-1] + ["テストシヨウジ（カ"]) == 0
+    from match import load_payees
+    assert load_payees(path) == {"テスト商事": ["テストシヨウジ", "テストシヨウジ（カ"]}
+    assert not path.with_name(path.name + ".tmp").exists()
