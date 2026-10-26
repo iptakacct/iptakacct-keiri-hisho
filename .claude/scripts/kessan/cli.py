@@ -29,7 +29,7 @@
   python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py close-unpost --year-dir <Y> --ids close:…   （登録済みの決算整理仕訳を取り消す）
   python ../.claude/scripts/kessan/cli.py statements --year-dir <Y> [--prev-year-dir …]   （決算書・個別注記表の雛形・内訳書と概況書の材料）
-  python ../.claude/scripts/kessan/cli.py export-tatsujin --year-dir <Y> [--kind kessan uchiwake gaikyo] [--prev-year-dir …]   （達人へ渡すXML）
+  python ../.claude/scripts/kessan/cli.py export-tatsujin --year-dir <Y> [--kind kessan uchiwake gaikyo shohizei] [--prev-year-dir …]   （達人へ渡すXML。shohizei は原則課税の年度だけ）
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
           / 3 post（set-tax・登録済み伝票の split-tax・close-post・close-unpost）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）

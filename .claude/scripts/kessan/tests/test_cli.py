@@ -686,10 +686,12 @@ def test_cli_export_writes_and_warns(tmp_path, capsys):
     assert path.exists() and str(path) in out
 
 
-def test_cli_export_unsupported_kind(tmp_path, capsys):
+def test_cli_export_shohizei_exempt_year(tmp_path, capsys):
+    """免税の年度に --kind shohizei を明示 → 理由を示してエラー（何も書かない）。"""
     year = tmp_path / "2026-03期"
     main(["init", "--year-dir", str(year), *PERIOD])
     opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"},
                    {"科目": "資本金", "補助": "", "残高": "1000000"}])
     assert main(["export-tatsujin", "--year-dir", str(year), "--kind", "shohizei"]) == 1
-    assert "未対応" in capsys.readouterr().err
+    assert "免税の年度" in capsys.readouterr().err
+    assert not (year / "output" / "tatsujin").exists()

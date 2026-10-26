@@ -275,7 +275,7 @@ def test_export_writes_kessan(year_dir, accounts):
 
 def test_export_unknown_kind(year_dir, accounts):
     with pytest.raises(KessanError, match="未対応"):
-        tatsujin_xml.export(make_books(year_dir), accounts, ["shohizei"])
+        tatsujin_xml.export(make_books(year_dir), accounts, ["nosuchkind"])
 
 
 def test_export_writes_nothing_on_failure(year_dir, accounts, monkeypatch):

@@ -1,4 +1,4 @@
-"""達人シリーズへ渡すXML（段階3c）：決算書（HJ21）・内訳書（UG13）・概況書（UG16）。消費税（SY35）は後から足す。
+"""達人シリーズへ渡すXML（段階3c）：決算書（HJ21）・内訳書（UG13）・概況書（UG16）・消費税（SY35、原則課税の年度だけ）。
 
 会計ソフト（MF・freee）が達人へ渡している「中間ファイル」と同じ形で出す（docs/kessan/tatsujin-import.md §3.5）。
 - 書式は実物どおり：Shift_JIS（cp932）、CRLF、2字下げ、空の要素は `<X></X>`、属性だけの要素は `<X A="…"/>`
@@ -329,6 +329,107 @@ def _build_gaikyo(ctx):
     return build_ug16(gaikyo.build(ctx.year_dir, ctx.accounts, st), st.company, st.period)
 
 
+# ---- 消費税（SY35） ----
+
+# 区分（親要素）：(売上, 仕入, 貸倒) × 税率。税率の無い売上（免税・非課税・非課税資産輸出）は10%の区分
+SY35_SECTIONS = {10: ("D020114", "D020124", "D020134"), 8: ("D020113", "D020123", "D020133")}
+SY35_RATE_TAG = {10: "10", 8: "8K"}
+SY35_ALLOCATION = {"課税対応": "KAZEI", "非課税対応": "HIKAZEI", "共通": "KYOTUU"}
+SY35_CALC = {"割戻し": "WARIMODOSHI", "積上げ": "TSUMIAGE"}
+SY35_NO_RATE_SALES = {"免税売上": "MENZEIURIAGEZEINUKI10", "非課税売上": "HIKAZEIURIAGEYUUKAIGAIZEINUKI10",
+                      "非課税資産輸出": "HIKAZEISHISANYUSHUTSUZEINUKI10"}
+# 課税売上・返還・貸倒は常に割戻しの欄（売上は割戻しで集計している：tax_summary と同じ）
+SY35_SALES_PREFIX = {"課税売上": "KAZEIURIAGE", "課税売上返還": "KAZEIURIAGEHENKAN",
+                     "貸倒": "KASHIDAORE", "貸倒回収": "KASHIDAOREKAISHU"}
+SY35_PURCHASE_PREFIX = {"課税仕入": "SHIIRE", "課税仕入返還": "SHIIREHENKAN"}
+SY35_FULL_INVOICES = ("", "適格", "少額特例", "制度前")  # 全額控除の欄
+SY35_TRANSITION = {"経過80": "80", "経過50": "50"}  # 欄のある経過措置
+SY35_NO_COLUMN = ("経過70", "経過30")  # SY35に欄が無い経過措置（達人に手で入れる）
+SY35_MANUAL_METHODS = "簡易課税・2割特例は集計表を見て達人に手で入れる"
+
+
+def _sy35_purchase_column(x, settings):
+    """課税仕入・返還の行の (区分の要素名の頭, 末尾) か None（入れない行）。"""
+    if x.invoice in SY35_NO_COLUMN or x.invoice == "なし":
+        return None
+    if settings.allocation == "個別対応":
+        if x.allocation not in SY35_ALLOCATION:
+            raise KessanError(f"個別対応方式なのに、{x.kind}（税区分 {x.category}・インボイス「{x.invoice}」）に"
+                              "個別対応の区分（課税対応／非課税対応／共通）が入っていない行があります。直してから出し直してください")
+        a = SY35_ALLOCATION[x.allocation]
+    else:
+        a = "KAZEI"
+    head = SY35_PURCHASE_PREFIX[x.kind] + a
+    if x.invoice in SY35_FULL_INVOICES:
+        return head, SY35_CALC[settings.calc]
+    if x.invoice in SY35_TRANSITION:
+        return head, f"INVOICEIGAI_WARIMODOSHI{SY35_TRANSITION[x.invoice]}"
+    raise KessanError(f"{x.category} のインボイス「{x.invoice}」は消費税XMLのどの欄に入れるか決まっていません（プログラムの誤り）")
+
+
+def build_sy35(summary, settings, company, period):
+    """消費税の集計（tax_summary.summarize の結果）を SY35 の雛形に入れる。(Node, 警告の一覧) を返す。
+
+    各行の税抜を …ZEINUKI…、税額（控除割合を掛ける前）を …ZEIGAKU… に足し込む。税込の欄は空（会計ソフトの実物どおり）。
+    経過70・30 は欄が無いので入れず警告、インボイスなし・非課税仕入は入れない。
+    """
+    values = {}
+    warnings = []
+    no_column = {}  # (区分, インボイス) → 税込
+    transition_in_tsumiage = False
+
+    def add(section, tag, amount):
+        values[(section, tag)] = values.get((section, tag), 0) + amount
+
+    for x in summary.lines:
+        if x.kind in SY35_NO_RATE_SALES:
+            add(SY35_SECTIONS[10][0], SY35_NO_RATE_SALES[x.kind], x.net)
+            continue
+        if x.kind not in SY35_SALES_PREFIX and x.kind not in SY35_PURCHASE_PREFIX:
+            continue  # 非課税仕入
+        sales_sec, purchase_sec, bad_debt_sec = SY35_SECTIONS[x.rate]
+        r = SY35_RATE_TAG[x.rate]
+        if x.kind in SY35_SALES_PREFIX:
+            section = bad_debt_sec if x.kind.startswith("貸倒") else sales_sec
+            head, tail = SY35_SALES_PREFIX[x.kind], "WARIMODOSHI"
+        else:
+            if x.invoice in SY35_NO_COLUMN:
+                no_column[(x.kind, x.invoice)] = no_column.get((x.kind, x.invoice), 0) + x.gross
+            column = _sy35_purchase_column(x, settings)
+            if column is None:
+                continue
+            section, (head, tail) = purchase_sec, column
+            if x.invoice in SY35_TRANSITION and settings.calc == "積上げ":
+                transition_in_tsumiage = True
+        add(section, f"{head}ZEINUKI{r}_{tail}", x.net)
+        add(section, f"{head}ZEIGAKU{r}_{tail}", x.tax)
+
+    if transition_in_tsumiage:
+        warnings.append("積上げの年度の経過措置分は割戻しの欄に入れた（達人で確認）")
+    for kind in SY35_PURCHASE_PREFIX:
+        parts = [(label, no_column[(kind, label)]) for label in SY35_NO_COLUMN if (kind, label) in no_column]
+        if parts:
+            total = sum(a for _, a in parts)
+            detail = "・".join(f"{label} {a:,}円" for label, a in parts)
+            warnings.append(f"{kind}の経過措置70%・30%分（税込{total:,}円。うち{detail}）は"
+                            "SY35に欄が無いため達人に手で入れる")
+    return fill_skeleton(fill_header(load_skeleton("sy35"), company, period), values), warnings
+
+
+def _build_shohizei(ctx):
+    from tax import load_rates, load_tax_settings, load_transitions
+    from tax_summary import summarize
+    settings = load_tax_settings(ctx.year_dir)
+    if not settings.taxable:
+        raise NotApplicable("免税の年度です（period.yaml の消費税）")
+    if settings.method != "原則":
+        raise NotApplicable(f"{settings.method}の年度です。{SY35_MANUAL_METHODS}")
+    summary = summarize(ctx.year_dir, ctx.accounts, settings, load_transitions(), load_rates())
+    root, warnings = build_sy35(summary, settings, load_company_name(ctx.year_dir), load_period(ctx.year_dir))
+    ctx.notes.extend(f"消費税XML: {w}" for w in warnings)
+    return root
+
+
 # ---- 書き出し（種類の登録と export） ----
 
 @dataclass
@@ -361,6 +462,7 @@ KINDS = {
     "kessan": Kind("HJ21", lambda ctx: build_hj21(ctx.statements)),
     "uchiwake": Kind("UG13", _build_uchiwake),
     "gaikyo": Kind("UG16", _build_gaikyo),
+    "shohizei": Kind("SY35", _build_shohizei),
 }
 
 
