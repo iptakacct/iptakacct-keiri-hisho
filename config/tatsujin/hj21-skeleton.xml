@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 構造の雛形。会計ソフトの実物（2026-10-26取得）から値をすべて消したもの。要素の並びだけを使う -->
+<REPORT>
+  <SYSTEM>
+    <GYOUMUPREFIX>HJ21</GYOUMUPREFIX>
+    <VERSION>1</VERSION>
+    <FUNCTIONID>3</FUNCTIONID>
+    <CONNECTEDPROGRAMVER />
+    <PROGRAMNAME />
+    <PROGRAMVER />
+  </SYSTEM>
+  <BASIC>
+    <KOMONSAKINAME />
+    <JIGYOUNENDOFROM />
+    <JIGYOUNENDOTO />
+    <PATTERN>
+      <BS>
+        <CA>
+          <Doubtful>A2</Doubtful>
+        </CA>
+        <PPE>
+          <DepImp>B5</DepImp>
+        </PPE>
+        <IOA>
+          <Doubtful>C2</Doubtful>
+          <DepImp>D5</DepImp>
+        </IOA>
+      </BS>
+      <PL>
+        <Sales>E1</Sales>
+        <Cos>F3</Cos>
+        <Sga>G1</Sga>
+      </PL>
+    </PATTERN>
+  </BASIC>
+  <DATA>
+    <BalanceSheet>
+      <Assets Label="資産の部" Amount="">
+        <CurrentAssets Label="流動資産" Amount="" />
+        <NoncurrentAssets Label="固定資産" Amount="">
+          <PropertyPlantAndEquipment Label="有形固定資産" Amount="" />
+          <IntangibleAssets Label="無形固定資産" Amount="" />
+          <InvestmentsAndOtherAssets Label="投資その他の資産" Amount="" />
+        </NoncurrentAssets>
+        <DeferredAssets Label="繰延資産" Amount="" />
+      </Assets>
+      <Liabilities Label="負債の部" Amount="">
+        <CurrentLiabilities Label="流動負債" Amount="" />
+        <NoncurrentLiabilities Label="固定負債" Amount="" />
+      </Liabilities>
+      <NetAssets Label="純資産の部" Amount="" />
+    </BalanceSheet>
+    <IncomeStatement>
+      <NetSales Label="売上高" Amount="" />
+      <CostOfSales Label="売上原価" Amount="" />
+      <GrossProfit Label="売上総利益" Amount="" />
+      <SellingGeneralAndAdministrativeExpenses Label="販売費及び一般管理費" Amount="" />
+      <OperatingIncome Label="営業利益" Amount="" />
+      <NonOperatingIncome Label="営業外収益" Amount="" />
+      <NonOperatingExpenses Label="営業外費用" Amount="" />
+      <OrdinaryIncome Label="経常利益" Amount="" />
+      <ExtraordinaryIncome Label="特別利益" Amount="" />
+      <ExtraordinaryLoss Label="特別損失" Amount="" />
+      <IncomeBeforeIncomeTaxes Label="税引前当期純利益" Amount="" />
+      <IncomeTaxes Label="法人税等" Amount="" />
+      <NetIncome Label="当期純利益" Amount="" />
+    </IncomeStatement>
+    <StatementChangesNetAssets>
+      <Select>1</Select>
+    </StatementChangesNetAssets>
+  </DATA>
+</REPORT>
