@@ -192,6 +192,15 @@ python ../.claude/scripts/kessan/cli.py statements --year-dir <Y> [--prev-year-d
 - 損益は繰越利益剰余金へ振り替えないので、貸借対照表の繰越利益剰余金は帳簿の期末残高＋当期純利益。変動計算書の変動は、当期純利益と、純資産の科目を動かした仕訳の摘要ごとの合計
 - 貸借一致と、損益計算書の当期純利益＝変動計算書の当期純利益を検算し、合わなければ何も出さない
 - 決算整理の候補が残っている・法人税等が0・会社名が未設定のときは警告を出す（出力は止めない。法人税等は達人で計算した額を `close-set-amount` → `close-post` してから出し直す）
+- 内訳書・概況書の材料も同時に出す（4つのファイルは全部書けたときだけ置き換える）
+  - `output/uchiwake-material.xlsx`：全科目の期末残高と補助ごとの残高（シート「内訳書の科目」「全科目」。内訳書の種類は科目名からの目安）
+  - `output/gaikyo-material.xlsx`：法人事業概況説明書の主要科目（シート「主要科目」）と、期首月からの月別の売上・仕入・外注費・人件費・源泉徴収税額（シート「月別」）。主要科目は科目マスタの「概況書項目」で集める
+
+```
+python ../.claude/scripts/kessan/cli.py export-tatsujin --year-dir <Y> [--kind kessan uchiwake gaikyo] [--prev-year-dir …]
+```
+
+- `output/tatsujin/` に達人へ渡すXML（決算書 HJ21・内訳書 UG13・概況書 UG16）を出す。数字は `statements` の材料と同じ集計から作る
 
 ## 終了コード
 

@@ -261,15 +261,21 @@ def test_hj21_zero_values_are_empty(year_dir, accounts):
 
 def test_export_writes_kessan(year_dir, accounts):
     paths = tatsujin_xml.export(make_books(year_dir), accounts, None)
-    assert paths == [year_dir / "output" / "tatsujin" / "kessan-HJ21-20260331.xml"]
-    tree = parse(paths[0].read_bytes())
-    assert tree.find("SYSTEM/GYOUMUPREFIX").text == "HJ21"
+    out = year_dir / "output" / "tatsujin"
+    assert paths == [out / "kessan-HJ21-20260331.xml", out / "uchiwake-UG13-20260331.xml",
+                     out / "gaikyo-UG16-20260331.xml"]
+    assert [parse(p.read_bytes()).find("SYSTEM/GYOUMUPREFIX").text for p in paths] == ["HJ21", "UG13", "UG16"]
+    gaikyo = parse(paths[2].read_bytes())
+    assert gaikyo.find("DATA/SYUYOUKAMOKU/URIAGE_SYUUNYUUDAKA").text == "1500000"
+    assert gaikyo.find("BASIC/KOMONSAKINAME").text == "テスト株式会社"
+    uchiwake = parse(paths[1].read_bytes())
+    assert uchiwake.find("DATA/KANJYOKAMOKU[2]/KANJYOKAMOKU_ZANDAKA").text == "2000000"  # 普通預金
     assert not [p for p in paths[0].parent.iterdir() if p.suffix != ".xml"]  # 一時ファイルを残さない
 
 
 def test_export_unknown_kind(year_dir, accounts):
     with pytest.raises(KessanError, match="未対応"):
-        tatsujin_xml.export(make_books(year_dir), accounts, ["uchiwake"])
+        tatsujin_xml.export(make_books(year_dir), accounts, ["shohizei"])
 
 
 def test_export_writes_nothing_on_failure(year_dir, accounts, monkeypatch):

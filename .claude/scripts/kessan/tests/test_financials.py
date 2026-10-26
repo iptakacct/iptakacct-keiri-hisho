@@ -281,3 +281,23 @@ def test_write_statements_rolls_back_when_second_replace_fails(year_dir, account
     assert (out / "financial-statements.xlsx").read_bytes() == b"old-xlsx"
     assert (out / "notes-draft.md").read_text(encoding="utf-8") == "old-notes"
     assert sorted(p.name for p in out.iterdir()) == ["financial-statements.xlsx", "notes-draft.md"]
+
+
+def test_write_statements_with_materials_all_or_nothing(year_dir, accounts):
+    """材料の Excel の1つが書けない → 決算書も注記も置き換えない（既存のファイルはそのまま、一時ファイルも残さない）。"""
+    from openpyxl import Workbook
+    st = financials.build_statements(make_books(year_dir), accounts)
+    out = year_dir / "output"
+    (out / "financial-statements.xlsx").write_bytes(b"old")
+
+    class Broken:
+        def save(self, path):
+            raise OSError("書けない")
+
+    with pytest.raises(KessanError, match="書き込めません"):
+        financials.write_statements(year_dir, st, workbooks={"a.xlsx": Workbook(), "b.xlsx": Broken()})
+    assert (out / "financial-statements.xlsx").read_bytes() == b"old"
+    assert sorted(p.name for p in out.iterdir()) == ["financial-statements.xlsx"]
+    paths = financials.write_statements(year_dir, st, workbooks={"a.xlsx": Workbook()})
+    assert [p.name for p in paths] == ["financial-statements.xlsx", "notes-draft.md", "a.xlsx"]
+    assert sorted(p.name for p in out.iterdir()) == ["a.xlsx", "financial-statements.xlsx", "notes-draft.md"]

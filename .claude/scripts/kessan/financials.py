@@ -306,33 +306,37 @@ def _notes(year_dir, st, company_dir):
     return "\n".join(lines)
 
 
-def write_statements(year_dir, st, company_dir=None):
-    """output/financial-statements.xlsx と output/notes-draft.md を書く。両方を組み立ててから置き換える。"""
+def write_statements(year_dir, st, company_dir=None, workbooks=None):
+    """output/financial-statements.xlsx と output/notes-draft.md を書く。全部を組み立ててから置き換える。
+
+    workbooks：一緒に書く Excel（{ファイル名: Workbook}。内訳書・概況書の材料）。1つでも書けなければどれも置き換えない。
+    """
     out = Path(year_dir) / "output"
     out.mkdir(parents=True, exist_ok=True)
-    xlsx, notes = out / OUTPUT_XLSX, out / OUTPUT_NOTES
-    for path in (xlsx, notes):
+    text = _notes(year_dir, st, company_dir)
+    writers = [(out / OUTPUT_XLSX, _workbook(st).save),
+               (out / OUTPUT_NOTES, lambda p: p.write_text(text, encoding="utf-8"))]
+    writers += [(out / name, wb.save) for name, wb in (workbooks or {}).items()]
+    for path, _ in writers:
         if path.exists():
             try:
                 with open(path, "a", encoding="utf-8"):
                     pass
             except OSError:
                 raise cannot_write(f"output/{path.name}") from None
-    wb = _workbook(st)
-    text = _notes(year_dir, st, company_dir)
-    tmp_xlsx, tmp_notes = xlsx.with_name(xlsx.name + ".tmp"), notes.with_name(notes.name + ".tmp")
+    pairs = [(path.with_name(path.name + ".tmp"), path) for path, _ in writers]
     try:
         try:
-            wb.save(tmp_xlsx)
-            tmp_notes.write_text(text, encoding="utf-8")
+            for (tmp, _), (_, write) in zip(pairs, writers):
+                write(tmp)
         except OSError:
             raise cannot_write("output/") from None
-        swap_in(((tmp_xlsx, xlsx), (tmp_notes, notes)))
+        swap_in(pairs)
     finally:
-        for tmp in (tmp_xlsx, tmp_notes):
+        for tmp, _ in pairs:
             if tmp.exists():
                 try:
                     tmp.unlink()
                 except OSError:
                     pass
-    return [xlsx, notes]
+    return [path for path, _ in writers]

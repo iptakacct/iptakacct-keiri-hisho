@@ -647,6 +647,7 @@ def test_cli_statements_refuses_on_ng(tmp_path, capsys):
     assert "NG" in err and "check-result.md" in err
     assert not (year / "output" / "financial-statements.xlsx").exists()
     assert not (year / "output" / "notes-draft.md").exists()
+    assert not (year / "output" / "uchiwake-material.xlsx").exists()
 
 
 def test_cli_statements_writes_and_warns(tmp_path, capsys):
@@ -658,7 +659,9 @@ def test_cli_statements_writes_and_warns(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "法人税等が未計上" in out and "会社名" in out
     assert "financial-statements.xlsx" in out and "notes-draft.md" in out
-    assert (year / "output" / "financial-statements.xlsx").exists()
+    assert "uchiwake-material.xlsx" in out and "gaikyo-material.xlsx" in out
+    for name in ("financial-statements.xlsx", "notes-draft.md", "uchiwake-material.xlsx", "gaikyo-material.xlsx"):
+        assert (year / "output" / name).exists()
 
 
 def test_cli_export_refuses_on_ng(tmp_path, capsys):
@@ -688,5 +691,5 @@ def test_cli_export_unsupported_kind(tmp_path, capsys):
     main(["init", "--year-dir", str(year), *PERIOD])
     opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"},
                    {"科目": "資本金", "補助": "", "残高": "1000000"}])
-    assert main(["export-tatsujin", "--year-dir", str(year), "--kind", "uchiwake"]) == 1
+    assert main(["export-tatsujin", "--year-dir", str(year), "--kind", "shohizei"]) == 1
     assert "未対応" in capsys.readouterr().err

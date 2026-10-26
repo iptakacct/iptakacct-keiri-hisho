@@ -1,4 +1,4 @@
-"""達人シリーズへ渡すXML（段階3c）：決算書（HJ21）。内訳書（UG13）・概況書（UG16）・消費税（SY35）は後から足す。
+"""達人シリーズへ渡すXML（段階3c）：決算書（HJ21）・内訳書（UG13）・概況書（UG16）。消費税（SY35）は後から足す。
 
 会計ソフト（MF・freee）が達人へ渡している「中間ファイル」と同じ形で出す（docs/kessan/tatsujin-import.md §3.5）。
 - 書式は実物どおり：Shift_JIS（cp932）、CRLF、2字下げ、空の要素は `<X></X>`、属性だけの要素は `<X A="…"/>`
@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from common import KessanError, cannot_write, load_period, swap_in
+from common import KessanError, cannot_write, load_company_name, load_period, swap_in
 
 SKELETON_DIR = Path(__file__).parents[3] / "config/tatsujin"
 OUTPUT_DIR = "output/tatsujin"
@@ -281,6 +281,54 @@ def build_hj21(st):
     return Node("REPORT", children=[system, basic, data])
 
 
+# ---- 内訳書（UG13） ----
+
+def _amount_text(amount):
+    return str(amount) if amount else None
+
+
+def build_ug13(items, company, period):
+    """uchiwake.build の結果から内訳書XMLを組み立てる。科目・補助ごとに Count は1からの通し番号。"""
+    rows = []
+    for count, item in enumerate(items, start=1):
+        where = f"科目「{item.name}」"
+        children = [
+            Node("KANJYOKAMOKU_CODE", text=item.code),
+            Node("KANJYOKAMOKU_NAME", text=item.name, where=where),
+            Node("KANJYOKAMOKU_ZANDAKA", text=_amount_text(item.balance)),
+        ]
+        children += [Node("HOJYOKAMOKU", {"Count": str(j)}, children=[
+            Node("HOJYOKAMOKU_CODE", text=code),
+            Node("HOJYOKAMOKU_NAME", text=sub, where=f"{where}の補助「{sub}」"),
+            Node("HOJYOKAMOKU_ZANDAKA", text=_amount_text(amount)),
+        ]) for j, (code, sub, amount) in enumerate(item.subs, start=1)]
+        rows.append(Node("KANJYOKAMOKU", {"Count": str(count)}, children=children))
+    system, basic = header("UG13", 1, company, period)
+    return Node("REPORT", children=[system, basic, Node("DATA", children=rows)])
+
+
+def _build_uchiwake(ctx):
+    import uchiwake
+    return build_ug13(uchiwake.build(ctx.year_dir, ctx.accounts), load_company_name(ctx.year_dir),
+                      load_period(ctx.year_dir))
+
+
+# ---- 概況書（UG16） ----
+
+def build_ug16(g, company, period):
+    """gaikyo.build の結果を UG16 の雛形に入れる。月別は _01〜_12（期間外の月は空のまま）。"""
+    values = {("SYUYOUKAMOKU", tag): amount for tag, amount in g.main.items()}
+    for n, month in enumerate(g.monthly, start=1):
+        values.update({("TUKIBETUURIAGEDAKA", f"{tag}_{n:02d}"): amount for tag, amount in month.items()})
+    return fill_skeleton(fill_header(load_skeleton("ug16"), company, period), values)
+
+
+def _build_gaikyo(ctx):
+    import gaikyo
+    st = ctx.statements
+    return build_ug16(gaikyo.build(ctx.year_dir, ctx.accounts, st), st.company, st.period)
+
+
 # ---- 書き出し（種類の登録と export） ----
 
 @dataclass
@@ -311,6 +359,8 @@ class NotApplicable(Exception):
 
 KINDS = {
     "kessan": Kind("HJ21", lambda ctx: build_hj21(ctx.statements)),
+    "uchiwake": Kind("UG13", _build_uchiwake),
+    "gaikyo": Kind("UG16", _build_gaikyo),
 }
 
 
