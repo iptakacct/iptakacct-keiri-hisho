@@ -80,3 +80,64 @@ def test_init_rejects_invalid_tax_before_writing(tmp_path):
     with pytest.raises(KessanError):
         init_year_dir(y, "2025-04-01", "2026-03-31", tax=dict(TAXABLE, 方式="本則"))
     assert not (y / "period.yaml").exists()
+
+
+from tax import TAX_CATEGORIES, load_transitions, invoice_class, with_rate
+
+SPEC_CATEGORIES = {
+    "課税売上10%": ("課税売上", 10), "課税売上8%軽": ("課税売上", 8),
+    "免税売上": ("免税売上", None), "非課税売上": ("非課税売上", None),
+    "非課税資産輸出": ("非課税資産輸出", None),
+    "課税売上返還10%": ("課税売上返還", 10), "課税売上返還8%軽": ("課税売上返還", 8),
+    "課税仕入10%": ("課税仕入", 10), "課税仕入8%軽": ("課税仕入", 8),
+    "課税仕入返還10%": ("課税仕入返還", 10), "課税仕入返還8%軽": ("課税仕入返還", 8),
+    "非課税仕入": ("非課税仕入", None), "対象外": ("対象外", None),
+    "貸倒10%": ("貸倒", 10), "貸倒8%軽": ("貸倒", 8),
+    "貸倒回収10%": ("貸倒回収", 10), "貸倒回収8%軽": ("貸倒回収", 8),
+}
+
+
+def test_categories_cover_spec():
+    assert len(SPEC_CATEGORIES) == 17
+    assert set(TAX_CATEGORIES) == set(SPEC_CATEGORIES)
+    for name, (kind, rate) in SPEC_CATEGORIES.items():
+        c = TAX_CATEGORIES[name]
+        assert (c.name, c.kind, c.rate) == (name, kind, rate)
+
+
+def test_with_rate():
+    assert with_rate("課税仕入10%", 8) == "課税仕入8%軽"
+    assert with_rate("貸倒回収8%軽", 10) == "貸倒回収10%"
+    assert with_rate("対象外", 8) == "対象外"
+
+
+def test_invoice_class_boundaries():
+    t = load_transitions()
+    assert invoice_class("2026-09-30", False, 50000, False, t) == "経過80"
+    assert invoice_class("2026-10-01", False, 50000, False, t) == "経過70"
+    assert invoice_class("2031-10-01", False, 50000, False, t) == "なし"
+    assert invoice_class("2026-10-01", True, 50000, False, t) == "適格"
+    assert invoice_class("2026-10-01", False, 9999, True, t) == "少額特例"
+    assert invoice_class("2026-10-01", False, 10000, True, t) == "経過70"
+    assert invoice_class("2026-10-01", False, 9999, False, t) == "経過70"
+
+
+@pytest.mark.parametrize("rows", [
+    [("2023-10-01", "2026-09-30"), ("2026-09-30", "2028-09-30")],
+    [("2026-10-01", "2026-09-30")],
+    [("2023-13-01", "2026-09-30")],
+])
+def test_transition_file_overlap_rejected(tmp_path, rows):
+    p = tmp_path / "t.yaml"
+    body = "経過措置:\n" + "".join(
+        f'  - {{開始: "{a}", 終了: "{b}", 区分: 経過80, 割合: 80}}\n' for a, b in rows)
+    p.write_text(body, encoding="utf-8")
+    with pytest.raises(KessanError):
+        load_transitions(p)
+
+
+def test_transition_ratio_must_match_label(tmp_path):
+    p = tmp_path / "t.yaml"
+    p.write_text('経過措置:\n  - {開始: "2023-10-01", 終了: "2026-09-30", 区分: 経過80, 割合: 70}\n', encoding="utf-8")
+    with pytest.raises(KessanError):
+        load_transitions(p)
