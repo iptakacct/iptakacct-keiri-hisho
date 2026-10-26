@@ -44,6 +44,8 @@
     _09 12月 人件費 100,000・源泉 5,000
     _12 3月  売上 500,000・外注費 10,000（決算整理 A3）
 """
+from datetime import date
+
 import pytest
 from openpyxl import load_workbook
 
@@ -278,6 +280,50 @@ def test_statements_and_export_for_day21_year(tmp_path, capsys):
     monthly = tree.find("DATA/TUKIBETUURIAGEDAKA")
     assert monthly.find("TUKIBETU_01").text == "3" and monthly.find("TUKIBETU_12").text == "2"
     assert monthly.find("URIAGESYUUNYUUKINGAKU1_01").text == "110000"
+
+
+def test_monthly_first_year_mid_month_start(tmp_path, gaccounts):
+    """設立初年度（2025-06-15〜2026-05-31）。区切りは期末日（月末）から決め、最初の月だけ半端（6/15〜6/30）。"""
+    year_dir = tmp_path / "first"
+    init_year_dir(year_dir, "2025-06-15", "2026-05-31", company_name="テスト株式会社")
+    write_rows(year_dir / "opening-balances.csv", OPENING_COLUMNS, [
+        {"科目": "普通預金", "補助": "", "残高": "1000000"}, {"科目": "資本金", "補助": "", "残高": "1000000"}])
+    sales = [("1", "2025-06-30", 100000), ("2", "2025-07-01", 20000), ("3", "2025-07-14", 30000),
+             ("4", "2025-07-31", 40000), ("5", "2026-05-31", 50000)]
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [
+        line(no, d, debit=BANK + (amount,), credit=("売上高", "", amount)) for no, d, amount in sales])
+    g, _ = build(year_dir, gaccounts)
+    assert [m["TUKIBETU"] for m in g.monthly] == [6, 7, 8, 9, 10, 11, 12, 1, 2, 3, 4, 5]
+    assert [m["URIAGESYUUNYUUKINGAKU1"] for m in g.monthly] == [
+        100000, 90000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50000]
+    assert g.months[0] == "2025-06-15〜2025-06-30" and g.months[1] == "2025-07" and g.months[-1] == "2026-05"
+
+
+def test_fiscal_months_boundaries():
+    d = date.fromisoformat
+    months = gaikyo._fiscal_months(("2025-06-15", "2026-05-31"))
+    assert months[0] == (d("2025-06-15"), d("2025-06-30")) and months[1] == (d("2025-07-01"), d("2025-07-31"))
+    assert months[-1] == (d("2026-05-01"), d("2026-05-31")) and len(months) == 12
+    months = gaikyo._fiscal_months(("2025-03-21", "2026-03-20"))
+    assert months[0] == (d("2025-03-21"), d("2025-04-20")) and months[-1] == (d("2026-02-21"), d("2026-03-20"))
+    assert len(months) == 12
+    months = gaikyo._fiscal_months(("2025-04-01", "2026-03-31"))
+    assert months[10] == (d("2026-02-01"), d("2026-02-28")) and len(months) == 12
+    assert len(gaikyo._fiscal_months(("2025-10-01", "2026-03-31"))) == 6
+
+
+def test_fiscal_months_clamp_february(tmp_path, gaccounts):
+    """30日締め（2025-03-31〜2026-03-30）。2月は30日が無いので2/28で締め、3/1〜3/30が最後の月。"""
+    d = date.fromisoformat
+    months = gaikyo._fiscal_months(("2025-03-31", "2026-03-30"))
+    assert len(months) == 12
+    assert months[0] == (d("2025-03-31"), d("2025-04-30")) and months[1] == (d("2025-05-01"), d("2025-05-30"))
+    assert months[9] == (d("2025-12-31"), d("2026-01-30")) and months[10] == (d("2026-01-31"), d("2026-02-28"))
+    assert months[11] == (d("2026-03-01"), d("2026-03-30"))
+    year_dir = tmp_path / "day30"
+    init_year_dir(year_dir, "2025-03-31", "2026-03-30", company_name="テスト株式会社")
+    labels = [m["TUKIBETU"] for m in gaikyo.monthly_amounts(year_dir, gaccounts)[1]]
+    assert labels == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 1, 2]  # 期首の月から順に（重ならない）
 
 
 def test_monthly_rejects_period_over_12_months(tmp_path, gaccounts):

@@ -308,3 +308,12 @@ def test_export_no_securities_warning_for_other_nontaxable(year_dir, accounts):
     notes = []
     tatsujin_xml.export(year_dir, accounts, ["shohizei"], notes=notes)
     assert not any("有価証券" in n for n in notes)
+
+
+@pytest.mark.parametrize("cat", ["課税売上10%", "免税売上", "非課税資産輸出"])
+def test_export_no_securities_warning_outside_nontaxable_sales(year_dir, accounts, cat):
+    """有価証券の売却益でも、非課税売上以外の税区分なら「非課税売上の欄に入れました」とは出さない（その欄には入っていない）。"""
+    _gensoku_books(year_dir, [sale("1", 1100000), sale("2", 50000, cat=cat, account="有価証券売却益")])
+    notes = []
+    tatsujin_xml.export(year_dir, accounts, ["shohizei"], notes=notes)
+    assert not any("有価証券" in n and "非課税売上の欄" in n for n in notes)

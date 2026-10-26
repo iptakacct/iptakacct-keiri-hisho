@@ -120,26 +120,29 @@ def _main(st, accounts):
     return main
 
 
-def _add_months(start, k):
-    """期首日から k か月後の日（その月に同じ日が無ければ月末）。"""
-    month0 = start.month - 1 + k
-    year, month = start.year + month0 // 12, month0 % 12 + 1
-    return date(year, month, min(start.day, calendar.monthrange(year, month)[1]))
+def _closing_day(end, k):
+    """期末日の k か月前の締め日。期末日が月末なら各月の月末、そうでなければ期末日と同じ日（無い月は月末）。"""
+    month0 = end.month - 1 - k
+    year, month = end.year + month0 // 12, month0 % 12 + 1
+    last = calendar.monthrange(year, month)[1]
+    month_end = end.day == calendar.monthrange(end.year, end.month)[1]
+    return date(year, month, last if month_end else min(end.day, last))
 
 
 def _fiscal_months(period):
-    """事業年度を期首日から1か月ずつ区切った各月の (初日, 末日)。12か月を超える年度は KessanError。
+    """事業年度を締め日で1か月ずつ区切った各月の (初日, 末日)。12か月を超える年度は KessanError。
 
-    期首日が月の初日でない年度（21日始まり・20日締めなど）も、暦の月ではなく期首日から数えた月で区切る。
+    締め日は期末日から決める（20日締めなら毎月20日、月末締めなら毎月末。30日締めの2月は28日か29日）。
+    最初の月は期首日から始まり、半端でもよい（設立初年度の 6/15〜6/30 など）。
     """
     start, end = (date.fromisoformat(d) for d in period)
-    months = []
-    while _add_months(start, len(months)) <= end:
-        first = _add_months(start, len(months))
-        months.append((first, min(_add_months(start, len(months) + 1) - timedelta(days=1), end)))
-        if len(months) > 12:
+    closings = []
+    while not closings or closings[-1] >= start:
+        if len(closings) > 12:
             raise KessanError(f"事業年度（{period[0]}〜{period[1]}）が12か月を超えています。概況書の月別は12か月までです")
-    return months
+        closings.append(_closing_day(end, len(closings)))
+    closings.reverse()  # closings[0] は期首日より前の締め日
+    return [(max(prev + timedelta(days=1), start), last) for prev, last in zip(closings, closings[1:])]
 
 
 def _month_label(first, last):
@@ -150,7 +153,8 @@ def _month_label(first, last):
 def monthly_amounts(year_dir, accounts):
     """(期間内の月の一覧, 12か月分の月別の金額)。費用は借方−貸方、売上は貸方−借方、源泉徴収税額は貸方だけ。
 
-    TUKIBETU は各月の初日の月の数字（21日始まりなら 3/21〜4/20 が 3）。
+    TUKIBETU は最初の月の初日の月から順に数えた数字（21日始まりなら 3/21〜4/20 が 3、次が 4）。
+    多くは各月の初日の月と同じ。30日締めのように初日が月末に寄る年度でも、数字が重ならない。
     """
     fiscal = _fiscal_months(load_period(year_dir))
     sums = [defaultdict(int) for _ in fiscal]
@@ -180,7 +184,9 @@ def monthly_amounts(year_dir, accounts):
                 bucket[PERSONNEL] += debit
             if side == "貸方" and name == WITHHOLDING_ACCOUNT and WITHHOLDING_WORD in r["貸方補助"]:
                 bucket[WITHHOLDING] += amount
-    monthly = [{MONTH: first.month, **{k: sums[i][k] for k in MONTHLY_LABELS}} for i, (first, _) in enumerate(fiscal)]
+    first_month = fiscal[0][0].month if fiscal else 1
+    monthly = [{MONTH: (first_month - 1 + i) % 12 + 1, **{k: sums[i][k] for k in MONTHLY_LABELS}}
+               for i in range(len(fiscal))]
     labels = [_month_label(first, last) for first, last in fiscal]
     return labels, monthly + [{} for _ in range(12 - len(fiscal))]
 

@@ -436,7 +436,10 @@ SECURITIES_SALE_ACCOUNTS = ("有価証券売却益", "投資有価証券売却�
 
 
 def _securities_warnings(year_dir):
-    """有価証券の売却益に税区分（対象外以外）を付けた行があれば警告。SY35 では非課税売上の欄にそのまま入れている。"""
+    """有価証券の売却益に税区分「非課税売上」を付けた行があれば警告。SY35 では非課税売上の欄にそのまま入れている。
+
+    非課税売上以外（課税売上・免税売上・非課税資産輸出・対象外）はその欄に入らないので、この警告の対象にしない。
+    """
     from ledger import entry_rows, entry_where
     from tax import TAX_CATEGORIES
     totals = {}
@@ -444,7 +447,7 @@ def _securities_warnings(year_dir):
         for side in ("借方", "貸方"):
             name = r[f"{side}科目"].strip()
             category = TAX_CATEGORIES.get(r[f"{side}税区分"].strip())
-            if name not in SECURITIES_SALE_ACCOUNTS or category is None or category.kind == "対象外":
+            if name not in SECURITIES_SALE_ACCOUNTS or category is None or category.kind != "非課税売上":
                 continue
             amount = parse_amount(r[f"{side}金額"], entry_where(r))
             totals[name] = totals.get(name, 0) + (amount if side == "貸方" else -amount)

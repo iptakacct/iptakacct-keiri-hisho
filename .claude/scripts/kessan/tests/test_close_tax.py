@@ -384,3 +384,55 @@ def test_unpost_other_item_requires_tax_too(year_dir, accounts):
     assert {r["伝票番号"] for r in read_rows(year_dir / "adjustments.csv")} == {"A1", "A2"}
     assert close.unpost_candidates(year_dir, [ID_TAX], items=items) == ["A2"]  # 消費税だけなら取り消せる
     assert close.unpost_candidates(year_dir, ["close:未払:k1"], items=items) == ["A1"]
+
+
+def test_replace_posted_estimate_with_tatsujin_amount(year_dir, accounts):
+    """⑦で消費税の概算を登録済みでも、close-unpost で消費税だけ取り消せば達人の額に置き換えられる（他の項目の伝票は残る）。
+
+    取り消さずに close-set-amount → close-candidates をしても、登録済みの概算は置き換わらない（所見が出るだけ）。
+    """
+    import close_tax
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    items = [EarlierItem(), close_tax]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, ["close:未払:k1", ID_TAX])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A1", "A2"]  # 概算 6,200 で登録済み
+
+    close.set_amount(year_dir, "消費税", 9999)
+    r = close.run_close(year_dir, accounts, items=items)
+    assert any(ID_TAX in n.message and "違います" in n.message for n in r.notes)
+    assert close.post_candidates(year_dir, accounts, items=items) == []  # 置き換わらない
+    posted = read_rows(year_dir / "adjustments.csv")
+    assert [r["借方金額"] for r in posted if r["借方科目"] == "租税公課"] == ["6200"]
+
+    assert close.unpost_candidates(year_dir, [ID_TAX], items=items) == ["A2"]  # 消費税だけ取り消す
+    close.run_close(year_dir, accounts, items=items)
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "租税公課", "", 9999, "対象外"),
+        ("貸", "仮払税金", "", 3000, ""),
+        ("貸", "未払消費税等", "", 6999, ""),
+    ]
+    assert candidate_lines(year_dir, "close:未払:k1") == []  # 未払は登録済みのまま（出し直さない）
+    close.approve_candidates(year_dir, [ID_TAX])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A2"]  # 空いた番号の次（最大＋1）
+    posted = read_rows(year_dir / "adjustments.csv")
+    assert [r["借方金額"] for r in posted if r["借方科目"] == "租税公課"] == ["9999"]
+    assert {r["伝票番号"] for r in posted} == {"A1", "A2"}
+
+
+def test_hold_tax_candidate_until_tatsujin_amount(year_dir, accounts):
+    """原則課税の年度は、消費税の候補を承認せずに他の項目だけ登録し、達人の額が決まってから消費税を登録できる。"""
+    import close_tax
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    items = [EarlierItem(), close_tax]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, ["close:未払:k1"])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A1"]
+    assert candidate_lines(year_dir, ID_TAX)  # 消費税の候補は未承認のまま残る
+    close.set_amount(year_dir, "消費税", 9999)
+    close.run_close(year_dir, accounts, items=items)
+    assert ("借", "租税公課", "", 9999, "対象外") in candidate_lines(year_dir, ID_TAX)
+    close.approve_candidates(year_dir, [ID_TAX])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A2"]
