@@ -636,3 +636,26 @@ def test_cli_init_company_name(tmp_path):
     assert load_company_name(d) == "テスト商事"
     assert main(["init", "--year-dir", str(d), "--start", "2025-04-01", "--end", "2026-03-31"]) == 0
     assert load_company_name(d) == "テスト商事"
+
+
+def test_cli_statements_refuses_on_ng(tmp_path, capsys):
+    year = tmp_path / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"}])  # 期首の貸借がずれている → NG
+    assert main(["statements", "--year-dir", str(year)]) == 1
+    err = capsys.readouterr().err
+    assert "NG" in err and "check-result.md" in err
+    assert not (year / "output" / "financial-statements.xlsx").exists()
+    assert not (year / "output" / "notes-draft.md").exists()
+
+
+def test_cli_statements_writes_and_warns(tmp_path, capsys):
+    year = tmp_path / "インスタンス" / "work" / "kessan" / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"},
+                   {"科目": "資本金", "補助": "", "残高": "1000000"}])
+    assert main(["statements", "--year-dir", str(year)]) == 0
+    out = capsys.readouterr().out
+    assert "法人税等が未計上" in out and "会社名" in out
+    assert "financial-statements.xlsx" in out and "notes-draft.md" in out
+    assert (year / "output" / "financial-statements.xlsx").exists()

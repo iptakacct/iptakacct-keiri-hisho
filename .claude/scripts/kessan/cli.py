@@ -28,6 +28,7 @@
   python ../.claude/scripts/kessan/cli.py close-unreject --year-dir <Y> --ids close:未払:…   （却下を取り消す）
   python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py close-unpost --year-dir <Y> --ids close:…   （登録済みの決算整理仕訳を取り消す）
+  python ../.claude/scripts/kessan/cli.py statements --year-dir <Y> [--prev-year-dir …]   （決算書・個別注記表の雛形）
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
           / 3 post（set-tax・登録済み伝票の split-tax・close-post・close-unpost）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
@@ -49,6 +50,7 @@ from close import (
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from evidence_resolve import resolve_evidence
 from extracted import extracted_files
+from financials import build_statements, write_statements
 from extracted_import import import_extracted, inbox_status
 from match import add_payee, load_abbreviations, load_payees, payment_accounts
 from patterns import auto_approve, load_patterns
@@ -64,7 +66,7 @@ from undo import discard, unimport
 COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary",
             "close-candidates", "close-approve", "close-unapprove", "close-post", "close-set-amount", "close-reject",
-            "close-unreject", "close-unpost")
+            "close-unreject", "close-unpost", "statements")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -122,7 +124,8 @@ def _parser():
         if name == "discard":
             p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
             p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")
-        if name in ("post", "check", "set-tax", "tax-summary", "close-candidates", "close-post", "close-unpost"):
+        if name in ("post", "check", "set-tax", "tax-summary", "close-candidates", "close-post", "close-unpost",
+                    "statements"):
             p.add_argument("--prev-year-dir", type=Path)
         if name == "close-candidates":
             p.add_argument("--next-year-dir", type=Path, help="翌期の年度フォルダ（未払・未収の照合に使う）")
@@ -523,6 +526,19 @@ def main(argv=None):
             if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)):
                 print("登録は完了済みですが、検算でNGがあります（check-result.md を確認）")
                 return EXIT_POSTED_WITH_NG
+            return 0
+        if args.command == "statements":
+            findings = _run_check(year_dir, accounts, args.prev_year_dir)
+            if has_ng(findings):
+                ng = sum(f.level == "NG" for f in findings)
+                raise KessanError(f"検算にNGが{ng}件あるため決算書を出しません（output/check-result.md を確認）")
+            st = build_statements(year_dir, accounts)
+            paths = write_statements(year_dir, st, company_dir=_company_dir(year_dir))
+            for w in st.warnings:
+                print(f"警告: {w}")
+            print(f"当期純利益 {st.profits['当期純利益']:,}円")
+            for path in paths:
+                print(f"出力: {path}")
             return 0
         if args.command == "tb":
             print(f"試算表: {write_trial_balance(year_dir, accounts)}")
