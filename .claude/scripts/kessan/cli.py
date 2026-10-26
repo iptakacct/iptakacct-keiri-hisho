@@ -8,6 +8,7 @@
   python ../.claude/scripts/kessan/cli.py set-accounts --year-dir <Y> --file <Y>/output/set-accounts-20260917.json
   python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-20260917.json [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --id receipt:… --part 10:1080 --part 8:540
+  python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --voucher 3 --line 1 --part 10:1080 --part 8:540   （登録済み伝票）
   python ../.claude/scripts/kessan/cli.py review --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-20260917.xlsx --numbers 3 5
@@ -20,7 +21,7 @@
   python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
-          / 3 post（set-tax）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
+          / 3 post（set-tax・登録済み伝票の split-tax）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
           （import-bank・import-extracted・set-accounts の反映後に自動承認だけが失敗したときは、反映が完了した旨を出して 1。
             import-extracted で形式エラーのファイルもあったときは 4）
 """
@@ -41,7 +42,7 @@ from post import post_approved
 from review_xlsx import read_review, write_review
 from tax import load_rates, load_tax_settings, load_transitions
 from tax_summary import summarize, write_summary
-from tax_edit import load_tax_updates, set_journal_tax, split_tax
+from tax_edit import load_tax_updates, set_journal_tax, split_posted, split_tax
 from tax_fill import fill_tax
 from trial_balance import write_trial_balance
 from undo import discard, unimport
@@ -77,7 +78,10 @@ def _parser():
         if name in ("set-accounts", "set-tax", "apply-review"):
             p.add_argument("--file", required=True, type=Path)
         if name == "split-tax":
-            p.add_argument("--id", required=True, help="分ける明細の取り込み元ID")
+            p.add_argument("--id", help="分ける未承認の明細（staging.csv）の取り込み元ID")
+            p.add_argument("--voucher", help="分ける登録済み伝票（journal.csv）の伝票番号（--line と使う。--id とは同時に使えない）")
+            p.add_argument("--line", type=int, help="--voucher の伝票内の行番号（1から）")
+            p.add_argument("--prev-year-dir", type=Path)
             p.add_argument("--part", required=True, action="append", metavar="税率:税込金額",
                            help="税率ごとの金額（例：--part 10:1080 --part 8:540。2つ以上）")
         if name == "approve":
@@ -109,6 +113,15 @@ def _upgrade_year_files(year_dir):
 
 def _company_file(year_dir, given, name):
     return given or year_dir.resolve().parents[2] / "context" / "company" / name
+
+
+def _load_accounts(year_dir):
+    """科目マスタに、インスタンスの context/company/kessan-accounts.yaml（会社別の追加科目）があれば足して読む。"""
+    try:
+        extra = _company_file(year_dir, None, "kessan-accounts.yaml")
+    except IndexError:  # インスタンスの外に作った年度フォルダ
+        extra = None
+    return load_accounts(extra_path=extra)
 
 
 def _run_check(year_dir, accounts, prev_year_dir):
@@ -233,7 +246,7 @@ def main(argv=None):
         if not (year_dir / "journal.csv").exists():
             raise KessanError(f"年度フォルダが初期化されていません（先に init を実行）: {year_dir}")
         _upgrade_year_files(year_dir)
-        accounts = load_accounts()
+        accounts = _load_accounts(year_dir)
 
         if args.command == "inbox-status":
             statuses = inbox_status(year_dir)
@@ -273,6 +286,19 @@ def main(argv=None):
                 return EXIT_POSTED_WITH_NG
             return 0
         if args.command == "split-tax":
+            if args.voucher is not None or args.line is not None:
+                if args.id is not None:
+                    raise KessanError("--id と --voucher・--line は同時に使えません")
+                if args.voucher is None or args.line is None:
+                    raise KessanError("登録済み伝票を分けるには --voucher と --line の両方が要ります")
+                count = split_posted(year_dir, args.voucher, args.line, _parse_parts(args.part), accounts)
+                print(f"税率で分けました: 伝票{args.voucher} 行{args.line}（{count}行になりました）")
+                if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)):
+                    print("分割は反映済みですが、検算でNGがあります（check-result.md を確認）")
+                    return EXIT_POSTED_WITH_NG
+                return 0
+            if args.id is None:
+                raise KessanError("--id（未承認の明細）か --voucher と --line（登録済み伝票）を指定してください")
             sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
             number = split_tax(year_dir, args.id, _parse_parts(args.part), payment_accounts(sources), accounts)
             print(f"税率で分けました: 取り込み元ID {args.id}（staging.csv 内の伝票番号 {number}。承認はまだです）")

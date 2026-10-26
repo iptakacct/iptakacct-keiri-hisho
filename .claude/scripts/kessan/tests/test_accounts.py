@@ -91,3 +91,59 @@ def test_invalid_default_tax_rejected(tmp_path):
     path.write_text("科目,区分,正常残高,表示区分,既定税区分\n売上高,収益,貸,売上高,課税10\n", encoding="utf-8-sig")
     with pytest.raises(KessanError, match="既定税区分"):
         load_accounts(path)
+
+
+def test_new_master_accounts(accounts):
+    a = accounts["未払消費税等"]
+    assert (a.category, a.normal_side, a.section, a.default_tax) == ("負債", "貸", "流動負債", "")
+    a = accounts["仮払税金"]
+    assert (a.category, a.normal_side, a.section, a.default_tax) == ("資産", "借", "流動資産", "")
+
+
+EXTRA_YAML = """\
+accounts:
+  - {科目: 業務委託料, 区分: 費用, 正常残高: 借, 表示区分: 販売費及び一般管理費, 既定税区分: 課税仕入10%}
+  - {科目: 預り保証金, 区分: 負債, 正常残高: 貸, 表示区分: 固定負債}
+"""
+
+
+def write_extra(tmp_path, text):
+    path = tmp_path / "kessan-accounts.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_extra_accounts_loaded(tmp_path):
+    accounts = load_accounts(extra_path=write_extra(tmp_path, EXTRA_YAML))
+    assert accounts["業務委託料"].default_tax == "課税仕入10%"
+    assert accounts["預り保証金"].normal_side == "貸" and accounts["預り保証金"].default_tax == ""
+    assert list(accounts)[-2:] == ["業務委託料", "預り保証金"]
+    assert list(accounts)[:-2] == list(load_accounts())
+
+
+def test_extra_path_missing_or_comments_only_adds_nothing(tmp_path):
+    base = load_accounts()
+    assert load_accounts(extra_path=tmp_path / "none.yaml") == base
+    assert load_accounts(extra_path=write_extra(tmp_path, "# コメントだけ\n")) == base
+
+
+def test_extra_account_same_name_rejected(tmp_path):
+    path = write_extra(tmp_path, "accounts:\n  - {科目: 現金, 区分: 資産, 正常残高: 借, 表示区分: 流動資産}\n")
+    with pytest.raises(KessanError, match="科目マスタと同じ名前の科目は足せない"):
+        load_accounts(extra_path=path)
+
+
+@pytest.mark.parametrize("item", [
+    "{科目: 甲, 区分: 費用, 正常残高: 右, 表示区分: 販売費及び一般管理費}",
+    "{科目: 甲, 区分: その他, 正常残高: 借, 表示区分: 販売費及び一般管理費}",
+    "{科目: 甲, 区分: 費用, 正常残高: 借, 表示区分: 販売費及び一般管理費, 既定税区分: 課税10}",
+    "{区分: 費用, 正常残高: 借, 表示区分: 販売費及び一般管理費}",
+])
+def test_extra_account_bad_value_rejected(tmp_path, item):
+    with pytest.raises(KessanError, match="kessan-accounts.yaml"):
+        load_accounts(extra_path=write_extra(tmp_path, f"accounts:\n  - {item}\n"))
+
+
+def test_extra_file_with_wrong_root_rejected(tmp_path):
+    with pytest.raises(KessanError, match="accounts:"):
+        load_accounts(extra_path=write_extra(tmp_path, "- 業務委託料\n"))

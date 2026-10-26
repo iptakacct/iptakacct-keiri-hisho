@@ -2,10 +2,10 @@ import pytest
 
 from accounts_update import approve
 from check import run_checks
-from common import JOURNAL_COLUMNS, STAGING_COLUMNS, KessanError, read_rows, write_rows
+from common import EVIDENCE_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS, KessanError, read_rows, write_rows
 from helpers import line, staging_row
 from post import post_approved
-from tax_edit import set_journal_tax, split_tax
+from tax_edit import set_journal_tax, split_posted, split_tax
 from tax_fill import MIXED_RATE_REASON
 
 CASH = {("現金", "")}
@@ -196,3 +196,86 @@ def test_set_tax_rejects_voucher_in_both_files(year_dir):
     write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS, [line("12", "2026-03-31", debit=("雑費", "", 1), credit=("現金", "", 1))])
     with pytest.raises(KessanError, match="両方にあり"):
         set_journal_tax(year_dir, [{"伝票番号": "12", "行": 1, "借方税区分": "対象外"}])
+
+
+# --- split-tax（登録済み伝票） ---
+
+def posted_shopping(no="3"):
+    return line(no, "2025-04-10", debit=("消耗品費", "", 1620), credit=("現金", "", 1620), 取り込み元ID="rcpt:1",
+                登録区分="取り込み", 登録日時="2025-04-11T09:00:00", 借方税区分="課税仕入10%", 借方インボイス="適格")
+
+
+def write_mixed_evidence(year_dir):
+    row = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    row.update({"証憑ID": "e1", "証憑ファイル": "inbox/領収書-テスト.jpg", "状態": "明細に対応", "取り込み元ID": "rcpt:1",
+                "税率": "混在", "登録番号": "T1234567890123"})
+    write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [row])
+
+
+def test_split_posted_voucher(year_dir, accounts):
+    taxable(year_dir)
+    other = dict(借方税区分="課税仕入10%", 借方インボイス="適格")
+    write_journal(year_dir, [line("2", "2025-04-09", debit=("消耗品費", "", 100), credit=("現金", "", 100), **other),
+                             posted_shopping(),
+                             line("4", "2025-04-12", debit=("消耗品費", "", 200), credit=("現金", "", 200), **other)])
+    write_mixed_evidence(year_dir)
+    assert [f.message for f in run_checks(year_dir, accounts) if f.level == "NG" and f.item == "税区分"]
+    assert split_posted(year_dir, "3", 1, [(10, 1080), (8, 540)], accounts) == 3
+    rows = read_rows(year_dir / "journal.csv")
+    assert [r["伝票番号"] for r in rows] == ["2", "3", "3", "3", "4"]
+    ten, eight, cash = rows[1:4]
+    assert (ten["借方金額"], ten["借方税区分"], ten["貸方科目"], ten["貸方金額"]) == ("1080", "課税仕入10%", "", "")
+    assert (eight["借方金額"], eight["借方税区分"], eight["借方インボイス"]) == ("540", "課税仕入8%軽", "適格")
+    assert (cash["貸方科目"], cash["貸方金額"], cash["借方科目"], cash["借方金額"]) == ("現金", "1620", "", "")
+    for r in rows[1:4]:
+        assert (r["取り込み元ID"], r["登録日時"], r["登録区分"], r["日付"]) == (
+            "rcpt:1", "2025-04-11T09:00:00", "取り込み", "2025-04-10")
+    # 税区分の食い違いと貸借のNGが消える（現金の残高が足りない等、この仕訳と無関係なNGは見ない）
+    assert [f.item for f in run_checks(year_dir, accounts) if f.level == "NG"] == ["マイナス残高"]
+
+
+def test_split_posted_splits_one_line_of_multi_line_voucher(year_dir, accounts):
+    """複数行の伝票の1行目（相手側が空の行）だけを分ける。"""
+    taxable(year_dir)
+    write_journal(year_dir, [
+        line("5", "2025-04-10", credit=("売上高", "", 2200), 貸方税区分="課税売上10%", 取り込み元ID="m:1"),
+        line("5", "2025-04-10", debit=("現金", "", 2200), 取り込み元ID="m:1"),
+    ])
+    assert split_posted(year_dir, "5", 1, [(10, 1100), (8, 1100)], accounts) == 2
+    rows = read_rows(year_dir / "journal.csv")
+    assert [(r["貸方金額"], r["貸方税区分"]) for r in rows[:2]] == [("1100", "課税売上10%"), ("1100", "課税売上8%軽")]
+    assert len(rows) == 3 and rows[2]["借方金額"] == "2200"
+
+
+def test_split_posted_rejects_exempt_year(year_dir, accounts):
+    write_journal(year_dir, [posted_shopping()])
+    before = (year_dir / "journal.csv").read_bytes()
+    with pytest.raises(KessanError, match="免税の年度"):
+        split_posted(year_dir, "3", 1, [(10, 1080), (8, 540)], accounts)
+    assert (year_dir / "journal.csv").read_bytes() == before
+
+
+def test_split_posted_amount_mismatch(year_dir, accounts):
+    taxable(year_dir)
+    write_journal(year_dir, [posted_shopping()])
+    before = (year_dir / "journal.csv").read_bytes()
+    with pytest.raises(KessanError, match="合計1600が借方の金額1620と一致しません"):
+        split_posted(year_dir, "3", 1, [(10, 1080), (8, 520)], accounts)
+    assert (year_dir / "journal.csv").read_bytes() == before
+
+
+def test_split_posted_rejects_bad_targets(year_dir, accounts):
+    taxable(year_dir)
+    both = posted_shopping("6")
+    both.update(貸方税区分="課税売上10%")
+    write_journal(year_dir, [posted_shopping(), both,
+                             line("7", "2025-04-10", debit=("現金", "", 5), credit=("雑収入", "", 5))])
+    write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS,
+               [line("A1", "2026-03-31", debit=("減価償却費", "", 100), credit=("未払金", "", 100))])
+    parts = [(10, 1080), (8, 540)]
+    for no, row_no, message in [("9", 1, "journal.csv にありません"), ("A1", 1, "決算整理"), ("3", 2, "範囲外"),
+                                ("6", 1, "ちょうど1つ"), ("7", 1, "ちょうど1つ")]:
+        with pytest.raises(KessanError, match=message):
+            split_posted(year_dir, no, row_no, parts, accounts)
+    with pytest.raises(KessanError, match="2つ以上"):
+        split_posted(year_dir, "3", 1, [(10, 1620)], accounts)

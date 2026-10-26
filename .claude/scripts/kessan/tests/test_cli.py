@@ -481,6 +481,42 @@ def test_split_tax_command(tmp_path, capsys):
     assert "税率:税込金額" in capsys.readouterr().err
 
 
+def test_split_tax_command_on_posted_voucher(tmp_path, capsys):
+    from common import JOURNAL_COLUMNS
+    from helpers import line
+    year = make_instance(tmp_path)
+    (year / "period.yaml").write_text(
+        '期首日: "2025-04-01"\n期末日: "2026-03-31"\n'
+        "消費税:\n  区分: 課税\n  方式: 原則\n  計算: 割戻し\n  控除: 全額控除\n", encoding="utf-8")
+    write_rows(year / "journal.csv", JOURNAL_COLUMNS, [
+        line("3", "2025-04-10", debit=("消耗品費", "", 1620), credit=("現金", "", 1620), 借方税区分="課税仕入10%", 借方インボイス="適格"),
+    ])
+    base = ["split-tax", "--year-dir", str(year)]
+    parts = ["--part", "10:1080", "--part", "8:540"]
+    assert main([*base, "--id", "x", "--voucher", "3", "--line", "1", *parts]) == 1
+    assert "同時に使えません" in capsys.readouterr().err
+    assert main([*base, "--voucher", "3", *parts]) == 1
+    assert main([*base, *parts]) == 1
+    capsys.readouterr()
+    code = main([*base, "--voucher", "3", "--line", "1", *parts])
+    assert code in (0, 3)  # 3：税と無関係な検算NGが残っている
+    out = capsys.readouterr().out
+    assert "伝票3 行1（3行になりました）" in out and "検算:" in out
+    assert [r["借方金額"] or r["貸方金額"] for r in read_rows(year / "journal.csv")] == ["1080", "540", "1620"]
+
+
+def test_cli_uses_company_accounts(tmp_path, capsys):
+    year = make_instance(tmp_path)
+    (year.parents[2] / "context" / "company" / "kessan-accounts.yaml").write_text(
+        "accounts:\n  - {科目: 業務委託料, 区分: 費用, 正常残高: 借, 表示区分: 販売費及び一般管理費}\n", encoding="utf-8")
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [
+        staging_row(日付="2025-04-10", 借方科目="業務委託料", 借方金額="5000", 貸方科目="現金", 貸方金額="5000",
+                    摘要="委託", 取り込み元ID="m:1", 判定="確定", 承認="済"),
+    ])
+    assert main(["post", "--year-dir", str(year)]) in (0, 3)
+    assert [r["借方科目"] for r in read_rows(year / "journal.csv")] == ["業務委託料"]
+
+
 def test_set_tax_command(tmp_path, capsys):
     import json
     from common import JOURNAL_COLUMNS

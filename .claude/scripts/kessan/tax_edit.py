@@ -162,6 +162,28 @@ def _check_parts(parts):
     return errors
 
 
+def _split_lines(row, split_side, parts, base_tax, taxable):
+    """row の split_side の側を parts の数の行に分けた行の並びを返す。
+
+    反対側に科目があれば、その側だけを残した1行を最後に足す（分けた側は空にする）。
+    課税の年度だけ、分けた側の税区分を税率に合わせて替える。
+    """
+    pay_side = "貸方" if split_side == "借方" else "借方"
+    new_rows = []
+    for rate, amount in parts:
+        part = dict(row)
+        _blank_side(part, pay_side)
+        part[f"{split_side}金額"] = str(amount)
+        if taxable:
+            part[f"{split_side}税区分"] = with_rate(base_tax, rate)
+        new_rows.append(part)
+    if row[f"{pay_side}科目"].strip():
+        pay_line = dict(row)
+        _blank_side(pay_line, split_side)
+        new_rows.append(pay_line)
+    return new_rows
+
+
 def split_tax(year_dir, source_id, parts, payment_accounts, accounts=None):
     """staging.csv の未承認の1行を、税率ごとに分けた複合仕訳にする。付けた伝票番号（S1, S2…）を返す。
 
@@ -212,17 +234,7 @@ def split_tax(year_dir, source_id, parts, payment_accounts, accounts=None):
 
     number = _free_voucher_number(staging)
     reasons = remove_reasons(row["要確認理由"], MIXED_RATE_REASON)
-    new_rows = []
-    for rate, amount in parts:
-        part = dict(row)
-        _blank_side(part, pay_side)
-        part[f"{other}金額"] = str(amount)
-        if taxable:
-            part[f"{other}税区分"] = with_rate(base_tax, rate)
-        new_rows.append(part)
-    pay_line = dict(row)
-    _blank_side(pay_line, other)
-    new_rows.append(pay_line)
+    new_rows = _split_lines(row, other, parts, base_tax, taxable)
     for r in new_rows:
         r["伝票番号"] = number
         r["要確認理由"] = reasons
@@ -230,3 +242,50 @@ def split_tax(year_dir, source_id, parts, payment_accounts, accounts=None):
     ensure_writable(year_dir, ["staging.csv"])
     replace_rows(year_dir / "staging.csv", STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in staging])
     return number
+
+
+def split_posted(year_dir, voucher_no, line, parts, accounts):
+    """journal.csv の登録済み伝票の1行（伝票内の行番号）を、税率ごとの複数行に分ける。分けた後の行数を返す。
+
+    分ける行は税区分に税率がある側（両側にあればエラー）。分けた行は同じ伝票番号・登録日時・取り込み元IDのまま、
+    元の行の位置に入れる。借方合計＝貸方合計は変わらない。課税の年度だけ。決算整理（adjustments.csv）は対象外。
+    """
+    year_dir = Path(year_dir)
+    voucher_no = str(voucher_no).strip()
+    where = f"伝票{voucher_no} 行{line}"
+    errors = _check_parts(parts)
+    if isinstance(line, bool) or not isinstance(line, int) or line < 1:
+        errors.append(f"{where}: 行は1以上の整数（伝票内の行番号）で書く")
+    if not load_tax_settings(year_dir).taxable:
+        errors.append("免税の年度は税率で分けられません（税の列を使わない）")
+    journal = read_rows(year_dir / "journal.csv")
+    indexes = [i for i, r in enumerate(journal) if r["伝票番号"].strip() == voucher_no]
+    if not indexes:
+        if any(r["伝票番号"].strip() == voucher_no for r in read_rows(year_dir / "adjustments.csv")):
+            errors.append(f"伝票{voucher_no}: 決算整理（adjustments.csv）の伝票は分けられません")
+        else:
+            errors.append(f"伝票{voucher_no}: journal.csv にありません")
+    elif isinstance(line, int) and not isinstance(line, bool) and line >= 1 and line > len(indexes):
+        errors.append(f"{where}: 範囲外（この伝票は{len(indexes)}行）")
+    if errors:
+        raise KessanError("税率で分けられません（何も変更していません）:\n" + "\n".join(errors))
+    index = indexes[line - 1]
+    row = journal[index]
+    rated = [side for side in ("借方", "貸方")
+             if getattr(TAX_CATEGORIES.get(row[f"{side}税区分"].strip()), "rate", None) is not None]
+    if len(rated) != 1:
+        raise KessanError(f"{where}: 税率を持つ税区分の側がちょうど1つの行だけ分けられます"
+                          f"（借方「{row['借方税区分']}」／貸方「{row['貸方税区分']}」。先に set-tax で直す）")
+    side = rated[0]
+    amount = parse_amount(row[f"{side}金額"], f"journal.csv {where}")
+    total = sum(a for _, a in parts)
+    if total != amount:
+        raise KessanError(f"{where}: 合計{total}が{side}の金額{amount}と一致しません")
+    new_rows = _split_lines(row, side, parts, row[f"{side}税区分"].strip(), True)
+    journal[index:index + 1] = new_rows
+    ensure_writable(year_dir, ["journal.csv"])
+    try:
+        replace_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [project(r, JOURNAL_COLUMNS) for r in journal])
+    except OSError:
+        raise cannot_write("journal.csv") from None
+    return len(new_rows)
