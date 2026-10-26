@@ -225,3 +225,111 @@ def test_negative_accumulated_depreciation_is_flagged(year_dir, accounts):
     write_opening_with_depreciation(year_dir)
     findings = run_checks(year_dir, accounts)
     assert messages(findings, "マイナス残高") == ["減価償却累計額（補助なし）: 期末残高-100000"]
+
+
+# --- 消費税の検算 ---
+
+def taxable_year(year_dir, allocation="全額控除"):
+    import yaml
+    s = {"区分": "課税", "方式": "原則", "計算": "割戻し", "控除": allocation}
+    (year_dir / "period.yaml").write_text(
+        '期首日: "2025-04-01"\n期末日: "2026-03-31"\n' + yaml.safe_dump({"消費税": s}, allow_unicode=True),
+        encoding="utf-8")
+
+
+def tax_lines(**extra):
+    """売上1本・経費1本（ともに普通預金）。extra は 2本目（経費）の税の列を上書きする。"""
+    sale = line("1", "2025-04-01", debit=(*BANK, 110000), credit=("売上高", "", 110000), 取り込み元ID="bank:1",
+                貸方税区分="課税売上10%")
+    cost = dict(借方税区分="課税仕入10%", 借方インボイス="適格")
+    cost.update(extra)
+    fee = line("2", "2025-04-05", debit=("支払手数料", "", 3300), credit=(*BANK, 3300), 取り込み元ID="bank:2", **cost)
+    return [sale, fee]
+
+
+def setup_tax(year_dir, **extra):
+    setup_clean(year_dir)
+    rows = read_rows(year_dir / "journal.csv")
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [dict(r, **t) for r, t in zip(rows, [
+        {k: v for k, v in tax_lines(**extra)[0].items() if k.endswith(("税区分", "インボイス", "個別対応"))},
+        {k: v for k, v in tax_lines(**extra)[1].items() if k.endswith(("税区分", "インボイス", "個別対応"))},
+    ])])
+
+
+def tax_messages(findings):
+    return [f.message for f in findings if f.item == "税区分"]
+
+
+def test_exempt_year_skips_tax_checks(year_dir, accounts):
+    setup_clean(year_dir)
+    rows = read_rows(year_dir / "journal.csv")
+    rows[1]["借方税区分"] = "でたらめ"
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    assert tax_messages(run_checks(year_dir, accounts)) == []
+
+
+def test_valid_taxable_journal_passes(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    assert run_checks(year_dir, accounts) == []
+
+
+def test_missing_tax_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方税区分="", 借方インボイス="")
+    assert tax_messages(run_checks(year_dir, accounts)) == ["伝票2: 借方 支払手数料 の税区分が空"]
+
+
+def test_unknown_tax_value_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方税区分="課税仕入9%")
+    assert tax_messages(run_checks(year_dir, accounts)) == ["伝票2: 借方税区分「課税仕入9%」は使えない値"]
+
+
+def test_wrong_kind_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    rows = read_rows(year_dir / "journal.csv")
+    rows[0]["貸方税区分"] = "課税仕入10%"
+    rows[0]["貸方インボイス"] = "適格"
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    ng = [f for f in run_checks(year_dir, accounts) if f.level == "NG"]
+    assert [f.message for f in ng] == ["伝票1: 貸方 売上高 に税区分「課税仕入10%」は使えない"]
+
+
+def test_missing_invoice_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方インボイス="")
+    assert tax_messages(run_checks(year_dir, accounts)) == ["伝票2: 借方 インボイスが空（課税仕入には必須）"]
+
+
+def test_unknown_invoice_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方インボイス="たぶん適格")
+    assert tax_messages(run_checks(year_dir, accounts)) == ["伝票2: 借方 インボイス「たぶん適格」は使えない値"]
+
+
+def test_allocation_required_when_kobetsu(year_dir, accounts):
+    taxable_year(year_dir, allocation="個別対応")
+    setup_tax(year_dir)
+    assert tax_messages(run_checks(year_dir, accounts)) == ["伝票2: 借方 個別対応が空（個別対応方式の課税仕入には必須）"]
+    setup_tax(year_dir, 借方個別対応="共通")
+    assert run_checks(year_dir, accounts) == []
+    setup_tax(year_dir, 借方個別対応="謎")
+    assert tax_messages(run_checks(year_dir, accounts)) == ["伝票2: 借方 個別対応「謎」は使えない値"]
+
+
+def test_invoice_beside_non_purchase_is_warn(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方税区分="対象外")
+    findings = run_checks(year_dir, accounts)
+    assert [(f.level, f.message) for f in findings if f.item == "税区分"] == [
+        ("WARN", "伝票2: 借方 インボイス「適格」は課税仕入以外には付けない")]
+
+
+def test_adjustments_rows_are_checked(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    adj = line("A1", "2026-03-31", debit=("消耗品費", "", 1000), credit=("未払金", "", 1000))
+    write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS, [adj])
+    assert tax_messages(run_checks(year_dir, accounts)) == ["adjustments.csv 伝票A1: 借方 消耗品費 の税区分が空"]

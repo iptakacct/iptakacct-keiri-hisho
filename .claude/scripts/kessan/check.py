@@ -5,9 +5,19 @@ from datetime import datetime
 from pathlib import Path
 
 from common import parse_amount, read_rows
+from tax import ALLOCATION_VALUES, INVOICE_VALUES, TAX_CATEGORIES, load_tax_settings
 from ledger import compute_balances, entry_rows, entry_where, load_opening
 
 BS_CATEGORIES = ("資産", "負債", "純資産")
+
+# 科目の区分ごとに付けてよい税区分の種類（空は別に判定する）
+_PURCHASE_KINDS = ("課税仕入", "課税仕入返還")
+_ALLOWED_KINDS = {
+    "収益": ("課税売上", "免税売上", "非課税売上", "非課税資産輸出", "課税売上返還", "貸倒回収", "対象外"),
+    "費用": ("課税仕入", "課税仕入返還", "非課税仕入", "貸倒", "対象外"),
+}
+_ALLOWED_KINDS.update({c: ("課税仕入", "課税仕入返還", "非課税仕入", "課税売上", "非課税売上", "対象外")
+                       for c in BS_CATEGORIES})
 
 
 @dataclass(frozen=True)
@@ -152,6 +162,49 @@ def check_opening(year_dir, accounts, prev_year_dir=None):
     return findings
 
 
+def check_tax(entries, accounts, settings):
+    """課税の年度だけ、各行・各側の税区分・インボイス・個別対応を検算する。免税の年度は何も返さない。"""
+    if not settings.taxable:
+        return []
+    findings = []
+    for r in entries:
+        label = _voucher_label(r.get("_file", "journal.csv"), r["伝票番号"])
+        for side in ("借方", "貸方"):
+            name = r[f"{side}科目"].strip()
+            if not (name or parse_amount(r[f"{side}金額"], entry_where(r))):
+                continue
+            tax = r.get(f"{side}税区分", "").strip()
+            invoice = r.get(f"{side}インボイス", "").strip()
+            allocation = r.get(f"{side}個別対応", "").strip()
+            account = accounts.get(name)
+            if tax and tax not in TAX_CATEGORIES:
+                findings.append(Finding("NG", "税区分", f"{label}: {side}税区分「{tax}」は使えない値"))
+                continue
+            if not tax:
+                if account and account.category in ("収益", "費用") and parse_amount(r[f"{side}金額"], entry_where(r)):
+                    findings.append(Finding("NG", "税区分", f"{label}: {side} {name} の税区分が空"))
+                continue
+            kind = TAX_CATEGORIES[tax].kind
+            if account and kind not in _ALLOWED_KINDS.get(account.category, ()):
+                findings.append(Finding("NG", "税区分", f"{label}: {side} {name} に税区分「{tax}」は使えない"))
+                continue
+            if kind in _PURCHASE_KINDS:
+                if not invoice:
+                    findings.append(Finding("NG", "税区分", f"{label}: {side} インボイスが空（課税仕入には必須）"))
+                elif invoice not in INVOICE_VALUES:
+                    findings.append(Finding("NG", "税区分", f"{label}: {side} インボイス「{invoice}」は使えない値"))
+                if settings.allocation == "個別対応":
+                    if not allocation:
+                        findings.append(Finding("NG", "税区分", f"{label}: {side} 個別対応が空（個別対応方式の課税仕入には必須）"))
+                    elif allocation not in ALLOCATION_VALUES:
+                        findings.append(Finding("NG", "税区分", f"{label}: {side} 個別対応「{allocation}」は使えない値"))
+            else:
+                for title, value in (("インボイス", invoice), ("個別対応", allocation)):
+                    if value:
+                        findings.append(Finding("WARN", "税区分", f"{label}: {side} {title}「{value}」は課税仕入以外には付けない"))
+    return findings
+
+
 def run_checks(year_dir, accounts, prev_year_dir=None):
     entries = entry_rows(year_dir)
     return (
@@ -162,6 +215,7 @@ def run_checks(year_dir, accounts, prev_year_dir=None):
         + check_duplicates(entries)
         + check_negative_balances(year_dir, accounts)
         + check_opening(year_dir, accounts, prev_year_dir)
+        + check_tax(entries, accounts, load_tax_settings(year_dir))
     )
 
 
