@@ -2,6 +2,7 @@
 
 インスタンスフォルダで実行する例（<Y> は work/kessan/2026-03期 など）:
   python ../.claude/scripts/kessan/cli.py init --year-dir <Y> --start 2025-04-01 --end 2026-03-31
+  python ../.claude/scripts/kessan/cli.py init --year-dir <Y> --start 2025-04-01 --end 2026-03-31 --company-name テスト商事株式会社   （既存の年度フォルダに会社名だけ足せる）
   python ../.claude/scripts/kessan/cli.py inbox-status --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py import-bank --year-dir <Y> --account-id main --file <Y>/inbox/2025-04.csv
   python ../.claude/scripts/kessan/cli.py import-extracted --year-dir <Y> [--file <Y>/extracted/通帳-2025-04.pdf.json]

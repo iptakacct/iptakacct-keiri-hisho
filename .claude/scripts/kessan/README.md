@@ -197,10 +197,17 @@ python ../.claude/scripts/kessan/cli.py statements --year-dir <Y> [--prev-year-d
   - `output/gaikyo-material.xlsx`：法人事業概況説明書の主要科目（シート「主要科目」）と、期首月からの月別の売上・仕入・外注費・人件費・源泉徴収税額（シート「月別」）。主要科目は科目マスタの「概況書項目」で集める
 
 ```
-python ../.claude/scripts/kessan/cli.py export-tatsujin --year-dir <Y> [--kind kessan uchiwake gaikyo] [--prev-year-dir …]
+python ../.claude/scripts/kessan/cli.py export-tatsujin --year-dir <Y> [--kind kessan uchiwake gaikyo shohizei] [--prev-year-dir …]
 ```
 
-- `output/tatsujin/` に達人へ渡すXML（決算書 HJ21・内訳書 UG13・概況書 UG16）を出す。数字は `statements` の材料と同じ集計から作る
+- `output/tatsujin/<種類>-<GYOUMUPREFIX>-<期末日YYYYMMDD>.xml`（Shift_JIS・CRLF）に達人へ渡すXMLを出す。決算書 `kessan`（HJ21）・内訳書 `uchiwake`（UG13）・概況書 `gaikyo`（UG16）・消費税 `shohizei`（SY35）。省略すると4種類（消費税は下の条件）。数字は `statements` の材料と同じ集計から作る
+- `SYSTEM/PROGRAMNAME` は `kessan`。顧問先名は `period.yaml` の `会社名`（`init --company-name <会社名>` で入れる。空なら警告して空で出す）
+- 決算書の PATTERN（表示パターン）はMFの実物の値で固定。減価償却累計額は資産の部のマイナスの項目で出す
+- 法人税等が未計上・決算整理の候補が残っていても出す（警告つき。達人で税額を計算するのに税引前の決算書が要る）
+- 消費税XMLは**原則課税の年度だけ**。税抜額と税額の欄だけを埋める。経過80%・50%の税額は控除割合を掛ける前の額。積上げの年度の経過措置分は割戻しの欄に入れる。経過70%・30%・インボイスなしは入れず警告。簡易課税・2割特例は出さない
+- 内訳書XMLの繰越利益剰余金は帳簿の期末残高（当期純利益を含まない）。補助の `Count` は科目ごとに1から
+- cp932 で表せない文字が科目・補助・取引先にあると、何も書かずに止まる（どこの何の文字かを出す）
+- 達人で読めるかの実機確認は `docs/kessan/tatsujin-import-test.md`
 
 ## 終了コード
 

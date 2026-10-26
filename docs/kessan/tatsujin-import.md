@@ -103,6 +103,13 @@
 - `DATA/TUKIBETUURIAGEDAKA`：月別の売上等。`_01`〜`_12` の連番で、月ごとに `TUKIBETU_nn`（月）・`URIAGESYUUNYUUKINGAKU1_nn`（売上）・`SIIREKINGAKU1_nn`（仕入）・`GAICHUUHI_nn`・`JINKENHI_nn`・`GENSENTYOUSYUUZEIGAKU_nn`（源泉徴収税額）など
 - 消費税用（`excise_statement*`）も取得したが、kessan の対象（免税事業者）では使わないので構造は記録しない
 
+#### 消費税（`GYOUMUPREFIX` SY35・`FUNCTIONID` 1）と概況書の雛形（kessan が使う構造）
+- 要素の並びが固定のSY35・UG16は、会計ソフトの実物から値を消した雛形を `config/tatsujin/sy35-skeleton.xml`・`ug16-skeleton.xml` に置き（決算書は `hj21-skeleton.xml`）、kessan は雛形を読んで値を差し込む。雛形にない要素名へ値を入れようとするとプログラムの誤りとして止まる。実物のXMLそのものはリポジトリに置かない
+- SY35 の `BASIC`：`HOUJINKOJINKUBUN`（1＝法人）・`KAZEIKUBUN`（原則課税は1。ほかの値の意味は実機で確認）・`KEIKASHOCHIKAZEISHISAN`（実物は2）
+- SY35 の `DATA`：`D0201xx`（売上）・`D0202xx`（仕入）・`D0203xx`（貸倒）などの区分の要素が並び、末尾の数字で税率・種別を分ける（`…14` 10%、`…13` 8%軽、`…10`〜`…12` 旧税率、`…20`〜`…24` の仕入、`…30`〜`…34` の貸倒）。その下に `KAZEIURIAGEZEINUKI10_WARIMODOSHI`（税抜額）・`KAZEIURIAGEZEIGAKU10_WARIMODOSHI`（税額）のように、割戻し（`_WARIMODOSHI`）と積上げ（`_TSUMIAGE`）の別、仕入は課税対応・非課税対応・共通（`KAZEI`／`HIKAZEI`／`KYOTUU`）の別の要素がある。経過措置は `_INVOICEIGAI_WARIMODOSHI80`／`50`。**70%・30%の要素は無い**。値の無い要素は空
+- kessan は税抜額と税額の欄だけを埋める（MFの実物どおり）。簡易課税・2割特例の年度は出さない
+- UG16 の月別は `TUKIBETU_nn` が期首の月から数えた月（4月始まりなら `_01`＝4月、`_12`＝3月）で、期間外の月は空
+
 ### freee会計（実物を取得して確認）
 - 出す場所：「決算申告」→「連携用データの作成」（`/tax_return/corporate`）。対象年度を選び、次の2つを「インポート用ファイルのダウンロード(XML形式)」で出す
   - 法人税の達人用の決算書データ：貸借対照表・損益計算書・株主資本等変動計算書（`houjinzei_no_tatsujin.xml?fy_id=…&use_corporation_tax_bs=…&use_corporation_tax_pl=…&use_corporation_tax_ss=…`）
