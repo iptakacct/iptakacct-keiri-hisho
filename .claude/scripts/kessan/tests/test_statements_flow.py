@@ -121,7 +121,12 @@ def test_statements_and_export_flow(closed_year, capsys):
     }
     sga = items(xml["kessan"], "DATA/IncomeStatement/SellingGeneralAndAdministrativeExpenses")
     assert sga == {"役員報酬": 1320000, "外注費": 55000, "保険料": 30000, "租税公課": 51364, "減価償却費": 105000}
-    assert tag(xml["kessan"], "DATA/StatementChangesNetAssets/ChangesNetAssetsItem[2]/BalanceEndCurrentPeriod") == "-421364"
+    equity = {tag(i, "AccountList"): i for i in xml["kessan"].findall("DATA/StatementChangesNetAssets/ChangesNetAssetsItem")}
+    assert tag(equity["繰越利益剰余金"], "BalanceEndCurrentPeriod") == "-421364"
+    # PATTERN は雛形の値のまま（各コードの意味を実機で確かめるまで設定にしない）
+    pattern = [(e.tag, e.text) for e in xml["kessan"].find("BASIC/PATTERN").iter() if not list(e)]
+    assert pattern == [("Doubtful", "A2"), ("DepImp", "B5"), ("Doubtful", "C2"), ("DepImp", "D5"),
+                       ("Sales", "E1"), ("Cos", "F3"), ("Sga", "G1")]
 
     # 消費税 SY35
     assert tag(xml["shohizei"], "BASIC/KAZEIKUBUN") == "1"
@@ -157,6 +162,12 @@ def test_statements_and_export_flow(closed_year, capsys):
     assert counts == [str(n) for n in range(1, len(counts) + 1)]
     receivable = next(k for k in ug13.findall("DATA/KANJYOKAMOKU") if tag(k, "KANJYOKAMOKU_NAME") == "売掛金")
     assert tag(receivable, "KANJYOKAMOKU_ZANDAKA") == "110000"
+    # 繰越利益剰余金は帳簿の期末残高（当期純利益を含まない）：期首 0・仕訳なしなので 0 → 空。決算書の -421,364 とは違う
+    retained = next(k for k in ug13.findall("DATA/KANJYOKAMOKU") if tag(k, "KANJYOKAMOKU_NAME") == "繰越利益剰余金")
+    assert tag(retained, "KANJYOKAMOKU_ZANDAKA") == ""
+    # 源泉徴収税額の月別：この帳簿には預り金（源泉）の行が無い。足すと普通預金などの手計算の正解が変わるので、
+    # 源泉の月別は test_gaikyo.py（test_gaikyo_monthly・test_withholding_from_deposits）で確かめる
+    assert all(tag(gk, f"{monthly}GENSENTYOUSYUUZEIGAKU_{n:02d}") == "" for n in range(1, 13))
 
 
 def test_company_name_is_written(closed_year, capsys):

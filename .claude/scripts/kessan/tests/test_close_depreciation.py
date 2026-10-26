@@ -355,7 +355,8 @@ def test_intangible_straight_line_to_zero(year_dir, accounts, company):
     run(year_dir, accounts, company)
     assert staged(year_dir) == []  # 償却済み
     ledger(company, "会計ソフト,ソフトウエア,2025-04-01,2025-04-01,300000,定額法,5,270000,,")
-    (r,) = [x for x in (run(year_dir, accounts, company), staged(year_dir))[1]]
+    run(year_dir, accounts, company)
+    (r,) = staged(year_dir)
     assert r["借方金額"] == "30000"  # 残りを超えない（備忘価額の1円を残さない）
 
 

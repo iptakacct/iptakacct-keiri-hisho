@@ -231,3 +231,50 @@ def test_as_new_unpaid_without_partner_asks_to_fill_it(year_dir, tmp_path):
     assert (new["貸方科目"], new["貸方補助"]) == ("未払金", "")
     assert "後払いの請求書" in new["要確認理由"]
     assert "未払金の補助（取引先）が空" in new["要確認理由"]
+
+
+def _deferred_payable_row(year_dir, tmp_path):
+    """未払候補（後払い）の証憑を --as-new にして、貸方 未払金 の receipt:e1 の行を作る。"""
+    setup_multiple(year_dir, state="未払候補", 取り込み元ID="", 支払方法の推定="後払い")
+    resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None)
+    assert read_rows(year_dir / "staging.csv")[-1]["貸方科目"] == "未払金"
+
+
+def test_discard_deferred_payable_row_marks_evidence_discarded(year_dir, tmp_path):
+    """--as-new で作った未払金の行を discard すると、証憑は「破棄」になり、作り直し（--as-new）も決算整理の未払候補にも
+    ならない（未払候補の状態に戻さないので、未払が二重にならない）。"""
+    from undo import discard
+    _deferred_payable_row(year_dir, tmp_path)
+    assert discard(year_dir, ["receipt:e1"], "不要（テスト）") == 1
+    assert [r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")] == ["bank:a", "bank:b"]
+    (ev,) = read_rows(year_dir / "evidence.csv")
+    assert (ev["状態"], ev["取り込み元ID"]) == ("破棄", "receipt:e1")
+    with pytest.raises(KessanError, match="未払候補"):
+        resolve_evidence(year_dir, "e1", as_new=True, sources=sources(tmp_path), accounts=None)
+
+
+def test_unimport_deferred_payable_row_removes_row_and_evidence(year_dir, tmp_path):
+    """資料ごと unimport すると、receipt:e1 の行と証憑の記録が両方消える（読み直して取り込み直せる）。
+    帳簿に登録した後は unimport できない。"""
+    from undo import unimport
+    _deferred_payable_row(year_dir, tmp_path)
+    result = unimport(year_dir, ["inbox/領収書-0001.jpg"])
+    assert result.removed_ids == ["receipt:e1"] and result.evidence == 1
+    assert read_rows(year_dir / "evidence.csv") == []
+    assert [r["取り込み元ID"] for r in read_rows(year_dir / "staging.csv")] == ["bank:a", "bank:b"]
+
+
+def test_unimport_refused_after_deferred_payable_row_posted(year_dir, tmp_path):
+    from common import JOURNAL_COLUMNS, project
+    from undo import unimport
+    _deferred_payable_row(year_dir, tmp_path)
+    staging = read_rows(year_dir / "staging.csv")
+    posted = {**staging[-1], "伝票番号": "1", "登録区分": "通常"}
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [project(posted, JOURNAL_COLUMNS)])
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, staging[:-1])
+    names = ("staging.csv", "journal.csv", "evidence.csv")
+    before = {n: (year_dir / n).read_bytes() for n in names}
+    with pytest.raises(KessanError, match="receipt:e1"):
+        unimport(year_dir, ["inbox/領収書-0001.jpg"])
+    assert {n: (year_dir / n).read_bytes() for n in names} == before  # 何も変えない
+    assert read_rows(year_dir / "evidence.csv")[0]["状態"] == "新規仕訳"

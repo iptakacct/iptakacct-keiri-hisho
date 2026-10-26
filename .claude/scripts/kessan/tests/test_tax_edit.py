@@ -279,3 +279,28 @@ def test_split_posted_rejects_bad_targets(year_dir, accounts):
             split_posted(year_dir, no, row_no, parts, accounts)
     with pytest.raises(KessanError, match="2つ以上"):
         split_posted(year_dir, "3", 1, [(10, 1620)], accounts)
+
+
+def test_split_tax_receipt_payable_rule_yields_to_debit_payment_account(year_dir, accounts):
+    """receipt: の行でも、借方に口座・現金があればそちらが明細側（未払金を明細側とみなすのは明細側が無いときだけ）。
+    借方 現金／貸方 未払金 なら、分けるのは貸方の未払金の側になり、税区分が無いので止まる（何も変えない）。"""
+    taxable(year_dir)
+    write_staging(year_dir, [shopping(取り込み元ID="receipt:e1", 借方科目="現金", 借方インボイス="",
+                                      貸方科目="未払金", 貸方補助="テスト商店")])
+    before = (year_dir / "staging.csv").read_bytes()
+    with pytest.raises(KessanError, match="貸方の税区分"):
+        split_tax(year_dir, "receipt:e1", [(10, 1080), (8, 540)], CASH, accounts)
+    assert (year_dir / "staging.csv").read_bytes() == before
+
+
+def test_split_tax_other_receipt_rows_unaffected(year_dir, accounts):
+    """未払金以外の receipt: の行は今までどおり：現金払いは現金が明細側、未払費用など口座でない科目は分けられない。"""
+    taxable(year_dir)
+    write_staging(year_dir, [shopping(取り込み元ID="receipt:e2"),
+                             shopping(取り込み元ID="receipt:e3", 貸方科目="未払費用")])
+    split_tax(year_dir, "receipt:e2", [(10, 1080), (8, 540)], CASH, accounts)
+    rows = [r for r in read_rows(year_dir / "staging.csv") if r["取り込み元ID"] == "receipt:e2"]
+    assert [(r["借方金額"], r["貸方科目"], r["貸方金額"]) for r in rows] == [
+        ("1080", "", ""), ("540", "", ""), ("", "現金", "1620")]
+    with pytest.raises(KessanError, match="明細側"):
+        split_tax(year_dir, "receipt:e3", [(10, 1080), (8, 540)], CASH, accounts)

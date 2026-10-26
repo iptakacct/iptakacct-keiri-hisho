@@ -150,9 +150,8 @@ def test_extra_file_with_wrong_root_rejected(tmp_path):
 
 
 def _extra_file(tmp_path, body):
-    path = tmp_path / "kessan-accounts.yaml"
-    path.write_text("accounts:" + chr(10) + "  - " + body + chr(10), encoding="utf-8")
-    return path
+    """科目1つだけの kessan-accounts.yaml（body は1科目分のフロー形式）。"""
+    return write_extra(tmp_path, f"accounts:\n  - {body}\n")
 
 
 def test_section_must_be_known(tmp_path):
@@ -166,7 +165,7 @@ def test_section_must_match_category(tmp_path):
     with pytest.raises(KessanError, match="使えません"):
         load_accounts(extra_path=path)
     bad = tmp_path / "bad.csv"
-    bad.write_text("科目,区分,正常残高,表示区分" + chr(10) + "現金,資産,借,流動負債" + chr(10), encoding="utf-8-sig")
+    bad.write_text("科目,区分,正常残高,表示区分\n現金,資産,借,流動負債\n", encoding="utf-8-sig")
     with pytest.raises(KessanError, match="科目マスタ"):
         load_accounts(bad)
 
