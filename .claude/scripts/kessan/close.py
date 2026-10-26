@@ -2,7 +2,12 @@
 
 項目ごとのモジュール（ITEMS の順に呼ぶ）は次の形にする:
 - `collect(ctx: CloseContext) -> tuple[list[Candidate], list[Note]]`：候補（1候補＝1伝票）と所見を返す。帳簿には書かない
-- `after_post(year_dir, posted_source_ids: list[str]) -> None`（任意）：候補が登録された後に呼ばれる（証憑の状態を変える等）
+- `after_post(year_dir, posted_source_ids: list[str]) -> None`（任意）：候補が登録された後に呼ばれる（証憑の状態を変える等）。
+  渡されるIDには他の項目の候補も含まれるので、自分の `close:<項目>:` のIDだけを扱う。**何度呼ばれても同じ結果になるように書く**
+  （close-post の後に加えて、close-candidates のたびに adjustments.csv に登録済みの `close:` のIDすべてで呼び直し、
+  前回の失敗を直すため）。
+
+collect は ITEMS の順に呼ばれ、前の項目が同じ回に出した候補は `ctx.pending` に入っている（消費税の概算に含めるため）。
 
 候補はすべて「要確認」で adjustments-staging.csv に入れ、自動承認しない。取り込み元IDは `close:<項目>:<キー>`。
 同じ取り込み元IDが承認済み（staging）か登録済み（adjustments.csv）なら作り直さない。未承認なら最新の内容で置き換え、
@@ -18,7 +23,7 @@ import yaml
 
 from check import has_ng, run_checks, unresolved_evidence, write_report
 from common import (
-    JOURNAL_COLUMNS, STAGING_COLUMNS, KessanError, cannot_write, ensure_writable, load_period, parse_amount, project,
+    JOURNAL_COLUMNS, STAGING_COLUMNS, KessanError, add_reasons, cannot_write, ensure_writable, load_period, parse_amount, project,
     read_rows, replace_rows,
 )
 from evidence import read_evidence
@@ -34,6 +39,7 @@ OVERRIDE_ITEMS = ("消費税", "法人税等")
 POSTED_KIND = "決算整理"
 NEEDS_REVIEW = "要確認"
 SOURCE_PREFIX = "close:"
+TAX_PREFIX = "close:消費税:"
 
 
 @dataclass(frozen=True)
@@ -77,6 +83,7 @@ class CloseContext:
     abbreviations: list = field(default_factory=list)
     sources: dict = field(default_factory=dict)
     company_dir: Path | None = None
+    pending: list = field(default_factory=list)  # この回に前の項目が出した候補（Candidate）
 
     @cached_property
     def balances(self):
@@ -86,6 +93,20 @@ class CloseContext:
     def balance(self, name, sub=None):
         """科目の期末残高。sub を省くと補助科目をすべて足す。"""
         return sum(v["期末残高"] for (n, s), v in self.balances.items() if n == name and (sub is None or s == sub))
+
+    def pending_entries(self):
+        """ctx.pending のうち未登録の候補を、journal と同じ列の行にしたもの（登録済みの候補は帳簿の側で数える）。"""
+        posted = {r["取り込み元ID"].strip() for r in self.entries}
+        rows = []
+        for c in self.pending:
+            if c.source_id in posted:
+                continue
+            for line in c.lines:
+                row = dict.fromkeys(JOURNAL_COLUMNS, "")
+                row.update({k: "" if v is None else str(v) for k, v in line.items()})
+                row.update({"伝票番号": c.source_id, "日付": c.date, "取り込み元ID": c.source_id, "_file": STAGING_FILE})
+                rows.append(row)
+        return rows
 
 
 @dataclass(frozen=True)
@@ -161,14 +182,23 @@ def _validate_candidates(candidates, accounts, period):
 
 
 def _shape(rows):
-    """内容の比較用：日付・科目・補助・金額だけを並べたもの。"""
+    """内容の比較用：日付・科目・補助・金額・税区分・摘要を並べたもの。"""
     def amount(v):
         try:
             return parse_amount(v, "金額")
         except KessanError:
             return v
-    return sorted((r["日付"].strip(), r["借方科目"].strip(), r["借方補助"].strip(), amount(r["借方金額"]),
-                   r["貸方科目"].strip(), r["貸方補助"].strip(), amount(r["貸方金額"])) for r in rows)
+    return sorted((r["日付"].strip(), r["借方科目"].strip(), r["借方補助"].strip(), str(amount(r["借方金額"])),
+                   r["借方税区分"].strip(), r["貸方科目"].strip(), r["貸方補助"].strip(), str(amount(r["貸方金額"])),
+                   r["貸方税区分"].strip(), r["摘要"].strip()) for r in rows)
+
+
+STALE_REASON = "今回の再計算では出ていない（不要なら削除、必要なら承認し直す）"
+
+
+def _item_of(source_id):
+    """close:<項目>:<キー> の項目。"""
+    return source_id[len(SOURCE_PREFIX):].split(":", 1)[0] if source_id.startswith(SOURCE_PREFIX) else source_id
 
 
 def _c_number(no):
@@ -196,7 +226,15 @@ def _reconcile(year_dir, candidates):
     removed = len({sid for sid in current if sid not in posted and sid not in approved_ids and sid not in wanted})
     next_no = max((_c_number(r["伝票番号"]) for r in kept_rows), default=0) + 1
 
-    new_rows, states, notes = list(kept_rows), {}, []
+    notes = []
+    # 承認済みなのに今回出なかった候補は、行を残して承認を外す（再承認するまで登録しない）
+    for sid in [x for x in dict.fromkeys(r["取り込み元ID"].strip() for r in kept_rows) if x not in wanted]:
+        for r in kept_rows:
+            if r["取り込み元ID"].strip() == sid:
+                r.update({"承認": "", "判定": NEEDS_REVIEW, "要確認理由": add_reasons(r["要確認理由"], STALE_REASON)})
+        notes.append(Note(_item_of(sid), f"{sid} は承認済みでしたが今回の再計算では出ていないため、承認を外しました"
+                                         f"（不要なら {STAGING_FILE} から削除、必要なら承認し直す）"))
+    new_rows, states = list(kept_rows), {}
     for c in candidates:
         sid = c.source_id
         fresh = _candidate_rows(c, "")
@@ -285,7 +323,16 @@ def run_close(year_dir, accounts, *, next_year_dir=None, prev_year_dir=None, sou
               company_dir=None, items=None, now=None):
     """決算整理の候補を作り直す（adjustments-staging.csv と output/close-report.md）。"""
     year_dir = Path(year_dir)
+    modules = ITEMS if items is None else items
     _require_clean_check(year_dir, accounts, prev_year_dir, "決算整理の候補を作りません")
+    # 前回の close-post で登録後の処理（after_post）が止まっていても、ここで直す（after_post は何度呼んでもよい）
+    posted_ids = list(dict.fromkeys(
+        r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE)
+        if r["取り込み元ID"].strip().startswith(SOURCE_PREFIX)))
+    if posted_ids:
+        failures = _run_after_post(modules, year_dir, posted_ids)
+        if failures:
+            raise KessanError("登録済みの決算整理仕訳の後処理（after_post）で止まりました:\n" + "\n".join(failures))
     unresolved = unresolved_evidence(year_dir, entry_rows(year_dir))
     if unresolved:
         raise KessanError(f"片づいていない証憑が{len(unresolved)}件あるため決算整理の候補を作りません"
@@ -293,10 +340,11 @@ def run_close(year_dir, accounts, *, next_year_dir=None, prev_year_dir=None, sou
     ctx = build_context(year_dir, accounts, next_year_dir=next_year_dir, prev_year_dir=prev_year_dir,
                         sources=sources, payees=payees, company_dir=company_dir)
     candidates, notes = [], []
-    for module in (ITEMS if items is None else items):
+    for module in modules:
         found, found_notes = module.collect(ctx)
         candidates += found
         notes += found_notes
+        ctx.pending.extend(found)
     _validate_candidates(candidates, accounts, ctx.period)
 
     rows, states, extra_notes, removed = _reconcile(year_dir, candidates)
@@ -360,6 +408,9 @@ def post_candidates(year_dir, accounts, now=None, *, prev_year_dir=None, items=N
         return []
     _require_clean_check(year_dir, accounts, prev_year_dir, "決算整理仕訳を登録しません")
 
+    if any(r["取り込み元ID"].strip().startswith(TAX_PREFIX) for r in approved) and any(
+            not r["取り込み元ID"].strip().startswith(TAX_PREFIX) for r in remaining):
+        raise KessanError("消費税の候補は、他の決算整理の候補をすべて承認してから登録する（消費税の額が変わるため）")
     groups = _group(approved)
     errors = _validate(groups, accounts, entry_rows(year_dir), load_period(year_dir))
     errors += [f"伝票{key}: 取り込み元IDが空" for key, lines in groups.items()
@@ -387,23 +438,32 @@ def post_candidates(year_dir, accounts, now=None, *, prev_year_dir=None, items=N
     except OSError:
         raise cannot_write(ADJUSTMENTS_FILE) from None
 
-    # ここから先は登録が確定済み。staging に残っても、再実行では取り込み元IDが登録済みとして拒否される
+    # ここから先は登録が確定済み。staging に残っても、再実行では取り込み元IDが登録済みとして拒否される。
+    # 途中で失敗しても残りの処理は続け、失敗はまとめて伝える
+    failures = []
     try:
         replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in remaining])
     except OSError:
-        raise KessanError(
-            f"決算整理仕訳の登録は完了済み（{', '.join(numbers)}）ですが、{STAGING_FILE} の更新に失敗しました。"
-            f"閉じてから close-candidates を実行すると、登録済みの候補は staging から消えます") from None
-    posted_ids = list(dict.fromkeys(posted_ids))
-    for module in (ITEMS if items is None else items):
+        failures.append(f"{STAGING_FILE} の更新に失敗（閉じてから close-candidates を実行すると、登録済みの候補は staging から消えます）")
+    failures += _run_after_post(ITEMS if items is None else items, year_dir, list(dict.fromkeys(posted_ids)))
+    if failures:
+        raise KessanError(f"決算整理仕訳の登録は完了済み（{', '.join(numbers)}）ですが、登録後の処理で止まったものがあります"
+                          "（次の close-candidates で後処理をやり直します）:\n" + "\n".join(failures))
+    return numbers
+
+
+def _run_after_post(modules, year_dir, posted_ids):
+    """各項目の after_post を呼ぶ。1つが失敗しても残りは呼び、失敗のメッセージの一覧を返す。"""
+    failures = []
+    for module in modules:
         hook = getattr(module, "after_post", None)
         if hook is None:
             continue
         try:
             hook(year_dir, posted_ids)
-        except KessanError as e:
-            raise KessanError(f"決算整理仕訳の登録は完了済み（{', '.join(numbers)}）ですが、登録後の処理で止まりました: {e}") from None
-    return numbers
+        except Exception as e:  # noqa: BLE001  登録は確定済みなので、どの失敗でも他の後処理を止めない
+            failures.append(f"{getattr(module, '__name__', type(module).__name__)}: {e}")
+    return failures
 
 
 # ---- 上書き額（達人で計算した額） ----

@@ -118,7 +118,7 @@ def test_stale_unapproved_candidate_removed(year_dir, accounts):
     close.run_close(year_dir, accounts, items=[item])
     ids = [r["取り込み元ID"] for r in staging(year_dir)]
     assert "close:テスト:k2" not in ids
-    assert "close:テスト:k3" in ids  # 承認済みは消さない
+    assert "close:テスト:k3" in ids  # 承認済みは消さないが、承認を外す
     numbers = [r["伝票番号"] for r in staging(year_dir)]
     assert len(set(numbers)) == len(numbers)
 
@@ -210,3 +210,68 @@ def test_cli_close_flow(year_dir, capsys):
     assert [(r["伝票番号"], r["借方科目"] or r["貸方科目"]) for r in adjustments] == [("A1", "法人税等")]
     assert cli.main(["close-set-amount", "--year-dir", str(year_dir), "--item", "住民税", "--amount", "1"]) == 1
     assert cli.main(["close-set-amount", "--year-dir", str(year_dir), "--item", "消費税", "--amount", "-5"]) == 1
+
+
+def test_stale_approved_candidate_unapproved(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000), fee("k2", 2000)])
+    close.run_close(year_dir, accounts, items=[item])
+    close.approve_candidates(year_dir, ["close:テスト:k1", "close:テスト:k2"])
+    item.candidates = [fee("k1", 1000)]
+    r = close.run_close(year_dir, accounts, items=[item])
+    k2 = [x for x in staging(year_dir) if x["取り込み元ID"] == "close:テスト:k2"]
+    assert len(k2) == 1 and k2[0]["承認"] == "" and k2[0]["判定"] == "要確認"
+    assert "今回の再計算では出ていない（不要なら削除、必要なら承認し直す）" in k2[0]["要確認理由"]
+    assert any("close:テスト:k2" in n.message for n in r.notes)
+    assert "close:テスト:k2" in r.report_path.read_text(encoding="utf-8")
+    assert close.post_candidates(year_dir, accounts, items=[item]) == ["A1"]  # k2 は承認し直すまで登録しない
+    assert [x["取り込み元ID"] for x in staging(year_dir)] == ["close:テスト:k2"]
+
+
+class BrokenHook(FakeItem):
+    def __init__(self):
+        super().__init__([])
+        self.broken = True
+
+    def after_post(self, year_dir, posted_source_ids):
+        if self.broken:
+            raise RuntimeError("後処理の失敗（テスト）")
+        super().after_post(year_dir, posted_source_ids)
+
+
+def test_after_post_failure_does_not_block_others_and_is_repaired(year_dir, accounts):
+    base_books(year_dir)
+    broken = BrokenHook()
+    item = FakeItem([fee("k1", 1000)])
+    items = [broken, item]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, ["close:テスト:k1"])
+    with pytest.raises(KessanError, match="登録は完了済み.*\n.*後処理の失敗"):
+        close.post_candidates(year_dir, accounts, items=items)
+    assert [r["伝票番号"] for r in read_rows(year_dir / "adjustments.csv")] == ["A1"]
+    assert staging(year_dir) == []
+    assert item.posted == [["close:テスト:k1"]]  # 失敗した後処理があっても他は呼ぶ
+    broken.broken = False
+    close.run_close(year_dir, accounts, items=items)  # 次の close-candidates で後処理をやり直す
+    assert broken.posted == [["close:テスト:k1"]]
+
+
+def test_after_post_runs_even_if_staging_write_fails(year_dir, accounts, monkeypatch):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000)])
+    close.run_close(year_dir, accounts, items=[item])
+    close.approve_candidates(year_dir, ["close:テスト:k1"])
+    original = close.replace_rows
+
+    def fail_staging(path, columns, rows):
+        if path.name == STAGING:
+            raise OSError("locked")
+        return original(path, columns, rows)
+
+    monkeypatch.setattr(close, "replace_rows", fail_staging)
+    with pytest.raises(KessanError, match="登録は完了済み"):
+        close.post_candidates(year_dir, accounts, items=[item])
+    assert item.posted == [["close:テスト:k1"]]
+    monkeypatch.setattr(close, "replace_rows", original)
+    close.run_close(year_dir, accounts, items=[item])
+    assert staging(year_dir) == []  # 登録済みの候補は staging から消える

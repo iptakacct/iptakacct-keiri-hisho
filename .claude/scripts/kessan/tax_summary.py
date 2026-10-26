@@ -83,10 +83,13 @@ def _ratio_of(invoice, ratios, where):
     raise KessanError(f"{where}: インボイス「{invoice}」の割合が経過措置の設定にありません")
 
 
-def _collect(year_dir, settings):
-    """(税区分, インボイス, 個別対応) ごとの税込合計・件数・（積上げなら）行ごとの税額の合計。"""
+def _collect(year_dir, settings, extra_entries=()):
+    """(税区分, インボイス, 個別対応) ごとの税込合計・件数・（積上げなら）行ごとの税額の合計。
+
+    extra_entries：帳簿に未登録の行（journal と同じ列。決算整理の候補など）。帳簿の行に足して集計する。
+    """
     groups = defaultdict(lambda: {"count": 0, "gross": 0, "row_tax": 0})
-    for r in entry_rows(year_dir):
+    for r in list(entry_rows(year_dir)) + list(extra_entries):
         where = entry_where(r)
         for side in ("借方", "貸方"):
             name = r[f"{side}税区分"].strip()
@@ -144,10 +147,13 @@ def _deductible_total(lines, allocation=None):
     return pick("課税仕入") - pick("課税仕入返還")
 
 
-def summarize(year_dir, accounts, settings, transitions, rates):
-    """課税の年度の集計。accounts は他の関数と形をそろえるための引数（集計では使わない）。"""
+def summarize(year_dir, accounts, settings, transitions, rates, extra_entries=None):
+    """課税の年度の集計。accounts は他の関数と形をそろえるための引数（集計では使わない）。
+
+    extra_entries（journal と同じ列の行の一覧）を渡すと、帳簿に未登録の行も含めて集計する（決算整理で同じ回に出た候補）。
+    """
     ratios = {t.label: t.ratio for t in transitions}
-    lines = _build_lines(_collect(year_dir, settings), settings, ratios, rates)
+    lines = _build_lines(_collect(year_dir, settings, extra_entries or ()), settings, ratios, rates)
     notes = []
     if settings.calc == "積上げ":
         notes.append("売上は割戻しで計算（積上げは請求書ごとの税額が要るため未対応）")

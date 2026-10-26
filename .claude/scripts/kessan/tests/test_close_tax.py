@@ -164,3 +164,99 @@ def test_tax_candidates_post_cleanly(year_dir, accounts):
     # 登録後に流し直しても、消費税の概算は変わらない（租税公課は対象外なので集計に入らない）
     r = run(year_dir, accounts)
     assert r.candidates_added == 0 and r.candidates_kept == 2
+
+
+class EarlierItem:
+    """消費税より前の項目の代わり：課税仕入10%の未払費用を1件出す。"""
+    def __init__(self, amount=11000):
+        self.amount = amount
+
+    def collect(self, ctx):
+        line = {"借方科目": "支払手数料", "借方金額": self.amount, "借方税区分": "課税仕入10%", "借方インボイス": "適格",
+                "貸方科目": "未払金", "貸方金額": self.amount, "摘要": "期末の未払"}
+        return [close.Candidate("未払", "k1", "2026-03-31", [line], "テスト")], []
+
+
+def test_consumption_tax_includes_pending_candidates(year_dir, accounts):
+    import close_tax
+    taxable(year_dir)
+    books(year_dir)
+    close.run_close(year_dir, accounts, items=[EarlierItem(), close_tax])
+    # 7,200 − 未払の課税仕入の税額 1,000
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "租税公課", "", 6200, "対象外"),
+        ("貸", "未払消費税等", "", 6200, ""),
+    ]
+    assert "この回の他の決算整理の候補を含む" in reason(year_dir, ID_TAX)
+
+
+def test_post_refuses_tax_before_other_candidates_approved(year_dir, accounts):
+    import pytest
+    import close_tax
+    from common import KessanError
+    taxable(year_dir)
+    books(year_dir)
+    items = [EarlierItem(), close_tax]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, [ID_TAX])
+    with pytest.raises(KessanError, match="他の決算整理の候補をすべて承認してから"):
+        close.post_candidates(year_dir, accounts, items=items)
+    assert read_rows(year_dir / "adjustments.csv") == []
+    close.approve_candidates(year_dir, ["close:未払:k1"])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A1", "A2"]
+    # 登録後は未払の課税仕入が帳簿に入り、概算は同じ 6,200（二重に数えない）
+    r = close.run_close(year_dir, accounts, items=items)
+    assert r.candidates_kept == 2 and not any("違います" in n.message for n in r.notes)
+
+
+def test_consumption_tax_zero_with_interim(year_dir, accounts):
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    close.set_amount(year_dir, "消費税", 0)
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "未収入金", "消費税", 3000, ""),
+        ("貸", "仮払税金", "", 3000, ""),
+    ]
+
+
+def test_consumption_tax_negative_without_interim(year_dir, accounts):
+    taxable(year_dir)
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [
+        line("1", "2025-04-01", debit=("現金", "", 100000), credit=("資本金", "", 100000)),
+        line("2", "2025-06-02", debit=("消耗品費", "", 22000), credit=("現金", "", 22000),
+             借方税区分="課税仕入10%", 借方インボイス="適格"),
+    ])
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "未収入金", "消費税", 2000, ""),
+        ("貸", "雑収入", "", 2000, "対象外"),
+    ]
+
+
+def corp_interim(year_dir, amount=20000):
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("9", "2025-11-30", debit=("仮払税金", "法人税等", amount), credit=("現金", "", amount), 摘要="中間納付"))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+
+
+def test_corporate_tax_with_interim(year_dir, accounts):
+    taxable(year_dir)
+    books(year_dir)
+    corp_interim(year_dir)
+    r = run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_CORP) == []
+    assert any(n.item == "法人税等" and "中間納付 20,000円" in n.message for n in r.notes)
+    # 補助「法人税等」の仮払税金は消費税から引かない
+    assert candidate_lines(year_dir, ID_TAX) == [
+        ("借", "租税公課", "", 7200, "対象外"),
+        ("貸", "未払消費税等", "", 7200, ""),
+    ]
+
+    close.set_amount(year_dir, "法人税等", 50000)
+    run(year_dir, accounts)
+    assert candidate_lines(year_dir, ID_CORP) == [
+        ("借", "法人税等", "", 70000, "対象外"),
+        ("貸", "仮払税金", "法人税等", 20000, ""),
+        ("貸", "未払法人税等", "", 50000, ""),
+    ]
