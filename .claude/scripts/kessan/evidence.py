@@ -59,6 +59,20 @@ def unique_evidence_id(evidence_rows, base_id):
     return candidate, base_id
 
 
+def known_source_ids(year_dir, entries=None):
+    """帳簿（journal.csv・adjustments.csv）と staging.csv にある取り込み元ID（空は除く）。
+
+    entries を渡すと、仕訳の全行をもう一度読まずにそれを使う。
+    """
+    from ledger import entry_rows  # 循環参照を避けるため関数内で読む
+    if entries is None:
+        entries = entry_rows(year_dir)
+    ids = {r["取り込み元ID"].strip() for r in entries}
+    ids |= {r["取り込み元ID"].strip() for r in read_rows(Path(year_dir) / "staging.csv")}
+    ids.discard("")
+    return ids
+
+
 def evidence_by_source(evidence_rows):
     """明細行（取り込み元ID）ごとに、対応が1つに決まった証憑（明細に対応・新規仕訳）を返す。"""
     found = {}

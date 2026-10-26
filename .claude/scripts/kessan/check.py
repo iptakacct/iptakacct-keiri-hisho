@@ -5,7 +5,9 @@ from datetime import datetime
 from pathlib import Path
 
 from common import parse_amount, read_rows
-from evidence import STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID, evidence_by_source, read_evidence
+from evidence import (
+    STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID, evidence_by_source, known_source_ids, read_evidence,
+)
 from tax import (
     ALLOCATION_VALUES, FIXED_ASSET_SECTIONS, INVOICE_VALUES, TAX_CATEGORIES, load_tax_settings, load_transitions,
     transition_label_error,
@@ -295,9 +297,7 @@ def _evidence_label(ev):
 
 def _evidence_issues(year_dir, entries):
     """証憑の状態から見た宿題。(種類, メッセージ) の一覧。種類：複数候補／仕訳無し／未払候補。"""
-    known = {r["取り込み元ID"].strip() for r in entries}
-    known |= {r["取り込み元ID"].strip() for r in read_rows(Path(year_dir) / "staging.csv")}
-    known.discard("")  # IDが空の行は、どの証憑の対応先でもない
+    known = known_source_ids(year_dir, entries)
     issues = []
     for ev in read_evidence(year_dir):
         label = _evidence_label(ev)

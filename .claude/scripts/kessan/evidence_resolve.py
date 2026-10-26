@@ -5,6 +5,7 @@
 - as_new：証憑から新しい仕訳の候補を staging に作る（支払方法が決まらないものは作れない）
 書き込みの順序は import-extracted と同じ（staging.csv → evidence.csv）。
 """
+from dataclasses import dataclass
 from pathlib import Path
 
 from common import (
@@ -13,16 +14,33 @@ from common import (
 )
 from evidence import (
     EVIDENCE_FILE, STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID, candidate_ids,
-    read_evidence, receipt_source_id,
+    known_source_ids, read_evidence, receipt_source_id,
 )
 from extracted_import import attach_receipt_to_row, can_attach_receipt, new_entry_row
 from match import credit_for_new_entry, load_abbreviations, payment_accounts, receipt_default
 
 
+@dataclass(frozen=True)
+class ResolveResult:
+    state: str      # 新しい状態
+    attached: bool  # --match で明細行に科目・取引先を付けた（付けなかったときは False。--match 以外は常に False）
+
+    @property
+    def message(self):
+        if self.state == STATE_MATCHED:
+            return (f"{self.state}（科目を付与）" if self.attached
+                    else f"{self.state}（付与なし：承認済み・科目入力済み・登録済み）")
+        return self.state
+
+
 def _document(ev):
     """evidence.csv の行を、取り込み時の読み取り結果と同じ形にする（突き合わせ・新規仕訳の共通処理に渡す）。"""
+    try:
+        amount = int(ev["金額"])
+    except ValueError:
+        raise KessanError(f"証憑 {ev['証憑ID']} の金額「{ev['金額']}」が数字ではない（evidence.csv を確認）") from None
     return {
-        "資料": ev["証憑ファイル"], "種類": ev["種類"], "日付": ev["日付"], "金額": int(ev["金額"]),
+        "資料": ev["証憑ファイル"], "種類": ev["種類"], "日付": ev["日付"], "金額": amount,
         "取引先": ev["取引先"], "内容": ev["内容"], "科目候補": ev["科目候補"], "補助候補": ev["補助候補"],
         "自信度": ev["自信度"], "支払方法の推定": ev["支払方法の推定"],
     }
@@ -30,7 +48,7 @@ def _document(ev):
 
 def resolve_evidence(year_dir, evidence_id, *, match=None, as_payable=False, as_new=False, sources, accounts=None,
                      payees=None):
-    """証憑1件の状態を決める。sources は読み込み済みの kessan-sources.yaml。戻り値は新しい状態。"""
+    """証憑1件の状態を決める。sources は読み込み済みの kessan-sources.yaml。戻り値は ResolveResult（新しい状態と、--match で明細行に証憑を付けたか）。"""
     if sum([match is not None, bool(as_payable), bool(as_new)]) != 1:
         raise KessanError("--match・--as-payable・--as-new のうち1つだけを指定してください")
     year_dir = Path(year_dir)
@@ -41,8 +59,7 @@ def resolve_evidence(year_dir, evidence_id, *, match=None, as_payable=False, as_
     ev = found[0]
     state = ev["状態"]
     staging = read_rows(year_dir / "staging.csv")
-    journal = read_rows(year_dir / "journal.csv")
-    known_ids = {r["取り込み元ID"].strip() for r in staging + journal}
+    known_ids = known_source_ids(year_dir)
     staging_changed = False
     new_row = None
 
@@ -51,6 +68,11 @@ def resolve_evidence(year_dir, evidence_id, *, match=None, as_payable=False, as_
             raise KessanError(f"証憑 {evidence_id} は状態が「{state}」で、--match で決められるのは「{STATE_MULTIPLE}」だけ")
         if match not in candidate_ids(ev):
             raise KessanError(f"{match} は証憑 {evidence_id} の候補（{'・'.join(candidate_ids(ev))}）に無い")
+        if match not in known_ids:
+            raise KessanError(f"取り込み元ID {match} の行が staging.csv・journal.csv・adjustments.csv に無い")
+        for other in evidence:
+            if other["証憑ID"] != evidence_id and other["状態"] == STATE_MATCHED and other["取り込み元ID"].strip() == match:
+                raise KessanError(f"取り込み元ID {match} には別の証憑（{other['証憑ID']}）が対応済み")
         new_state, new_source = STATE_MATCHED, match
         data = _document(ev)
         abbreviations = load_abbreviations()
@@ -93,4 +115,4 @@ def resolve_evidence(year_dir, evidence_id, *, match=None, as_payable=False, as_
     except OSError:
         raise KessanError("staging.csv は更新済み、evidence.csv の書き込みに失敗しました"
                           "（Excelで開いていたら閉じてから、同じコマンドを再実行してください）") from None
-    return new_state
+    return ResolveResult(new_state, staging_changed)

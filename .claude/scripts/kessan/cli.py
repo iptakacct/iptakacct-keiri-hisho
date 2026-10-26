@@ -340,10 +340,10 @@ def main(argv=None):
             return 0
         if args.command == "resolve-evidence":
             sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
-            state = resolve_evidence(year_dir, args.evidence_id, match=args.match, as_payable=args.as_payable,
+            result = resolve_evidence(year_dir, args.evidence_id, match=args.match, as_payable=args.as_payable,
                                      as_new=args.as_new, sources=sources, accounts=accounts,
                                      payees=_load_payees(year_dir, args))
-            print(f"証憑 {args.evidence_id} を「{state}」にしました")
+            print(f"証憑 {args.evidence_id} を「{result.message}」にしました")
             _fill_tax(year_dir, accounts)
             return 0
         if args.command == "review":
