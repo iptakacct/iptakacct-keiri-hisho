@@ -76,3 +76,18 @@ def test_master_is_grouped_by_category_and_section(accounts):
 def test_master_file_keeps_bom():
     from accounts import MASTER_PATH
     assert MASTER_PATH.read_bytes().startswith(b"\xef\xbb\xbf")
+
+
+def test_default_tax_loaded(accounts):
+    assert accounts["売上高"].default_tax == "課税売上10%"
+    assert accounts["給料手当"].default_tax == "対象外"
+    assert accounts["普通預金"].default_tax == ""
+    assert accounts["固定資産売却益"].default_tax == ""
+    assert accounts["固定資産売却損"].default_tax == ""
+
+
+def test_invalid_default_tax_rejected(tmp_path):
+    path = tmp_path / "master.csv"
+    path.write_text("科目,区分,正常残高,表示区分,既定税区分\n売上高,収益,貸,売上高,課税10\n", encoding="utf-8-sig")
+    with pytest.raises(KessanError, match="既定税区分"):
+        load_accounts(path)

@@ -16,6 +16,7 @@ from common import (
     replace_rows, split_reasons,
 )
 from match import expand_abbreviations, name_in_description
+from tax import INVOICE_VALUES, TAX_CATEGORIES
 
 DIRECTIONS = ("入金", "出金")
 ESTABLISHED = "確立済み"
@@ -31,6 +32,8 @@ class Pattern:
     subject: str
     sub: str
     amount_range: tuple  # (下限, 上限)。指定なしは ()
+    tax: str = ""  # 相手側の税区分（任意）
+    invoice: str = ""  # 相手側のインボイス（任意）
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,11 @@ def load_patterns(path, accounts):
             errors.append(f"{where}: 摘要キーワード「{keyword}」は短すぎます（最小{MIN_KEYWORD_LENGTH}文字）")
         if partner and len(_normalize_keyword(partner)) < MIN_KEYWORD_LENGTH:
             errors.append(f"{where}: 取引先「{partner}」は短すぎます（最小{MIN_KEYWORD_LENGTH}文字）")
+        tax, invoice = _text(item.get("税区分")), _text(item.get("インボイス"))
+        if tax and tax not in TAX_CATEGORIES:
+            errors.append(f"{where}: 税区分「{tax}」は税区分の一覧にありません")
+        if invoice and invoice not in INVOICE_VALUES:
+            errors.append(f"{where}: インボイスは {'／'.join(INVOICE_VALUES)} のどれかで書く（値: {invoice}）")
         if subject not in accounts:
             errors.append(f"{where}: 科目マスタに無い科目「{subject}」")
         amount_range = ()
@@ -93,7 +101,7 @@ def load_patterns(path, accounts):
                 errors.append(f"{where}: 金額の範囲は [下限, 上限] の整数で書く（値: {value}）")
             else:
                 amount_range = (value[0], value[1])
-        patterns.append(Pattern(name, direction, keyword, partner, subject, sub, amount_range))
+        patterns.append(Pattern(name, direction, keyword, partner, subject, sub, amount_range, tax, invoice))
     if errors:
         raise KessanError(f"{path.name} の書き方に誤りがあります（自動承認はしていません）:\n" + "\n".join(errors))
     return patterns
@@ -124,7 +132,7 @@ def _statement_side(row, payment_accounts):
     return None
 
 
-def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
+def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, tax_settings=None):
     """staging.csv の未承認の明細行をパターンと照合し、一致した行を自動承認する。"""
     year_dir = Path(year_dir)
     staging = read_rows(year_dir / "staging.csv")
@@ -144,12 +152,12 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
         matched = [p for p in patterns if _matches(p, row, direction, amount, abbreviations)]
         if not matched:
             continue
-        targets = sorted({(p.subject, p.sub) for p in matched})
+        targets = sorted({(p.subject, p.sub, p.tax, p.invoice) for p in matched})
         current = (row[f"{counter}科目"].strip(), row[f"{counter}補助"].strip())
         if len(targets) > 1:
             reason = f"確立済みパターンが複数一致（{'・'.join(p.name for p in matched)}）"
-        elif current[0] and current != targets[0]:
-            reason = f"確立済みパターン「{matched[0].name}」（{' '.join(targets[0]).strip()}）と科目候補が違う"
+        elif current[0] and current != targets[0][:2]:
+            reason = f"確立済みパターン「{matched[0].name}」（{' '.join(targets[0][:2]).strip()}）と科目候補が違う"
         else:
             row.update({
                 f"{counter}科目": targets[0][0], f"{counter}補助": targets[0][1],
@@ -157,6 +165,11 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations):
                 "要確認理由": add_reasons(remove_reason(row["要確認理由"], UNSET_COUNTER_ACCOUNT),
                                      f"確立済みパターン「{matched[0].name}」"),
             })
+            if tax_settings is not None and tax_settings.taxable:
+                # 税の列は相手側が空のときだけ書く（既に入っている値は変えない）
+                for key, value in (("税区分", matched[0].tax), ("インボイス", matched[0].invoice)):
+                    if value and not row[f"{counter}{key}"].strip():
+                        row[f"{counter}{key}"] = value
             approved += 1
             changed = True
             continue

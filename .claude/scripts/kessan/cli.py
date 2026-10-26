@@ -36,6 +36,7 @@ from match import load_abbreviations, payment_accounts
 from patterns import auto_approve, load_patterns
 from post import post_approved
 from review_xlsx import read_review, write_review
+from tax import load_tax_settings
 from trial_balance import write_trial_balance
 from undo import discard, unimport
 
@@ -103,7 +104,8 @@ def _auto_approve(year_dir, accounts, args):
     if not patterns:
         return
     sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
-    r = auto_approve(year_dir, accounts, patterns, payment_accounts(sources), load_abbreviations())
+    r = auto_approve(year_dir, accounts, patterns, payment_accounts(sources), load_abbreviations(),
+                     tax_settings=load_tax_settings(year_dir))
     print(f"確立済みパターン: 自動承認 {r.approved}件 / パターンと科目候補が合わず要確認 {r.conflicts}件")
 
 

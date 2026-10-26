@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from common import KessanError, read_rows
+from tax import TAX_CATEGORIES
 
 MASTER_PATH = Path(__file__).with_name("accounts-master.csv")
 CATEGORIES = ("資産", "負債", "純資産", "収益", "費用")
@@ -14,14 +15,18 @@ class Account:
     category: str
     normal_side: str
     section: str
+    default_tax: str = ""
 
 
 def load_accounts(path=MASTER_PATH):
     accounts = {}
     for r in read_rows(path):
-        acc = Account(r["科目"].strip(), r["区分"].strip(), r["正常残高"].strip(), r["表示区分"].strip())
+        acc = Account(r["科目"].strip(), r["区分"].strip(), r["正常残高"].strip(), r["表示区分"].strip(),
+                      (r.get("既定税区分") or "").strip())
         if acc.category not in CATEGORIES or acc.normal_side not in ("借", "貸"):
             raise KessanError(f"科目マスタの値が不正です: {r}")
+        if acc.default_tax and acc.default_tax not in TAX_CATEGORIES:
+            raise KessanError(f"科目マスタの既定税区分が不正です（{acc.name}: {acc.default_tax}）")
         accounts[acc.name] = acc
     return accounts
 

@@ -212,3 +212,77 @@ def test_auto_approve_write_failure_is_kessan_error(year_dir, tmp_path, accounts
     monkeypatch.setattr(patterns, "replace_rows", failing)
     with pytest.raises(KessanError, match="staging.csv"):
         run(year_dir, tmp_path, accounts, abbreviations, [fee()])
+
+
+TAX_YAML = """\
+patterns:
+  - 名前: 振込手数料
+    入出金: 出金
+    摘要キーワード: テスウリヨウ
+    科目: 支払手数料
+    税区分: 非課税仕入
+    インボイス: 適格
+"""
+
+
+def test_pattern_tax_fields_validated(tmp_path, accounts):
+    bad = TAX_YAML.replace("非課税仕入", "課税10")
+    with pytest.raises(KessanError, match="税区分"):
+        load_patterns(write_patterns(tmp_path, bad), accounts)
+    bad = TAX_YAML.replace("適格", "適合")
+    with pytest.raises(KessanError, match="インボイス"):
+        load_patterns(write_patterns(tmp_path, bad), accounts)
+    p = load_patterns(write_patterns(tmp_path, TAX_YAML), accounts)[0]
+    assert (p.tax, p.invoice) == ("非課税仕入", "適格")
+
+
+def test_auto_approve_writes_pattern_tax(tmp_path, accounts, abbreviations):
+    from tax import TaxSettings
+    taxable = TaxSettings("課税", "原則", "割戻し", "全額控除", False)
+    exempt = TaxSettings("免税", "", "", "", False)
+    year_dir = tmp_path / "y"
+    year_dir.mkdir()
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee()])
+    patterns = load_patterns(write_patterns(tmp_path, TAX_YAML), accounts)
+    auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations, tax_settings=taxable)
+    row = read_rows(year_dir / "staging.csv")[0]
+    assert (row["借方税区分"], row["借方インボイス"]) == ("非課税仕入", "適格")
+    assert row["貸方税区分"] == ""
+
+    year_dir2 = tmp_path / "y2"
+    year_dir2.mkdir()
+    write_rows(year_dir2 / "staging.csv", STAGING_COLUMNS, [fee()])
+    auto_approve(year_dir2, accounts, patterns, PAYMENT, abbreviations, tax_settings=exempt)
+    row = read_rows(year_dir2 / "staging.csv")[0]
+    assert row["承認"] == "済" and row["借方税区分"] == "" and row["借方インボイス"] == ""
+
+
+def test_auto_approve_keeps_existing_tax(tmp_path, accounts, abbreviations):
+    from tax import TaxSettings
+    taxable = TaxSettings("課税", "原則", "割戻し", "全額控除", False)
+    year_dir = tmp_path / "y"
+    year_dir.mkdir()
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee(借方税区分="対象外")])
+    patterns = load_patterns(write_patterns(tmp_path, TAX_YAML), accounts)
+    auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations, tax_settings=taxable)
+    row = read_rows(year_dir / "staging.csv")[0]
+    assert row["借方税区分"] == "対象外" and row["借方インボイス"] == "適格"
+
+
+def test_auto_approve_conflicts_when_pattern_tax_differs(tmp_path, accounts, abbreviations):
+    from tax import TaxSettings
+    taxable = TaxSettings("課税", "原則", "割戻し", "全額控除", False)
+    text = TAX_YAML + """\
+  - 名前: 振込手数料その2
+    入出金: 出金
+    摘要キーワード: テスウリヨウ
+    科目: 支払手数料
+    税区分: 課税仕入10%
+"""
+    year_dir = tmp_path / "y"
+    year_dir.mkdir()
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee()])
+    patterns = load_patterns(write_patterns(tmp_path, text), accounts)
+    r = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations, tax_settings=taxable)
+    assert (r.approved, r.conflicts) == (0, 1)
+    assert read_rows(year_dir / "staging.csv")[0]["承認"] != "済"
