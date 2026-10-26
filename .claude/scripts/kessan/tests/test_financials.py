@@ -211,6 +211,18 @@ def test_statements_warn_pending_and_no_income_tax(year_dir, accounts):
     assert st.profits["当期純利益"] == 1060000
 
 
+def test_pending_rows_without_source_id_counted_by_voucher(year_dir, accounts):
+    """取り込み元IDの無い候補の行は伝票番号ごとに1件と数える（C3 の2行で1件、C4 で1件、ID付きの C1 で1件 → 3件）。"""
+    make_books(year_dir)
+    write_rows(year_dir / "adjustments-staging.csv", STAGING_COLUMNS, [
+        staging_row(伝票番号="C1", 取り込み元ID="close:未払:ev1"),
+        staging_row(伝票番号="C3", 取り込み元ID=""),
+        staging_row(伝票番号="C3", 取り込み元ID=""),
+        staging_row(伝票番号="C4", 取り込み元ID=""),
+    ])
+    assert financials._pending_count(year_dir) == 3
+
+
 def test_no_warnings_when_complete(year_dir, accounts):
     st = financials.build_statements(make_books(year_dir), accounts)
     assert st.warnings == []
@@ -244,10 +256,23 @@ def test_write_statements_sheets(year_dir, accounts):
     assert rows["販売費及び一般管理費合計"] == 440000
     assert rows["売上総利益"] == 1500000 and rows["営業利益"] == 1060000 and rows["当期純利益"] == 910000
 
+    pl_rows = _sheet_rows(pl)
+    labels = [r[0] for r in pl_rows]
+    # 科目が1つで区分名と同じ（法人税等）なら、区分の見出し・科目・合計を重ねず1行で出す
+    assert labels.count("法人税等") == 1 and "法人税等合計" not in labels
+    assert ("法人税等", 150000) in [(r[0], r[1]) for r in pl_rows]
+    assert "販売費及び一般管理費合計" in labels  # 科目が複数の区分は今までどおり合計を出す
+
     eq = _sheet_rows(wb["株主資本等変動計算書"])
     flat = [v for r in eq for v in r]
     assert "剰余金の配当" in flat and "当期純利益" in flat
-    assert ("当期末残高", 1460000) in [(r[0], r[1]) for r in eq] or 1460000 in flat
+    labels = [r[0] for r in eq]
+    start = labels.index("繰越利益剰余金")
+    closing = next(r for r in eq[start:] if r[0] == "当期末残高")
+    assert closing[1] == 1460000
+    # 純資産合計：期首 500,000＋650,000、変動 −100,000＋910,000、期末 1,960,000（貸借対照表の純資産の部と同じ）
+    total = labels.index("純資産合計")
+    assert eq[total + 1:total + 4] == [("当期首残高", 1150000), ("当期変動額", 810000), ("当期末残高", 1960000)]
 
 
 def test_notes_draft_methods(year_dir, accounts, tmp_path):

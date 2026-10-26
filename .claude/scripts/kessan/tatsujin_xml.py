@@ -17,7 +17,13 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from common import KessanError, cannot_write, load_company_name, load_period, parse_amount, swap_in
+import financials
+import gaikyo
+import uchiwake
+from common import KessanError, cannot_write, ensure_outputs_writable, load_company_name, load_period, parse_amount, swap_in
+from ledger import entry_rows, entry_where
+from tax import TAX_CATEGORIES, load_rates, load_tax_settings, load_transitions
+from tax_summary import NO_COLUMN_TRANSITION_NOTE, summarize
 
 SKELETON_DIR = Path(__file__).parents[3] / "config/tatsujin"
 OUTPUT_DIR = "output/tatsujin"
@@ -109,11 +115,12 @@ def load_skeleton(name):
 
 
 def _value_text(value):
-    if isinstance(value, bool):
-        raise KessanError(f"達人XMLの値が不正です（プログラムの誤り）: {value!r}")
+    """値は円の整数か文字列だけ（小数・Decimal・真偽値などは金額の誤りを隠すので止める）。0 と空文字は空の要素。"""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise KessanError(f"達人XMLの値が不正です（プログラムの誤り。整数か文字列だけ）: {value!r}")
     if isinstance(value, int):
         return str(value) if value else None
-    return str(value) or None
+    return value or None
 
 
 def _ancestors_map(root):
@@ -308,9 +315,8 @@ def build_ug13(items, company, period):
 
 
 def _build_uchiwake(ctx):
-    import uchiwake
-    return build_ug13(uchiwake.build(ctx.year_dir, ctx.accounts), load_company_name(ctx.year_dir),
-                      load_period(ctx.year_dir))
+    st = ctx.statements
+    return build_ug13(uchiwake.build(ctx.year_dir, ctx.accounts), st.company, st.period)
 
 
 # ---- 概況書（UG16） ----
@@ -324,7 +330,6 @@ def build_ug16(g, company, period):
 
 
 def _build_gaikyo(ctx):
-    import gaikyo
     st = ctx.statements
     return build_ug16(gaikyo.build(ctx.year_dir, ctx.accounts, st), st.company, st.period)
 
@@ -349,8 +354,11 @@ SY35_MANUAL_METHODS = "簡易課税・2割特例は集計表を見て達人に�
 
 
 def _sy35_purchase_column(x, settings):
-    """課税仕入・返還の行の (区分の要素名の頭, 末尾) か None（入れない行）。"""
-    if x.invoice in SY35_NO_COLUMN or x.invoice == "なし":
+    """課税仕入・返還の行の (区分の要素名の頭, 末尾) か None（インボイスなし：控除できないので入れない）。
+
+    欄の無い経過措置（SY35_NO_COLUMN）は呼び出し元（build_sy35）が先に分けるので、ここには来ない。
+    """
+    if x.invoice == "なし":
         return None
     if settings.allocation == "個別対応":
         if x.allocation not in SY35_ALLOCATION:
@@ -393,8 +401,9 @@ def build_sy35(summary, settings, company, period):
             section = bad_debt_sec if x.kind.startswith("貸倒") else sales_sec
             head, tail = SY35_SALES_PREFIX[x.kind], "WARIMODOSHI"
         else:
-            if x.invoice in SY35_NO_COLUMN:
+            if x.invoice in SY35_NO_COLUMN:  # 欄が無い：入れずに税込を集めて警告にする
                 no_column[(x.kind, x.invoice)] = no_column.get((x.kind, x.invoice), 0) + x.gross
+                continue
             column = _sy35_purchase_column(x, settings)
             if column is None:
                 continue
@@ -417,8 +426,6 @@ def build_sy35(summary, settings, company, period):
 
 
 def _build_shohizei(ctx):
-    from tax import load_rates, load_tax_settings, load_transitions
-    from tax_summary import NO_COLUMN_TRANSITION_NOTE, summarize
     settings = load_tax_settings(ctx.year_dir)
     if not settings.taxable:
         raise NotApplicable("免税の年度です（period.yaml の消費税）")
@@ -440,8 +447,6 @@ def _securities_warnings(year_dir):
 
     非課税売上以外（課税売上・免税売上・非課税資産輸出・対象外）はその欄に入らないので、この警告の対象にしない。
     """
-    from ledger import entry_rows, entry_where
-    from tax import TAX_CATEGORIES
     totals = {}
     for r in entry_rows(year_dir):
         for side in ("借方", "貸方"):
@@ -469,7 +474,6 @@ class Context:
     @property
     def statements(self):
         if self.st is None:
-            import financials
             self.st = financials.build_statements(self.year_dir, self.accounts)
         return self.st
 
@@ -526,19 +530,14 @@ def export(year_dir, accounts, kinds=None, *, st=None, notes=None):
                                  f"（{', '.join(p.name for p in old)}）")
             continue
         built.append((output_path(year_dir, name, kind.prefix, period), render(root)))
+    # 呼び出し元の notes には、全部の組み立てが通ってから足す（途中で止まったときに一部の警告だけを残さない）
     if notes is not None:
         notes.extend(ctx.notes)
     if not built:
         return []
     out = year_dir / OUTPUT_DIR
     out.mkdir(parents=True, exist_ok=True)
-    for path, _ in built:
-        if path.exists():
-            try:
-                with open(path, "ab"):
-                    pass
-            except OSError:
-                raise cannot_write(f"{OUTPUT_DIR}/{path.name}") from None
+    ensure_outputs_writable([path for path, _ in built], prefix=f"{OUTPUT_DIR}/")
     pairs = []
     try:
         try:

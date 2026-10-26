@@ -12,9 +12,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
 
-from common import KessanError
+from common import AMOUNT_FORMAT, KessanError, bold_row
 from ledger import compute_balances
 
 OUTPUT_XLSX = "uchiwake-material.xlsx"
@@ -77,13 +76,10 @@ def build(year_dir, accounts):
 # ---- 材料（Excel） ----
 
 HEADER = ("内訳書の種類", "科目", "補助", "期末残高")
-AMOUNT_FORMAT = '#,##0;"△"#,##0'
 
 
 def _sheet(ws, items):
-    ws.append(HEADER)
-    for c in ws[1]:
-        c.font = Font(bold=True)
+    bold_row(ws, HEADER)
     for item in items:
         ws.append((item.kind or None, item.name, None, item.balance or None))
         for _code, sub, amount in item.subs:

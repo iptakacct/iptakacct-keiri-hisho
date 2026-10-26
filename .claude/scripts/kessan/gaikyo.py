@@ -12,10 +12,9 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from openpyxl import Workbook
-from openpyxl.styles import Font
 
 from accounts import SECTIONS
-from common import KessanError, load_period, parse_amount
+from common import AMOUNT_FORMAT, KessanError, bold_row, load_period, parse_amount
 from ledger import entry_rows, entry_where
 
 OUTPUT_XLSX = "gaikyo-material.xlsx"
@@ -162,7 +161,7 @@ def monthly_amounts(year_dir, accounts):
         try:
             day = date.fromisoformat(r["日付"].strip())
         except ValueError:
-            continue
+            raise KessanError(f"{entry_where(r)} の日付「{r['日付']}」が読めません（YYYY-MM-DD で直してから出し直す）") from None
         k = next((i for i, (first, last) in enumerate(fiscal) if first <= day <= last), None)
         if k is None:
             continue
@@ -182,7 +181,7 @@ def monthly_amounts(year_dir, accounts):
                 bucket[OUTSOURCE] += debit
             if acc.gaikyo in PERSONNEL_TAGS:
                 bucket[PERSONNEL] += debit
-            if side == "貸方" and name == WITHHOLDING_ACCOUNT and WITHHOLDING_WORD in r["貸方補助"]:
+            if side == "貸方" and name == WITHHOLDING_ACCOUNT and WITHHOLDING_WORD in r["貸方補助"].strip():
                 bucket[WITHHOLDING] += amount
     first_month = fiscal[0][0].month if fiscal else 1
     monthly = [{MONTH: (first_month - 1 + i) % 12 + 1, **{k: sums[i][k] for k in MONTHLY_LABELS}}
@@ -198,28 +197,19 @@ def build(year_dir, accounts, st):
 
 # ---- 材料（Excel） ----
 
-AMOUNT_FORMAT = '#,##0;"△"#,##0'
-
-
-def _header(ws, columns):
-    ws.append(columns)
-    for c in ws[1]:
-        c.font = Font(bold=True)
-
-
 def material_workbook(g):
     """シート「主要科目」（要素名・項目名・金額）と「月別」（期間内の月だけ）。0 は空にする（XMLと同じ）。"""
     wb = Workbook()
     ws = wb.active
     ws.title = "主要科目"
-    _header(ws, ("要素名", "項目名", "金額"))
+    bold_row(ws, ("要素名", "項目名", "金額"))
     for element, label in MAIN_LABELS.items():
         ws.append((element, label, g.main.get(element) or None))
         ws.cell(row=ws.max_row, column=3).number_format = AMOUNT_FORMAT
     for col, width in zip("ABC", (36, 32, 16)):
         ws.column_dimensions[col].width = width
     ws = wb.create_sheet("月別")
-    _header(ws, ("月", *MONTHLY_LABELS.values()))
+    bold_row(ws, ("月", *MONTHLY_LABELS.values()))
     for month, values in zip(g.months, g.monthly):
         ws.append((month, *(values[k] or None for k in MONTHLY_LABELS)))
         for c in ws[ws.max_row][1:]:

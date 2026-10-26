@@ -267,6 +267,38 @@ def test_load_company_name_missing_is_blank(tmp_path):
     assert load_company_name(tmp_path / "y") == ""
 
 
+def test_init_company_name_is_trimmed_and_blank_is_unset(tmp_path):
+    from common import load_company_name
+    d = tmp_path / "y"
+    init_year_dir(d, "2025-04-01", "2026-03-31", company_name="  テスト商事株式会社　")
+    assert yaml.safe_load((d / "period.yaml").read_text(encoding="utf-8"))["会社名"] == "テスト商事株式会社"
+    init_year_dir(d, "2025-04-01", "2026-03-31", company_name="  ")  # 空は「指定なし」：変えない
+    assert load_company_name(d) == "テスト商事株式会社"
+    d2 = tmp_path / "y2"
+    init_year_dir(d2, "2025-04-01", "2026-03-31", company_name="")
+    assert "会社名" not in yaml.safe_load((d2 / "period.yaml").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("body", ["期首日: [\n", "- 1\n- 2\n"])
+def test_load_company_name_unreadable_period_raises(tmp_path, body):
+    """period.yaml があるのに読めない・形が違うときは、空の会社名にせず load_period と同じく止める。"""
+    from common import load_company_name
+    d = tmp_path / "y"
+    d.mkdir()
+    (d / "period.yaml").write_text(body, encoding="utf-8")
+    with pytest.raises(KessanError, match="period.yaml"):
+        load_company_name(d)
+
+
+def test_load_company_name_non_utf8_period_raises(tmp_path):
+    from common import load_company_name
+    d = tmp_path / "y"
+    d.mkdir()
+    (d / "period.yaml").write_bytes("会社名: テスト\n".encode("cp932"))  # UTF-8 で読めない
+    with pytest.raises(KessanError, match="period.yaml"):
+        load_company_name(d)
+
+
 def test_swap_in_reports_backups_it_could_not_restore(tmp_path, monkeypatch):
     """2つ目の置き換えに失敗し、1つ目の .bak を元の名前に戻すのにも失敗したら、残った .bak のパスをエラーに出す。"""
     import common

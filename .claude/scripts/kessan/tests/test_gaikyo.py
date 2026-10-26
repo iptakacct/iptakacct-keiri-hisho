@@ -383,3 +383,25 @@ def test_ug16_main_and_monthly_have_no_name_clash():
     """主要科目の GAICHUUHI と月別の GAICHUUHI_nn は別の要素（雛形で1か所ずつ）。"""
     tags = _skeleton_tags()
     assert tags.count("GAICHUUHI") == 1 and tags.count("GAICHUUHI_01") == 1
+
+
+def test_monthly_rejects_unparseable_date(year_dir, gaccounts):
+    """日付が読めない行は黙って飛ばさず、伝票を示して止める（月別の合計が欠けたまま出さない）。"""
+    make_books(year_dir)
+    from common import read_rows
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("99", "2025/13/01", debit=("交際費", "", 1000), credit=BANK + (1000,)))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    with pytest.raises(KessanError, match="伝票99"):
+        gaikyo.monthly_amounts(year_dir, gaccounts)
+
+
+def test_withholding_sub_with_spaces(year_dir, gaccounts):
+    """補助の前後の空白は落としてから「源泉」を見る。"""
+    make_books(year_dir)
+    from common import read_rows
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("98", "2025-11-05", debit=("支払手数料", "", 1000), credit=("預り金", " 源泉所得税 ", 1000)))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    _, monthly = gaikyo.monthly_amounts(year_dir, gaccounts)
+    assert monthly[7]["GENSENTYOUSYUUZEIGAKU"] == 1000

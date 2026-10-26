@@ -8,6 +8,7 @@
   変動計算書 資本金 500,000→500,000／繰越利益剰余金 650,000 → 剰余金の配当 −100,000・当期純利益 910,000（計 810,000）→ 1,460,000
 """
 import xml.etree.ElementTree as ET
+from decimal import Decimal
 
 import pytest
 
@@ -304,3 +305,11 @@ def test_export_uses_given_statements(year_dir, accounts, monkeypatch):
     monkeypatch.setattr(financials, "build_statements", lambda *a: pytest.fail("組み立て直さない"))
     assert tatsujin_xml.export(year_dir, accounts, ["kessan"], st=st)
 
+
+
+@pytest.mark.parametrize("value", [1.5, Decimal("100"), True, None, [1]])
+def test_fill_skeleton_rejects_non_int_str_values(value):
+    """値は円の整数か文字列だけ。小数・Decimal・真偽値などはプログラムの誤りとして止める。"""
+    root = tatsujin_xml.load_skeleton("ug16")
+    with pytest.raises(KessanError, match="プログラムの誤り"):
+        tatsujin_xml.fill_skeleton(root, {"URIAGE_SYUUNYUUDAKA": value})

@@ -317,3 +317,12 @@ def test_export_no_securities_warning_outside_nontaxable_sales(year_dir, account
     notes = []
     tatsujin_xml.export(year_dir, accounts, ["shohizei"], notes=notes)
     assert not any("有価証券" in n and "非課税売上の欄" in n for n in notes)
+
+
+def test_sy35_negative_total_written_with_minus(year_dir, accounts):
+    """売上を反対の側（借方）に付けた行だけなら、要素の合計はマイナス：税込11,000 → 税抜 -10,000・税額 -1,000。"""
+    root, _ = sy35(year_dir, accounts, [sale("1", 11000, side="debit")])
+    assert filled(root) == {
+        ("D020114", "KAZEIURIAGEZEINUKI10_WARIMODOSHI"): "-10000",
+        ("D020114", "KAZEIURIAGEZEIGAKU10_WARIMODOSHI"): "-1000",
+    }

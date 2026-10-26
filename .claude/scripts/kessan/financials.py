@@ -13,7 +13,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 
 from accounts import SECTIONS, normal_delta
-from common import KessanError, cannot_write, load_company_name, load_period, parse_amount, read_rows, swap_in
+from common import (
+    AMOUNT_FORMAT, KessanError, bold_row, cannot_write, ensure_outputs_writable, load_company_name, load_period,
+    parse_amount, read_rows, swap_in,
+)
 from ledger import compute_balances, entry_rows, entry_where, load_opening
 from tax import load_tax_settings
 
@@ -138,7 +141,10 @@ def _equity_rows(year_dir, accounts, net_income):
 
 
 def _pending_count(year_dir):
-    """adjustments-staging.csv に残っている（未登録・未却下の）決算整理の候補の件数。"""
+    """adjustments-staging.csv に残っている（未登録・未却下の）決算整理の候補の件数。
+
+    取り込み元IDごとに1件。IDの無い行は伝票番号ごとに1件（伝票番号も無ければ1行1件）。
+    """
     from close import load_rejected  # close は検算・候補の部品を多く読むので、使うときだけ読む
     year_dir = Path(year_dir)
     posted = {r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE) if r["取り込み元ID"].strip()}
@@ -148,7 +154,11 @@ def _pending_count(year_dir):
         sid = r["取り込み元ID"].strip()
         if sid in posted or sid in rejected:
             continue
-        keys.add(sid or f"#{i}")
+        if sid:
+            keys.add(("id", sid))
+        else:
+            voucher = r["伝票番号"].strip()
+            keys.add(("伝票", voucher) if voucher else ("行", i))
     return len(keys)
 
 
@@ -196,14 +206,10 @@ def build_statements(year_dir, accounts):
 
 # ---- 書き出し ----
 
-AMOUNT_FORMAT = '#,##0;"△"#,##0'
-
-
 class _Sheet:
     def __init__(self, ws, st, title):
         self.ws = ws
-        ws.append([f"{st.company or '（会社名未設定）'}　{title}　{st.period[0]} 〜 {st.period[1]}"])
-        ws["A1"].font = Font(bold=True)
+        bold_row(ws, [f"{st.company or '（会社名未設定）'}　{title}　{st.period[0]} 〜 {st.period[1]}"])
         ws.append([])
         ws.column_dimensions["A"].width = 34
         ws.column_dimensions["B"].width = 16
@@ -220,6 +226,9 @@ class _Sheet:
             a.font = b.font = Font(bold=True)
 
     def section(self, s):
+        if [name for name, _ in s.items] == [s.name]:  # 科目が1つで区分名と同じ（法人税等）：見出し・合計を重ねない
+            self.row(s.name, s.total, bold=True)
+            return
         self.row(s.name, bold=True)
         for name, amount in s.items:
             self.row(name, amount, indent=1)
@@ -260,6 +269,10 @@ def _equity_statement(ws, st):
             sheet.row(reason, amount, indent=2)
         sheet.row("当期末残高", r.closing, bold=True, indent=1)
         sheet.row("")
+    sheet.row("純資産合計", bold=True)
+    sheet.row("当期首残高", sum(r.opening for r in st.equity), indent=1)
+    sheet.row("当期変動額", sum(a for r in st.equity for _, a in r.changes), indent=1)
+    sheet.row("当期末残高", sum(r.closing for r in st.equity), bold=True, indent=1)
 
 
 def _workbook(st):
@@ -322,13 +335,7 @@ def write_statements(year_dir, st, company_dir=None, workbooks=None):
     writers = [(out / OUTPUT_XLSX, _workbook(st).save),
                (out / OUTPUT_NOTES, lambda p: p.write_text(text, encoding="utf-8"))]
     writers += [(out / name, wb.save) for name, wb in (workbooks or {}).items()]
-    for path, _ in writers:
-        if path.exists():
-            try:
-                with open(path, "a", encoding="utf-8"):
-                    pass
-            except OSError:
-                raise cannot_write(f"output/{path.name}") from None
+    ensure_outputs_writable([path for path, _ in writers])
     pairs = [(path.with_name(path.name + ".tmp"), path) for path, _ in writers]
     try:
         try:

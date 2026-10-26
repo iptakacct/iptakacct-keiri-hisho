@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from openpyxl.styles import Font
 
 
 class KessanError(Exception):
@@ -234,16 +235,26 @@ def _validate_period(start, end):
     return s, e
 
 
-def load_period(year_dir):
-    path = Path(year_dir) / PERIOD_FILE
-    if not path.exists():
-        raise KessanError(f"{PERIOD_FILE} がありません（init --start --end で作成）: {Path(year_dir)}")
+def _read_period_data(path):
+    """period.yaml の中身（dict）。読めない・dict でなければ KessanError（load_period と load_company_name で同じ文言）。"""
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as e:
         raise KessanError(f"{PERIOD_FILE} を読めません: {e}") from None
+    except UnicodeDecodeError:
+        raise KessanError(f"{PERIOD_FILE} を読めません: UTF-8 で保存してください") from None
+    except OSError as e:
+        raise KessanError(f"{PERIOD_FILE} を読めません: {e}") from None
     if not isinstance(data, dict):
         raise KessanError(f"{PERIOD_FILE} の形式が不正です（期首日・期末日を書く）")
+    return data
+
+
+def load_period(year_dir):
+    path = Path(year_dir) / PERIOD_FILE
+    if not path.exists():
+        raise KessanError(f"{PERIOD_FILE} がありません（init --start --end で作成）: {Path(year_dir)}")
+    data = _read_period_data(path)
     return _validate_period(data.get("期首日"), data.get("期末日"))
 
 
@@ -288,6 +299,27 @@ def swap_in(pairs, prefix="output/"):
             pass
 
 
+def ensure_outputs_writable(paths, prefix="output/"):
+    """置き換える前に、既にある出力ファイルが全部書き込めるか確かめる（Excelで開いたままだと置き換えられない）。"""
+    for path in paths:
+        if path.exists():
+            try:
+                with open(path, "ab"):
+                    pass
+            except OSError:
+                raise cannot_write(f"{prefix}{path.name}") from None
+
+
+AMOUNT_FORMAT = '#,##0;"△"#,##0'  # Excel の金額の表示（マイナスは △）
+
+
+def bold_row(ws, values):
+    """シートの末尾に1行足し、その行を太字にする（見出し・表題）。"""
+    ws.append(list(values))
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+
+
 def ensure_writable(year_dir, names):
     """書き込む前に、対象のCSVが全部書き込めるか確かめる（Excelで開いたままだと書けない。途中まで書いた状態を作らない）。"""
     for name in names:
@@ -309,15 +341,11 @@ def _write_period(path, data):
 
 
 def load_company_name(year_dir):
-    """period.yaml の会社名。無ければ空文字。"""
+    """period.yaml の会社名。period.yaml・会社名が無ければ空文字。period.yaml が読めなければ KessanError。"""
     path = Path(year_dir) / PERIOD_FILE
     if not path.exists():
         return ""
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (yaml.YAMLError, UnicodeDecodeError, OSError):
-        return ""
-    name = data.get("会社名") if isinstance(data, dict) else None
+    name = _read_period_data(path).get("会社名")
     return "" if name is None else str(name).strip()
 
 
@@ -326,6 +354,8 @@ def init_year_dir(year_dir, start, end, tax=None, company_name=None):
     from tax import parse_tax_settings, tax_to_dict  # 循環importを避ける
     year_dir = Path(year_dir)
     start, end = _validate_period(start, end)
+    if company_name is not None:
+        company_name = str(company_name).strip() or None  # 空は「指定なし」（既にある会社名は変えない）
     tax_dict = tax_to_dict(parse_tax_settings(tax)) if tax is not None else None
     period_path = year_dir / PERIOD_FILE
     if period_path.exists():
@@ -336,7 +366,7 @@ def init_year_dir(year_dir, start, end, tax=None, company_name=None):
                 "（年度フォルダを取り違えていないか確認）"
             )
         if tax_dict is not None or company_name is not None:
-            data = yaml.safe_load(period_path.read_text(encoding="utf-8")) or {}
+            data = _read_period_data(period_path)
             if tax_dict is not None:
                 data["消費税"] = tax_dict
             if company_name is not None:
