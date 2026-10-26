@@ -229,3 +229,26 @@ def test_approve_all_does_not_list_already_approved_tax(company_books, capsys):
     capsys.readouterr()
     assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
     assert "承認せずに残しました" not in capsys.readouterr().out
+
+
+def test_corporate_tax_stale_after_set_amount_not_approved(company_books, capsys):
+    """法人税等 70,000 で候補を作る → close-set-amount 80,000 → 流し直さずに承認しても古い候補は承認されない。"""
+    year, nxt = company_books
+    corp_id = "close:法人税等:2026-03-31"
+    assert main(["close-set-amount", "--year-dir", str(year), "--item", "法人税等", "--amount", "70000"]) == 0
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    assert main(["close-set-amount", "--year-dir", str(year), "--item", "法人税等", "--amount", "80000"]) == 0
+    rows = [r for r in read_rows(year / "adjustments-staging.csv") if r["取り込み元ID"] == corp_id]
+    assert all("close-set-amount で額を入れたので close-candidates をやり直す" in r["要確認理由"] for r in rows)
+    capsys.readouterr()
+    assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
+    out = capsys.readouterr().out
+    assert f"承認せずに残しました: {corp_id}" in out and "close-candidates" in out
+    assert {r["取り込み元ID"]: r["承認"] for r in read_rows(year / "adjustments-staging.csv")}[corp_id] == ""
+    assert main(["close-approve", "--year-dir", str(year), "--ids", corp_id]) == 1
+    assert "close-candidates" in capsys.readouterr().err
+
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    assert main(["close-approve", "--year-dir", str(year), "--ids", corp_id]) == 0
+    rows = [r for r in read_rows(year / "adjustments-staging.csv") if r["取り込み元ID"] == corp_id]
+    assert {r["承認"] for r in rows} == {"済"} and any(r["借方金額"] == "80000" for r in rows)

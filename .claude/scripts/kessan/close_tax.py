@@ -40,7 +40,7 @@ def _annual_consumption_tax(ctx, overrides, notes):
             notes.append(close.Note(ITEM_TAX, "免税の年度のため、close-overrides.yaml の消費税の額は使いません"))
         return None, None
     if ITEM_TAX in overrides:
-        return overrides[ITEM_TAX], close.TAX_OVERRIDE_ORIGIN
+        return overrides[ITEM_TAX], close.OVERRIDE_ORIGIN
     if settings.method == "簡易":
         notes.append(close.Note(ITEM_TAX, "消費税は達人で計算した額を close-set-amount で入れる（簡易課税は概算しない）"))
         return None, None
@@ -122,8 +122,7 @@ def _corporate_tax(ctx, overrides):
     else:
         lines = [{"借方科目": "法人税等", "借方金額": total, "借方税区分": _pl_tax(ctx),
                   "貸方科目": "未払法人税等", "貸方金額": unpaid, "摘要": "法人税、住民税及び事業税"}]
-    reason = (f"法人税等 {_yen(total)}（期末の未払額 {_yen(unpaid)}：上書き額（達人で計算した額）"
-              f"＋中間納付 {_yen(interim)}）")
+    reason = f"法人税等 {_yen(total)}（{close.corp_unpaid_reason(unpaid)}＋中間納付 {_yen(interim)}）"
     return [close.Candidate(ITEM_CORP, ctx.period[1], ctx.period[1], lines, reason)], []
 
 
@@ -140,8 +139,7 @@ def _corporate_refund(ctx, refund, interim):
         lines.append({"貸方科目": PREPAID, "貸方補助": CORP_SUB, "貸方金額": interim, "摘要": "法人税等の中間納付"})
     if expense < 0:
         lines.append({"貸方科目": "法人税等", "貸方金額": -expense, "貸方税区分": _pl_tax(ctx), "摘要": "法人税、住民税及び事業税"})
-    reason = (f"法人税等 {_yen(expense)}（還付 {_yen(refund)}：上書き額（達人で計算した額。マイナスは還付）"
-              f"、中間納付 {_yen(interim)}）")
+    reason = f"法人税等 {_yen(expense)}（還付 {_yen(refund)}。{close.corp_unpaid_reason(-refund)}、中間納付 {_yen(interim)}）"
     return close.Candidate(ITEM_CORP, ctx.period[1], ctx.period[1], lines, reason)
 
 
