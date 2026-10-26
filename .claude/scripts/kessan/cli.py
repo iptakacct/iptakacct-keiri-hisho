@@ -29,6 +29,7 @@
   python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py close-unpost --year-dir <Y> --ids close:…   （登録済みの決算整理仕訳を取り消す）
   python ../.claude/scripts/kessan/cli.py statements --year-dir <Y> [--prev-year-dir …]   （決算書・個別注記表の雛形）
+  python ../.claude/scripts/kessan/cli.py export-tatsujin --year-dir <Y> [--kind kessan] [--prev-year-dir …]   （達人へ渡すXML）
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
           / 3 post（set-tax・登録済み伝票の split-tax・close-post・close-unpost）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
@@ -51,6 +52,7 @@ from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year
 from evidence_resolve import resolve_evidence
 from extracted import extracted_files
 from financials import build_statements, write_statements
+from tatsujin_xml import export as export_tatsujin
 from extracted_import import import_extracted, inbox_status
 from match import add_payee, load_abbreviations, load_payees, payment_accounts
 from patterns import auto_approve, load_patterns
@@ -66,7 +68,9 @@ from undo import discard, unimport
 COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary",
             "close-candidates", "close-approve", "close-unapprove", "close-post", "close-set-amount", "close-reject",
-            "close-unreject", "close-unpost", "statements")
+            "close-unreject", "close-unpost", "statements", "export-tatsujin")
+# 達人XMLの種類（決算書・内訳書・概況書・消費税）。未実装の種類は export が「未対応」で止める
+TATSUJIN_KINDS = ("kessan", "uchiwake", "gaikyo", "shohizei")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -125,7 +129,7 @@ def _parser():
             p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
             p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")
         if name in ("post", "check", "set-tax", "tax-summary", "close-candidates", "close-post", "close-unpost",
-                    "statements"):
+                    "statements", "export-tatsujin"):
             p.add_argument("--prev-year-dir", type=Path)
         if name == "close-candidates":
             p.add_argument("--next-year-dir", type=Path, help="翌期の年度フォルダ（未払・未収の照合に使う）")
@@ -144,6 +148,9 @@ def _parser():
             p.add_argument("--ids", required=True, nargs="+", help="却下を取り消す候補の取り込み元ID（close:…）")
         if name == "close-unpost":
             p.add_argument("--ids", required=True, nargs="+", help="登録を取り消す決算整理仕訳の取り込み元ID（close:…）")
+        if name == "export-tatsujin":
+            p.add_argument("--kind", nargs="+", choices=TATSUJIN_KINDS,
+                           help="出す種類（省略時はこの年度に該当する全部）")
         if name == "close-set-amount":
             p.add_argument("--item", required=True, help="消費税 か 法人税等")
             p.add_argument("--amount", required=True, type=int, help="達人で計算した額（円。還付はマイナス）")
@@ -180,6 +187,14 @@ def _run_check(year_dir, accounts, prev_year_dir):
     ng = sum(f.level == "NG" for f in findings)
     print(f"検算: NG {ng}件 / 警告 {len(findings) - ng}件（{path}）")
     return findings
+
+
+def _refuse_on_ng(year_dir, accounts, prev_year_dir, what):
+    """検算を流し、NGが1件でもあれば what を出さずに止める（spec §7）。"""
+    findings = _run_check(year_dir, accounts, prev_year_dir)
+    if has_ng(findings):
+        ng = sum(f.level == "NG" for f in findings)
+        raise KessanError(f"検算にNGが{ng}件あるため{what}を出しません（output/check-result.md を確認）")
 
 
 def _company_dir(year_dir):
@@ -528,15 +543,22 @@ def main(argv=None):
                 return EXIT_POSTED_WITH_NG
             return 0
         if args.command == "statements":
-            findings = _run_check(year_dir, accounts, args.prev_year_dir)
-            if has_ng(findings):
-                ng = sum(f.level == "NG" for f in findings)
-                raise KessanError(f"検算にNGが{ng}件あるため決算書を出しません（output/check-result.md を確認）")
+            _refuse_on_ng(year_dir, accounts, args.prev_year_dir, "決算書")
             st = build_statements(year_dir, accounts)
             paths = write_statements(year_dir, st, company_dir=_company_dir(year_dir))
             for w in st.warnings:
                 print(f"警告: {w}")
             print(f"当期純利益 {st.profits['当期純利益']:,}円")
+            for path in paths:
+                print(f"出力: {path}")
+            return 0
+        if args.command == "export-tatsujin":
+            _refuse_on_ng(year_dir, accounts, args.prev_year_dir, "達人XML")
+            st = build_statements(year_dir, accounts)
+            notes = []
+            paths = export_tatsujin(year_dir, accounts, args.kind, st=st, notes=notes)
+            for w in st.warnings + notes:
+                print(f"警告: {w}")
             for path in paths:
                 print(f"出力: {path}")
             return 0

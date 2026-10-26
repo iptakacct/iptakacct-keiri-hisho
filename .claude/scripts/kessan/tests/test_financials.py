@@ -267,14 +267,15 @@ def test_write_statements_rolls_back_when_second_replace_fails(year_dir, account
     out = year_dir / "output"
     (out / "financial-statements.xlsx").write_bytes(b"old-xlsx")
     (out / "notes-draft.md").write_text("old-notes", encoding="utf-8")
-    real = financials.os.replace
+    import common
+    real = common.os.replace
 
     def flaky(src, dst):
         if str(src).endswith("notes-draft.md.tmp"):
             raise OSError("locked")
         return real(src, dst)
 
-    monkeypatch.setattr(financials.os, "replace", flaky)
+    monkeypatch.setattr(common.os, "replace", flaky)
     with pytest.raises(KessanError, match="notes-draft.md"):
         financials.write_statements(year_dir, st)
     assert (out / "financial-statements.xlsx").read_bytes() == b"old-xlsx"

@@ -659,3 +659,34 @@ def test_cli_statements_writes_and_warns(tmp_path, capsys):
     assert "法人税等が未計上" in out and "会社名" in out
     assert "financial-statements.xlsx" in out and "notes-draft.md" in out
     assert (year / "output" / "financial-statements.xlsx").exists()
+
+
+def test_cli_export_refuses_on_ng(tmp_path, capsys):
+    year = tmp_path / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"}])  # 期首の貸借がずれている → NG
+    assert main(["export-tatsujin", "--year-dir", str(year)]) == 1
+    err = capsys.readouterr().err
+    assert "NG" in err and "check-result.md" in err
+    assert not (year / "output" / "tatsujin").exists()
+
+
+def test_cli_export_writes_and_warns(tmp_path, capsys):
+    year = tmp_path / "インスタンス" / "work" / "kessan" / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"},
+                   {"科目": "資本金", "補助": "", "残高": "1000000"}])
+    assert main(["export-tatsujin", "--year-dir", str(year), "--kind", "kessan"]) == 0
+    out = capsys.readouterr().out
+    assert "法人税等が未計上" in out and "会社名" in out
+    path = year / "output" / "tatsujin" / "kessan-HJ21-20260331.xml"
+    assert path.exists() and str(path) in out
+
+
+def test_cli_export_unsupported_kind(tmp_path, capsys):
+    year = tmp_path / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+    opening(year, [{"科目": "普通預金", "補助": "", "残高": "1000000"},
+                   {"科目": "資本金", "補助": "", "残高": "1000000"}])
+    assert main(["export-tatsujin", "--year-dir", str(year), "--kind", "uchiwake"]) == 1
+    assert "未対応" in capsys.readouterr().err

@@ -247,6 +247,37 @@ def cannot_write(name):
     return KessanError(f"{name} に書き込めません（Excelで開いていたら閉じてから再実行）")
 
 
+def swap_in(pairs, prefix="output/"):
+    """一時ファイルを本来の名前に置き換える。途中で失敗したら、置き換えた分を元のファイルに戻す（新旧が混ざった出力を残さない）。"""
+    backups, done = {}, []
+    try:
+        for tmp, path in pairs:
+            if path.exists():
+                backup = path.with_name(path.name + ".bak")
+                os.replace(str(path), str(backup))
+                backups[path] = backup
+            os.replace(str(tmp), str(path))
+            done.append(path)
+    except OSError:
+        failed = next((path for _, path in pairs if path not in done), pairs[-1][1])
+        for path in done:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        for path, backup in backups.items():
+            try:
+                os.replace(str(backup), str(path))
+            except OSError:
+                pass
+        raise cannot_write(f"{prefix}{failed.name}") from None
+    for backup in backups.values():
+        try:
+            backup.unlink()
+        except OSError:
+            pass
+
+
 def ensure_writable(year_dir, names):
     """書き込む前に、対象のCSVが全部書き込めるか確かめる（Excelで開いたままだと書けない。途中まで書いた状態を作らない）。"""
     for name in names:

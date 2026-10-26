@@ -5,7 +5,6 @@
 貸借一致と、損益計算書の当期純利益＝変動計算書の当期純利益を検算し、合わなければ何も出さずに KessanError。
 内訳書・概況書・達人XML（Task 4・5）は、ここで作る Statements を材料にする（数字の出どころを1か所にする）。
 """
-import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,7 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
 
 from accounts import SECTIONS, normal_delta
-from common import KessanError, cannot_write, load_company_name, load_period, parse_amount, read_rows
+from common import KessanError, cannot_write, load_company_name, load_period, parse_amount, read_rows, swap_in
 from ledger import compute_balances, entry_rows, entry_where, load_opening
 from tax import load_tax_settings
 
@@ -307,37 +306,6 @@ def _notes(year_dir, st, company_dir):
     return "\n".join(lines)
 
 
-def _swap_in(pairs):
-    """一時ファイルを本来の名前に置き換える。途中で失敗したら、置き換えた分を元のファイルに戻す（新旧が混ざった出力を残さない）。"""
-    backups, done = {}, []
-    try:
-        for tmp, path in pairs:
-            if path.exists():
-                backup = path.with_name(path.name + ".bak")
-                os.replace(str(path), str(backup))
-                backups[path] = backup
-            os.replace(str(tmp), str(path))
-            done.append(path)
-    except OSError:
-        failed = next((path for _, path in pairs if path not in done), pairs[-1][1])
-        for path in done:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        for path, backup in backups.items():
-            try:
-                os.replace(str(backup), str(path))
-            except OSError:
-                pass
-        raise cannot_write(f"output/{failed.name}") from None
-    for backup in backups.values():
-        try:
-            backup.unlink()
-        except OSError:
-            pass
-
-
 def write_statements(year_dir, st, company_dir=None):
     """output/financial-statements.xlsx と output/notes-draft.md を書く。両方を組み立ててから置き換える。"""
     out = Path(year_dir) / "output"
@@ -359,7 +327,7 @@ def write_statements(year_dir, st, company_dir=None):
             tmp_notes.write_text(text, encoding="utf-8")
         except OSError:
             raise cannot_write("output/") from None
-        _swap_in(((tmp_xlsx, xlsx), (tmp_notes, notes)))
+        swap_in(((tmp_xlsx, xlsx), (tmp_notes, notes)))
     finally:
         for tmp in (tmp_xlsx, tmp_notes):
             if tmp.exists():
