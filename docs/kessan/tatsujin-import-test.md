@@ -31,7 +31,6 @@ python -m pytest -q tests/test_statements_flow.py --basetemp=C:\kessan-sample-ne
 
 うまくいかないとき（エラーが出る、「2 passed」と出ない）は、出た文面をそのまま秘書に見せて、直してもらってください。Python と pytest はこのリポジトリの環境に入っているので、新しく入れるものはありません。
 
-
 「2 passed」と出れば成功です。次のフォルダに4種類のXMLができています。
 
 ```
@@ -44,7 +43,7 @@ C:\kessan-sample-new\test_statements_and_export_flo0\インスタンス\work\kes
 
 このファイルの会社名は空です。会社名が入った決算書も見たいときは、`C:\kessan-sample-new\test_company_name_is_written0\…\output\tatsujin\kessan-HJ21-20260331.xml`（会社名は「テスト商事株式会社」）を使います。
 
-架空の会社（**方法Aのサンプルだけ**）の数字は次のとおりです。読み込んだ後に、達人の画面と見比べるのに使います。方法Bで自分の会社を出したときは、この表は使えません。その会社の `outputinancial-statements.xlsx` の数字と見比べてください。
+架空の会社（**方法Aのサンプルだけ**）の数字は次のとおりです。読み込んだ後に、達人の画面と見比べるのに使います。方法Bで自分の会社を出したときは、この表は使えません。その会社の `output\financial-statements.xlsx` の数字と見比べてください。
 
 | 項目 | 金額 |
 |---|---|
@@ -62,15 +61,15 @@ C:\kessan-sample-new\test_statements_and_export_flo0\インスタンス\work\kes
 
 ### 方法B：自分の会社の帳簿から出す
 
-決算整理の登録まで終わった年度フォルダ（例：`work\kessan6-03期`）で、次を実行します（秘書に頼んでもかまいません）。`<会社名>` はその会社の本当の名前に置き換えます。**架空の名前を入れないでください**（`period.yaml` に書かれ、決算書の顧問先名になります）。試しに別の名前で出したいときは、年度フォルダを丸ごとコピーしたものに対して実行してください。
+決算整理の登録まで終わった年度フォルダ（例：`work\kessan\2026-03期`）で、次を実行します（秘書に頼んでもかまいません）。`<会社名>` はその会社の本当の名前に置き換えます。**架空の名前を入れないでください**（`period.yaml` に書かれ、決算書の顧問先名になります）。試しに別の名前で出したいときは、年度フォルダを丸ごとコピーしたものに対して実行してください。
 
 ```
-python ..\.claude\scripts\kessan\cli.py init --year-dir work\kessan6-03期 --start 2025-04-01 --end 2026-03-31 --company-name <会社名>
-python ..\.claude\scripts\kessan\cli.py statements --year-dir work\kessan6-03期
-python ..\.claude\scripts\kessan\cli.py export-tatsujin --year-dir work\kessan6-03期
+python ..\.claude\scripts\kessan\cli.py init --year-dir work\kessan\2026-03期 --start 2025-04-01 --end 2026-03-31 --company-name <会社名>
+python ..\.claude\scripts\kessan\cli.py statements --year-dir work\kessan\2026-03期
+python ..\.claude\scripts\kessan\cli.py export-tatsujin --year-dir work\kessan\2026-03期
 ```
 
-出力は `work\kessan6-03期\output	atsujin\` に入ります。`init` は既にある年度フォルダに会社名だけを足します（帳簿は消えません。期間は実際の期首日・期末日に合わせてください）。
+出力は `work\kessan\2026-03期\output\tatsujin\` に入ります。`init` は既にある年度フォルダに会社名だけを足します（帳簿は消えません。期間は実際の期首日・期末日に合わせてください）。
 
 ## 3. 読み込んで確かめる
 
