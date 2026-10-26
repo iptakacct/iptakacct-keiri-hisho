@@ -445,3 +445,22 @@ def test_init_genzoku_requires_allocation(tmp_path, capsys):
     assert main(["init", "--year-dir", str(year), *PERIOD, "--consumption-tax", "課税",
                  "--tax-method", "原則", "--tax-calc", "割戻し"]) != 0
     assert "--tax-allocation" in capsys.readouterr().err
+
+
+def test_review_fills_tax_only_in_taxable_year(tmp_path, capsys):
+    row = staging_row(日付="2025-05-10", 借方科目="消耗品費", 借方金額="5500", 貸方科目="普通預金", 貸方金額="5500",
+                      取り込み元ID="bank:t1")
+    year = tmp_path / "課税" / "2026-03期"
+    assert main(["init", "--year-dir", str(year), *PERIOD, "--consumption-tax", "課税", "--tax-method", "原則",
+                 "--tax-calc", "割戻し", "--tax-allocation", "全額控除"]) == 0
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [row])
+    assert main(["review", "--year-dir", str(year)]) == 0
+    assert "税区分を補完: 1件／要確認: 1件" in capsys.readouterr().out
+    assert read_rows(year / "staging.csv")[0]["借方税区分"] == "課税仕入10%"
+
+    exempt = tmp_path / "免税" / "2026-03期"
+    assert main(["init", "--year-dir", str(exempt), *PERIOD]) == 0
+    write_rows(exempt / "staging.csv", STAGING_COLUMNS, [row])
+    assert main(["review", "--year-dir", str(exempt)]) == 0
+    assert "税区分を補完" not in capsys.readouterr().out
+    assert read_rows(exempt / "staging.csv")[0]["借方税区分"] == ""

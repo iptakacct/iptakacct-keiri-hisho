@@ -182,3 +182,13 @@ def test_receipt_due_date_is_optional_and_must_be_a_date(year_dir, accounts):
     assert errors_of(year_dir, accounts, receipt(種類="請求書", 支払期日="2026-04-30")) == []  # 期末後の期日でもよい
     errors = errors_of(year_dir, accounts, receipt(種類="請求書", 支払期日="4月末"))
     assert any("「支払期日」はYYYY-MM-DDの実在する日付で書く" in e for e in errors), errors
+
+
+def test_receipt_tax_rate_and_registration(year_dir, accounts):
+    assert errors_of(year_dir, accounts, receipt(税率=8, 登録番号="T1234567890123")) == []
+    assert errors_of(year_dir, accounts, receipt(税率="混在")) == []
+    assert errors_of(year_dir, accounts, receipt(税率=10)) == []
+    assert any("登録番号" in e for e in errors_of(year_dir, accounts, receipt(登録番号="1234")))
+    assert any("登録番号" in e for e in errors_of(year_dir, accounts, receipt(登録番号="T123456789012")))
+    for bad in (5, "8", True, 8.0):
+        assert any("税率" in e for e in errors_of(year_dir, accounts, receipt(税率=bad))), bad

@@ -36,7 +36,8 @@ from match import load_abbreviations, payment_accounts
 from patterns import auto_approve, load_patterns
 from post import post_approved
 from review_xlsx import read_review, write_review
-from tax import load_tax_settings
+from tax import load_tax_settings, load_transitions
+from tax_fill import fill_tax
 from trial_balance import write_trial_balance
 from undo import discard, unimport
 
@@ -109,16 +110,33 @@ def _auto_approve(year_dir, accounts, args):
     print(f"確立済みパターン: 自動承認 {r.approved}件 / パターンと科目候補が合わず要確認 {r.conflicts}件")
 
 
+def _fill_tax(year_dir, accounts):
+    """課税の年度で、未承認の行の税区分・インボイス・個別対応を補う。免税の年度では何もしない。"""
+    settings = load_tax_settings(year_dir)
+    if not settings.taxable:
+        return
+    r = fill_tax(year_dir, accounts, settings, load_transitions())
+    if r.filled or r.flagged:
+        print(f"税区分を補完: {r.filled}件／要確認: {r.flagged}件")
+
+
 def _auto_approve_after(year_dir, accounts, args, done):
-    """反映（取り込み・科目候補）の後に自動承認する。失敗したら、反映は完了していることを伝えて 1 を返す（成功なら 0）。"""
+    """反映（取り込み・科目候補）の後に自動承認し、税区分を補う。失敗したら、反映は完了していることを伝えて 1 を返す（成功なら 0）。"""
+    code = 0
     try:
         _auto_approve(year_dir, accounts, args)
     except KessanError as e:
         print(f"エラー: 確立済みパターンの自動承認で止まりました: {e}", file=sys.stderr)
         print(f"{done}（自動承認だけが止まりました。原因を直してから同じコマンドを再実行すると、二重には反映せず自動承認をやり直します）",
               file=sys.stderr)
-        return 1
-    return 0
+        code = 1
+    try:
+        _fill_tax(year_dir, accounts)
+    except KessanError as e:
+        print(f"エラー: 税区分の補完で止まりました: {e}", file=sys.stderr)
+        print(f"{done}（税区分の補完だけが止まりました。原因を直してから同じコマンドを再実行してください）", file=sys.stderr)
+        code = 1
+    return code
 
 
 def _print_extracted_result(r):
@@ -213,6 +231,7 @@ def main(argv=None):
             print(f"科目候補: {count}件を反映しました")
             return _auto_approve_after(year_dir, accounts, args, "科目候補の反映は完了しています")
         if args.command == "review":
+            _fill_tax(year_dir, accounts)
             s = write_review(year_dir)
             print(f"確認用Excel: {s.path}")
             print(f"行 {s.rows}件（要確認 {s.needs_review}件 / 承認済み {s.approved}件）"
@@ -223,6 +242,7 @@ def main(argv=None):
             return 0
         if args.command == "apply-review":
             r = apply_review(year_dir, accounts, read_review(args.file))
+            _fill_tax(year_dir, accounts)
             print(f"承認を反映: {r.approved}件 / 修正メモのため承認を外した行 {r.unapproved}件")
             for source_id, memo in r.memos:
                 print(f"修正メモ: {source_id}\t{memo}")
@@ -239,10 +259,12 @@ def main(argv=None):
                 if args.numbers:
                     raise KessanError("--numbers は --review-file と一緒に使います（--ids とは一緒に使えません）")
                 print(f"承認: {approve(year_dir, accounts, args.ids)}件")
+                _fill_tax(year_dir, accounts)
                 return 0
             if not args.numbers:
                 raise KessanError("--review-file には、承認する番号を --numbers で指定してください")
             r = approve_numbers(year_dir, accounts, read_review(args.review_file), args.numbers)
+            _fill_tax(year_dir, accounts)
             print(f"承認: {r.approved}件")
             if r.changed:
                 print("Excel出力後に内容が変わったため承認していない行："
@@ -266,6 +288,7 @@ def main(argv=None):
             print(f"破棄: {count}行（discard-log.csv に記録）")
             return 0
         if args.command == "post":
+            _fill_tax(year_dir, accounts)
             r = post_approved(year_dir, accounts)
             print(f"登録: 伝票 {len(r.vouchers)}件（{', '.join(r.vouchers) or 'なし'}） / 未承認で残った行 {r.remaining}件")
             findings = _run_check(year_dir, accounts, args.prev_year_dir)

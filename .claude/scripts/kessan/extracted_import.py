@@ -113,6 +113,7 @@ def _evidence_row(data, evidence_id, state, source_id, stamp):
         "科目候補": data["科目候補"], "補助候補": data.get("補助候補", ""),
         "状態": state, "取り込み元ID": source_id, "取り込み日時": stamp,
         "支払期日": data.get("支払期日", ""), "支払方法の推定": data["支払方法の推定"], "自信度": data["自信度"],
+        "税率": str(data.get("税率", "")), "登録番号": data.get("登録番号", ""),
     }
 
 

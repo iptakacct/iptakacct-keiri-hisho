@@ -3,6 +3,7 @@
 形式に1つでも誤りがあれば、そのファイルは取り込まない（誤りの一覧を返し、AIが直して再実行する）。
 """
 import json
+import re
 from pathlib import Path
 
 from common import parse_date
@@ -185,6 +186,14 @@ def validate_document(data, accounts, account_ids, period, year_dir, payment_acc
             due = data["支払期日"]
             if not (isinstance(due, str) and parse_date(due)):
                 c.error("", f"「支払期日」はYYYY-MM-DDの実在する日付で書く（値: {due!r}）")
+        if "税率" in data:  # 任意。証憑に書かれた税率（段階3a）
+            rate = data["税率"]
+            if not (rate == "混在" or (_is_int(rate) and rate in (10, 8))):
+                c.error("", f"「税率」は 10／8／\"混在\" のどれかで書く（値: {rate!r}）")
+        if "登録番号" in data:  # 任意。適格請求書発行事業者の登録番号
+            number = data["登録番号"]
+            if not (isinstance(number, str) and re.fullmatch(r"T[0-9]{13}", number)):
+                c.error("", f"「登録番号」は T＋13桁の数字で書く（値: {number!r}）")
         c.account(data, "科目候補", accounts, "", allow_empty=False)
         c.text(data, "補助候補", "", required=False)
         c.choice(data, "自信度", CONFIDENCE_LEVELS, "")
