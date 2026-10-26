@@ -24,7 +24,7 @@ PREPAID_ACCOUNT = "前払費用"
 REGISTRY_FILE = "kessan-prepaid.yaml"
 JOURNAL_FILE = "journal.csv"
 DEFAULT_MONTHS = 12
-MAX_MONTHS = 60
+MAX_MONTHS = 12
 MIN_KEY_LENGTH = 2
 LARGE_PAYMENT = 50000
 WATCH_ACCOUNTS = ("保険料", "地代家賃", "リース料", "支払手数料", "諸会費", "通信費")
@@ -78,7 +78,7 @@ def load_registry(company_dir, accounts, abbreviations):
                 errors.append(f"{where}: {label}「{value}」は短すぎます（最小{MIN_KEY_LENGTH}文字）")
         months = item.get("月数", DEFAULT_MONTHS)
         if not isinstance(months, int) or isinstance(months, bool) or not 1 <= months <= MAX_MONTHS:
-            errors.append(f"{where}: 月数は1〜{MAX_MONTHS}の整数で書く（値: {months!r}）")
+            errors.append(f"{where}: 月数は1〜{MAX_MONTHS}（1年を超える前払は長期前払費用として手で扱う）の整数で書く（値: {months!r}）")
             months = DEFAULT_MONTHS
         entries.append({"名前": name, "科目": subject, "キーワード": keyword, "取引先": partner, "月数": months})
     if errors:

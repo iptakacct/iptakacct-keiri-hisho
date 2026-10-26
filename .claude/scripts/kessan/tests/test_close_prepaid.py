@@ -53,7 +53,7 @@ def test_prepaid_insurance(year_dir, accounts, company):
     assert (r["借方税区分"], r["貸方税区分"]) == ("", "")
 
 
-def test_prepaid_taxable_year_is_out_of_scope(year_dir, accounts, company):
+def test_prepaid_taxable_year_both_sides_outside_scope(year_dir, accounts, company):
     (year_dir / "period.yaml").write_text(
         '期首日: "2025-04-01"\n期末日: "2026-03-31"\n消費税:\n  区分: 課税\n  方式: 原則\n  計算: 割戻し\n  控除: 個別対応\n',
         encoding="utf-8")
@@ -128,6 +128,81 @@ def test_invalid_registry_lists_all_problems(year_dir, accounts, company):
     text = str(e.value)
     for word in ("費用の科目ではありません", "重複", "短すぎ", "月数", "どちらかを書く"):
         assert word in text
+
+
+def other_year(tmp_path, start, end, tax=None):
+    from common import init_year_dir
+    d = tmp_path / "other"
+    init_year_dir(d, start, end, tax)
+    return d
+
+
+def only_candidate(year_dir, accounts, company):
+    candidates, notes = close_prepaid.collect(close.build_context(year_dir, accounts, company_dir=company))
+    return candidates, notes
+
+
+def test_non_april_period(tmp_path, accounts, company):
+    registry(company)
+    d = other_year(tmp_path, "2025-07-01", "2026-06-30")
+    write_rows(d / "journal.csv", JOURNAL_COLUMNS, [
+        line("0", "2025-07-01", debit=("普通預金", "サンプル銀行", 500000), credit=("資本金", "", 500000)),
+        payment("1", "2025-09-10", 120000, "ソンポ", "bank:main:1")])
+    (c,), _ = only_candidate(d, accounts, company)  # 2025-09〜2026-08、期末 2026-06 の後は 2か月
+    assert (c.date, c.lines[0]["借方金額"]) == ("2026-06-30", 20000)
+
+
+def test_six_month_term(year_dir, accounts, company):
+    registry(company, "prepaid:\n  - {名前: 損害保険, 科目: 保険料, 摘要キーワード: ソンポ, 月数: 6}\n")
+    books(year_dir, [payment("1", "2026-01-20", 60000, "ソンポ", "bank:main:1")])  # 2026-01〜2026-06、後 3か月
+    (c,), _ = only_candidate(year_dir, accounts, company)
+    assert c.lines[0]["借方金額"] == 30000
+
+
+def test_payment_in_period_end_month(year_dir, accounts, company):
+    registry(company)
+    books(year_dir, [payment("1", "2026-03-10", 120000, "ソンポ", "bank:main:1")])  # 2026-03〜2027-02、後 11か月
+    (c,), _ = only_candidate(year_dir, accounts, company)
+    assert c.lines[0]["借方金額"] == 110000
+
+
+def test_partner_and_payees_match(year_dir, accounts, company):
+    registry(company, "prepaid:\n  - {名前: 損害保険, 科目: 保険料, 取引先: テスト海上}\n")
+    books(year_dir, [payment("1", "2025-10-01", 120000, "テスト海上 年払", "bank:main:1"),
+                     payment("2", "2025-10-01", 120000, "ソンガイホケン", "bank:main:2", 取引先="テスト海上")])
+    candidates, _ = only_candidate(year_dir, accounts, company)
+    assert [c.key for c in candidates] == ["bank:main:1", "bank:main:2"]
+    registry(company, "prepaid:\n  - {名前: 損害保険, 科目: 保険料, 取引先: テスト海上}\n")
+    books(year_dir, [payment("1", "2025-10-01", 120000, "テストカイジヨウ", "bank:main:3")])
+    assert only_candidate(year_dir, accounts, company)[0] == []
+    ctx = close.build_context(year_dir, accounts, company_dir=company)
+    ctx.payees = {"テスト海上": ["テストカイジヨウ"]}
+    assert [c.key for c in close_prepaid.collect(ctx)[0]] == ["bank:main:3"]
+
+
+def test_both_keys_must_match(year_dir, accounts, company):
+    registry(company, "prepaid:\n  - {名前: 損害保険, 科目: 保険料, 摘要キーワード: ソンポ, 取引先: テスト海上}\n")
+    books(year_dir, [payment("1", "2025-10-01", 120000, "ソンポ", "bank:main:1"),
+                     payment("2", "2025-10-01", 120000, "ソンポ", "bank:main:2", 取引先="テスト海上")])
+    assert [c.key for c in only_candidate(year_dir, accounts, company)[0]] == ["bank:main:2"]
+
+
+def test_reversal_in_taxable_year(tmp_path, accounts, company):
+    registry(company)
+    tax = {"区分": "課税", "方式": "原則", "計算": "割戻し", "控除": "個別対応"}
+    d = other_year(tmp_path, "2025-04-01", "2026-03-31", tax)
+    write_rows(d / "journal.csv", JOURNAL_COLUMNS, [])
+    opening(d, [("前払費用", "損害保険", 30000), ("資本金", "", 30000)])
+    (c,), _ = only_candidate(d, accounts, company)
+    line0 = c.lines[0]
+    assert (c.date, line0["借方税区分"], line0["貸方税区分"]) == ("2025-04-01", "対象外", "対象外")
+
+
+def test_months_over_twelve_rejected(year_dir, accounts, company):
+    registry(company, "prepaid:\n  - {名前: 損害保険, 科目: 保険料, 摘要キーワード: ソンポ, 月数: 24}\n")
+    books(year_dir, [])
+    with pytest.raises(KessanError, match="1〜12"):
+        run(year_dir, accounts, company)
 
 
 def test_items_order():
