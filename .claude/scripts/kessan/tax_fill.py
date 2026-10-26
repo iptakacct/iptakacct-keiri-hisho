@@ -19,11 +19,13 @@ MIXED_RATE_REASON = "税率が複数（split-tax で分ける）"
 NO_EVIDENCE_REASON = "証憑が無い課税仕入（インボイスを確認）"
 REDUCED_RATE_POSSIBLE_REASON = "軽減税率の可能性（証憑で税率を確認）"
 NO_REGISTRATION_REASON = "証憑に登録番号が無い（経過措置で計上。登録番号を確認）"
+QUALIFIED_WITHOUT_REGISTRATION_REASON = "インボイスが適格だが証憑に登録番号が無い（登録番号を確認）"
 RATE_CHANGED_REASON = "証憑の税率（8%）に合わせて税区分を8%軽に直したため承認を外した（確認して承認し直す）"
 REDUCED_RATE_ACCOUNTS = ("会議費", "交際費", "福利厚生費", "新聞図書費")
 PURCHASE_KINDS = ("課税仕入", "課税仕入返還")
 REVIEW_JUDGEMENT = "要確認"  # accounts_update.AI_JUDGEMENT と同じ（循環importを避けて文字で持つ）
-_FIXED_REASONS = (MIXED_RATE_REASON, NO_EVIDENCE_REASON, REDUCED_RATE_POSSIBLE_REASON, NO_REGISTRATION_REASON)
+_FIXED_REASONS = (MIXED_RATE_REASON, NO_EVIDENCE_REASON, REDUCED_RATE_POSSIBLE_REASON, NO_REGISTRATION_REASON,
+                  QUALIFIED_WITHOUT_REGISTRATION_REASON)
 
 
 def default_mismatch_reason(default):
@@ -110,6 +112,8 @@ def _fill_side(row, side, accounts, settings, transitions, ev, split, existing, 
         invoice = row[invoice_key].strip()
         if invoice_required and _is_transitional(invoice) and (derived or NO_REGISTRATION_REASON in existing):
             reasons.append(NO_REGISTRATION_REASON)
+        if invoice_required and invoice == "適格" and ev and not ev["登録番号"].strip():
+            reasons.append(QUALIFIED_WITHOUT_REGISTRATION_REASON)
         if settings.allocation == "個別対応" and not row[alloc_key].strip():
             row[alloc_key] = "共通"
             wrote = True
@@ -121,12 +125,16 @@ def _fill_side(row, side, accounts, settings, transitions, ev, split, existing, 
     return wrote
 
 
-def _approved_conflicts(row, accounts, ev, split):
-    """承認済みの行で、証憑の税率と税区分が合わない理由の一覧。8%の証憑で税区分が科目の既定なら8%軽に直す。"""
+def _approved_conflicts(row, accounts, settings, ev, split):
+    """承認済みの行で、証憑の税率・登録番号と合わない理由の一覧。8%の証憑で税区分が科目の既定なら8%軽に直す。"""
     rate = ev["税率"].strip() if ev else ""
     reasons = []
+    if ev and settings.method == "原則" and not ev["登録番号"].strip():
+        for side in ("借方", "貸方"):
+            if _kind(row[f"{side}税区分"].strip()) in PURCHASE_KINDS and row[f"{side}インボイス"].strip() == "適格":
+                reasons.append(QUALIFIED_WITHOUT_REGISTRATION_REASON)
     if not rate:
-        return reasons
+        return list(dict.fromkeys(reasons))
     for side in ("借方", "貸方"):
         tax = row[f"{side}税区分"].strip()
         tax_rate = _rate(tax)
@@ -169,7 +177,7 @@ def fill_tax(year_dir, accounts, settings, transitions):
         # 税率で分けた伝票（split-tax の S…、同じ取り込み元IDが複数行）には「税率が複数」を付けない
         split = row["伝票番号"].strip().startswith("S") or id_counts[source_id] > 1
         if row["承認"].strip() == "済":
-            conflicts = _approved_conflicts(row, accounts, ev, split)
+            conflicts = _approved_conflicts(row, accounts, settings, ev, split)
             if conflicts:
                 row["要確認理由"] = add_reasons(row["要確認理由"], *conflicts)
                 _unapprove(row, result)

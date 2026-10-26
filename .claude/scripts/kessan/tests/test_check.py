@@ -337,17 +337,19 @@ def test_adjustments_rows_are_checked(year_dir, accounts):
 
 # ---- 最終レビューの修正：証憑の税率・固定資産・経過措置の日付・簡易／2割特例 ----
 
+import pytest  # noqa: E402
 from common import EVIDENCE_COLUMNS  # noqa: E402
 from check import check_tax  # noqa: E402
+from ledger import entry_rows  # noqa: E402
 from tax import TaxSettings, load_transitions  # noqa: E402
 
 TAXABLE = TaxSettings("課税", "原則", "割戻し", "全額控除", False)
 
 
-def write_evidence(year_dir, rate, source_id="bank:2", state="明細に対応"):
+def write_evidence(year_dir, rate, source_id="bank:2", state="明細に対応", registration="T1234567890123"):
     row = dict.fromkeys(EVIDENCE_COLUMNS, "")
     row.update({"証憑ID": "e1", "証憑ファイル": "inbox/領収書-テスト.jpg", "状態": state, "取り込み元ID": source_id,
-                "税率": rate})
+                "税率": rate, "登録番号": registration})
     write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [row])
 
 
@@ -403,6 +405,33 @@ def test_mixed_rate_evidence_with_split_voucher_is_clean(year_dir, accounts):
     write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
     write_evidence(year_dir, "混在")
     assert run_checks(year_dir, accounts) == []
+
+
+def test_qualified_invoice_without_registration_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    write_evidence(year_dir, "10", registration="")
+    msgs = tax_messages([f for f in run_checks(year_dir, accounts) if f.level == "NG"])
+    assert msgs == ["伝票2: 借方 インボイスが適格だが証憑（inbox/領収書-テスト.jpg）に登録番号が無い"]
+
+
+def test_registration_but_transitional_warns(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方インボイス="経過80")
+    write_evidence(year_dir, "10")
+    msgs = [f.message for f in run_checks(year_dir, accounts) if f.level == "WARN" and "登録番号がある" in f.message]
+    assert len(msgs) == 1 and "伝票2" in msgs[0] and "適格ではないか確認" in msgs[0]
+
+
+@pytest.mark.parametrize("method", ["簡易", "2割特例"])
+def test_registration_rule_not_for_kanni(year_dir, accounts, method):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    write_evidence(year_dir, "10", registration="")
+    entries = entry_rows(year_dir)
+    settings = TaxSettings("課税", method, "割戻し", "", False)
+    assert [f for f in check_tax(entries, accounts, settings, read_rows(year_dir / "evidence.csv"))
+            if "登録番号" in f.message] == []
 
 
 def _entry(debit, credit, amount=110000, date="2025-06-01", **extra):

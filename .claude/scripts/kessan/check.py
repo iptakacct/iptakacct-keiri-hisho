@@ -177,8 +177,29 @@ def _bs_tax_warning(label, side, name, tax, kind, account):
     return None
 
 
-def _check_evidence_rates(entries, evidence):
-    """証憑の税率（8／10／混在）と帳簿の税区分の税率が合っているか。証憑が1つに決まった行だけを見る。"""
+def _registration_findings(row, label, ev):
+    """1行の課税仕入の側について、インボイス区分と証憑の登録番号の食い違いを返す。"""
+    has_registration = bool(ev["登録番号"].strip())
+    findings = []
+    for side in ("借方", "貸方"):
+        category = TAX_CATEGORIES.get(row.get(f"{side}税区分", "").strip())
+        if category is None or category.kind not in _PURCHASE_KINDS:
+            continue
+        invoice = row.get(f"{side}インボイス", "").strip()
+        if invoice == "適格" and not has_registration:
+            findings.append(Finding("NG", "税区分", f"{label}: {side} インボイスが適格だが証憑（{ev['証憑ファイル']}）に"
+                                                   "登録番号が無い"))
+        elif has_registration and (invoice.startswith("経過") or invoice == "なし"):
+            findings.append(Finding("WARN", "税区分", f"{label}: {side} インボイスが「{invoice}」だが証憑（{ev['証憑ファイル']}）に"
+                                                      "登録番号がある（適格ではないか確認）"))
+    return findings
+
+
+def _check_evidence_rates(entries, evidence, settings):
+    """証憑の税率（8／10／混在）と帳簿の税区分の税率が合っているか。証憑が1つに決まった行だけを見る。
+
+    原則課税のときは、課税仕入の側のインボイスと証憑の登録番号の食い違い（適格なのに番号が無い・番号があるのに適格でない）も見る。
+    """
     by_source = evidence_by_source(evidence)
     rated = defaultdict(int)  # 取り込み元ID -> 税率を持つ側の数
     first_label = {}
@@ -186,9 +207,13 @@ def _check_evidence_rates(entries, evidence):
     for r in entries:
         source_id = r["取り込み元ID"].strip()
         ev = by_source.get(source_id)
-        if ev is None or not ev["税率"].strip():
+        if ev is None:
             continue
         label = _voucher_label(r.get("_file", "journal.csv"), r["伝票番号"])
+        if settings.method == "原則":
+            findings += _registration_findings(r, label, ev)
+        if not ev["税率"].strip():
+            continue
         first_label.setdefault(source_id, label)
         rate = ev["税率"].strip()
         for side in ("借方", "貸方"):
@@ -261,7 +286,7 @@ def check_tax(entries, accounts, settings, evidence=(), transitions=None):
                 for title, value in (("インボイス", invoice), ("個別対応", allocation)):
                     if value:
                         findings.append(Finding("WARN", "税区分", f"{label}: {side} {title}「{value}」は課税仕入以外には付けない"))
-    return findings + _check_evidence_rates(entries, evidence)
+    return findings + _check_evidence_rates(entries, evidence, settings)
 
 
 def run_checks(year_dir, accounts, prev_year_dir=None):

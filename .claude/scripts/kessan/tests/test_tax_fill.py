@@ -193,7 +193,27 @@ def test_approved_unsplit_row_with_mixed_evidence_is_unapproved(ydir, accounts):
 
 def test_approved_row_matching_evidence_is_untouched(ydir, accounts):
     r = row(借方税区分="課税仕入8%軽", 借方インボイス="適格", 承認="済")
-    result, rows = run(ydir, accounts, [r], [evidence(税率="8")])
+    result, rows = run(ydir, accounts, [r], [evidence(税率="8", 登録番号="T1234567890123")])
+    assert rows[0]["承認"] == "済" and result.unapproved == 0
+
+
+def test_unapproves_qualified_without_registration(ydir, accounts):
+    r = row(借方税区分="課税仕入10%", 借方インボイス="適格", 承認="済", 判定="確立済み")
+    result, rows = run(ydir, accounts, [r], [evidence(税率="10")])
+    assert rows[0]["承認"] == "" and rows[0]["判定"] == "要確認"
+    assert tax_fill.QUALIFIED_WITHOUT_REGISTRATION_REASON == "インボイスが適格だが証憑に登録番号が無い（登録番号を確認）"
+    assert tax_fill.QUALIFIED_WITHOUT_REGISTRATION_REASON in rows[0]["要確認理由"]
+    assert result.unapproved == 1
+    # 登録番号が入れば、理由は外れる
+    write_rows(ydir / "evidence.csv", EVIDENCE_COLUMNS, [evidence(税率="10", 登録番号="T1234567890123")])
+    fill_tax(ydir, accounts, TAXABLE, load_transitions())
+    assert tax_fill.QUALIFIED_WITHOUT_REGISTRATION_REASON not in read_rows(ydir / "staging.csv")[0]["要確認理由"]
+
+
+def test_qualified_without_registration_not_for_kanni(ydir, accounts):
+    r = row(借方税区分="課税仕入10%", 借方インボイス="適格", 承認="済")
+    settings = TaxSettings("課税", "簡易", "割戻し", "", False)
+    result, rows = run(ydir, accounts, [r], [evidence(税率="10")], settings)
     assert rows[0]["承認"] == "済" and result.unapproved == 0
 
 

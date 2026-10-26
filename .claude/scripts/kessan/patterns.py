@@ -18,7 +18,7 @@ from common import (
 from evidence import evidence_by_source, read_evidence
 from match import expand_abbreviations, name_in_description
 from tax import INVOICE_VALUES, TAX_CATEGORIES
-from tax_fill import MIXED_RATE_REASON, REDUCED_RATE_ACCOUNTS
+from tax_fill import MIXED_RATE_REASON, QUALIFIED_WITHOUT_REGISTRATION_REASON, REDUCED_RATE_ACCOUNTS
 
 DIRECTIONS = ("入金", "出金")
 ESTABLISHED = "確立済み"
@@ -140,6 +140,7 @@ def _tax_values(row, counter, pattern, accounts, settings, ev=None):
     税区分はパターン→科目の既定の順、インボイスはパターンから、どちらも空欄のときだけ書く。
     課税仕入でインボイスが決まらない（原則課税のとき）・収益／費用なのに税区分が決まらない行は承認しない。
     軽減税率の可能性がある科目でパターンに税区分が無い行、証憑（ev）の税率と税区分の税率が合わない・税率が混在の行も承認しない。
+    原則課税で、証憑に登録番号が無いのにインボイスが適格の行も承認しない。
     """
     values = {}
     account = accounts.get(pattern.subject)
@@ -169,6 +170,8 @@ def _tax_values(row, counter, pattern, accounts, settings, ev=None):
     if category and category.kind in ("課税仕入", "課税仕入返還"):
         if not invoice and settings.method == "原則":
             return values, "確立済みパターンにインボイスが無い（税区分・インボイスを確認）"
+        if settings.method == "原則" and invoice == "適格" and ev and not ev["登録番号"].strip():
+            return values, QUALIFIED_WITHOUT_REGISTRATION_REASON
         if settings.allocation == "個別対応" and not row[f"{counter}個別対応"].strip():
             values[f"{counter}個別対応"] = "共通"
     return values, None

@@ -357,21 +357,21 @@ def test_taxable_existing_tax_differing_from_pattern_is_not_approved(tmp_path, a
 
 # --- 最終レビューの修正：証憑の税率・軽減税率の可能性・簡易／2割特例 ---
 
-def _write_evidence(year_dir, rate, source_id="bank:fee"):
+def _write_evidence(year_dir, rate, source_id="bank:fee", registration="T1234567890123"):
     from common import EVIDENCE_COLUMNS
     row = dict.fromkeys(EVIDENCE_COLUMNS, "")
     row.update({"証憑ID": "e1", "証憑ファイル": "inbox/領収書.jpg", "状態": "明細に対応", "取り込み元ID": source_id,
-                "税率": rate})
+                "税率": rate, "登録番号": registration})
     write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [row])
 
 
 def _tax_case_with_evidence(tmp_path, accounts, abbreviations, rate, pattern_extra="    インボイス: 適格\n",
-                            subject="支払手数料"):
+                            subject="支払手数料", registration="T1234567890123"):
     from tax import TaxSettings
     year_dir = tmp_path / "y"
     year_dir.mkdir()
     write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee()])
-    _write_evidence(year_dir, rate)
+    _write_evidence(year_dir, rate, registration=registration)
     text = f"patterns:\n  - 名前: 振込手数料\n    入出金: 出金\n    摘要キーワード: テスウリヨウ\n    科目: {subject}\n{pattern_extra}"
     patterns = load_patterns(write_patterns(tmp_path, text), accounts)
     result = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations,
@@ -395,6 +395,12 @@ def test_taxable_evidence_rate_8_with_reduced_pattern_is_approved(tmp_path, acco
 def test_taxable_evidence_rate_10_is_approved(tmp_path, accounts, abbreviations):
     result, row = _tax_case_with_evidence(tmp_path, accounts, abbreviations, "10")
     assert result.approved == 1
+
+
+def test_auto_approve_refuses_qualified_pattern_without_registration(tmp_path, accounts, abbreviations):
+    result, row = _tax_case_with_evidence(tmp_path, accounts, abbreviations, "10", registration="")
+    assert (result.approved, result.conflicts) == (0, 1) and row["承認"] != "済"
+    assert "インボイスが適格だが証憑に登録番号が無い（登録番号を確認）" in row["要確認理由"]
 
 
 def test_reduced_rate_account_without_pattern_tax_is_not_approved(tmp_path, accounts, abbreviations):
