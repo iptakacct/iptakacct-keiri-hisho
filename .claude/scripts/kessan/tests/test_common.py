@@ -323,3 +323,13 @@ def test_swap_in_reports_backups_it_could_not_restore(tmp_path, monkeypatch):
     assert str(tmp_path / "a.xml.bak") in str(e.value)
     assert "b.xml.bak" not in str(e.value)  # 戻せた分は出さない
     assert (tmp_path / "a.xml.bak").read_text(encoding="utf-8") == "old-a"
+
+
+def test_load_tax_settings_non_utf8_period_raises(tmp_path):
+    """消費税の設定も period.yaml の読み込みは同じ部品（UTF-8 でなければ同じ文言の KessanError）。"""
+    from tax import load_tax_settings
+    d = tmp_path / "y"
+    d.mkdir()
+    (d / "period.yaml").write_bytes("会社名: テスト\n".encode("cp932"))
+    with pytest.raises(KessanError, match="period.yaml を読めません: UTF-8"):
+        load_tax_settings(d)

@@ -40,7 +40,7 @@ def _annual_consumption_tax(ctx, overrides, notes):
             notes.append(close.Note(ITEM_TAX, "免税の年度のため、close-overrides.yaml の消費税の額は使いません"))
         return None, None
     if ITEM_TAX in overrides:
-        return overrides[ITEM_TAX], "上書き額"
+        return overrides[ITEM_TAX], close.TAX_OVERRIDE_ORIGIN
     if settings.method == "簡易":
         notes.append(close.Note(ITEM_TAX, "消費税は達人で計算した額を close-set-amount で入れる（簡易課税は概算しない）"))
         return None, None
@@ -95,7 +95,7 @@ def _consumption_tax(ctx, overrides):
             lines.append({"貸方科目": "未払消費税等", "貸方金額": rest, "摘要": "消費税等の未払"})
         elif rest < 0:
             lines.append({"借方科目": "未収入金", "借方補助": REFUND_SUB, "借方金額": -rest, "摘要": "消費税等の還付"})
-    reason = (f"消費税の年税額 {_yen(annual)}：{origin}。中間納付 {_yen(total_prepaid)} を差し引き"
+    reason = (f"{close.tax_year_reason(annual, origin)}。中間納付 {_yen(total_prepaid)} を差し引き"
               f"（最終の額は達人の計算結果を close-set-amount --item 消費税 で入れる）")
     return [close.Candidate(ITEM_TAX, ctx.period[1], ctx.period[1], lines, reason)], notes
 

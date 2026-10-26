@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from common import PERIOD_FILE, KessanError, parse_date
+from common import PERIOD_FILE, KessanError, parse_date, read_period_data
 
 STATUSES = ("免税", "課税")
 METHODS = ("原則", "簡易", "2割特例")
@@ -68,13 +68,7 @@ def load_tax_settings(year_dir):
     path = Path(year_dir) / PERIOD_FILE
     if not path.exists():
         raise KessanError(f"{PERIOD_FILE} がありません（init --start --end で作成）: {Path(year_dir)}")
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as e:
-        raise KessanError(f"{PERIOD_FILE} を読めません: {e}") from None
-    if not isinstance(data, dict):
-        raise KessanError(f"{PERIOD_FILE} の形式が不正です（期首日・期末日を書く）")
-    return parse_tax_settings(data.get("消費税"))
+    return parse_tax_settings(read_period_data(path).get("消費税"))
 
 
 # ---- 税区分 ----

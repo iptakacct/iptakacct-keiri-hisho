@@ -523,9 +523,8 @@ def main(argv=None):
             else:
                 ids = args.ids
             print(f"承認: {approve_candidates(year_dir, ids) if ids or not held else 0}行")
-            for sid in held:
-                print(f"承認せずに残しました: {sid}（消費税の額が概算のため。達人の額を close-set-amount --item 消費税 で入れて"
-                      f" close-candidates を流し直してから承認する。概算のまま登録するなら --ids {sid} で承認する）")
+            for sid, why in held:
+                print(f"承認せずに残しました: {sid}（{why}）")
             return 0
         if args.command == "close-unapprove":
             print(f"承認を外しました: {unapprove_candidates(year_dir, args.ids)}行")

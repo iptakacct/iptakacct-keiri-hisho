@@ -456,16 +456,59 @@ def candidate_ids(year_dir):
                               if r["取り込み元ID"].strip()))
 
 
-def approve_all_ids(year_dir):
-    """--all で承認する取り込み元IDと、承認せずに残す消費税の候補の取り込み元ID。
+TAX_OVERRIDE_ORIGIN = "上書き額"
+STALE_TAX_REASON = "close-set-amount で額を入れたので close-candidates をやり直す"
+HOLD_ESTIMATE = ("消費税の額が概算のため。達人の額を close-set-amount --item 消費税 で入れて close-candidates を流し直してから承認する。"
+                 "概算のまま登録するなら --ids で指定して承認する")
+HOLD_STALE = ("close-set-amount で入れた消費税の額がこの候補にまだ入っていないため（古い額のまま）。"
+              "close-candidates を流し直してから承認する")
 
-    消費税の額が close-overrides.yaml に無い（概算の候補）ときは、達人の額が決まるまで承認しないので残す。
+
+def tax_year_reason(annual, origin):
+    """消費税の候補の要確認理由の頭（年税額と出どころ）。承認の判定もこの形で照合する。"""
+    return f"消費税の年税額 {annual:,}円：{origin}"
+
+
+def _tax_hold_reason(rows, overrides):
+    """消費税の候補（同じ取り込み元IDの行）を承認してはいけない理由。承認してよければ None。
+
+    上書き額が無ければ概算。上書き額があっても、候補が今の上書き額で作られていなければ古い額（close-set-amount の後に
+    close-candidates を流していない）。
     """
-    ids = candidate_ids(year_dir)
-    if TAX_ITEM in load_overrides(year_dir):
-        return ids, []
-    held = [s for s in ids if s.startswith(TAX_PREFIX)]
-    return [s for s in ids if s not in held], held
+    reasons = " ".join(r["要確認理由"] or "" for r in rows)
+    if TAX_ITEM not in overrides:
+        return HOLD_ESTIMATE
+    if STALE_TAX_REASON in reasons or tax_year_reason(overrides[TAX_ITEM], TAX_OVERRIDE_ORIGIN) not in reasons:
+        return HOLD_STALE
+    return None
+
+
+def _tax_rows(rows):
+    by_id = defaultdict(list)
+    for r in rows:
+        sid = r["取り込み元ID"].strip()
+        if sid.startswith(TAX_PREFIX):
+            by_id[sid].append(r)
+    return by_id
+
+
+def approve_all_ids(year_dir):
+    """--all で承認する取り込み元IDと、承認せずに残す消費税の候補 [(取り込み元ID, 理由)]。
+
+    消費税の候補は、概算（上書き額が無い）か、今の上書き額で作り直していないときは残す（承認済みの行はそのまま）。
+    """
+    year_dir = Path(year_dir)
+    rows = read_rows(year_dir / STAGING_FILE)
+    overrides = load_overrides(year_dir)
+    held = []
+    for sid, tax_rows in _tax_rows(rows).items():
+        if all(r["承認"].strip() == "済" for r in tax_rows):
+            continue
+        why = _tax_hold_reason(tax_rows, overrides)
+        if why:
+            held.append((sid, why))
+    held_ids = {sid for sid, _ in held}
+    return [s for s in candidate_ids(year_dir) if s not in held_ids], held
 
 
 def approve_candidates(year_dir, source_ids):
@@ -479,6 +522,11 @@ def approve_candidates(year_dir, source_ids):
     missing = [s for s in ids if s not in present]
     if missing:
         raise KessanError(f"{STAGING_FILE} に無い取り込み元ID（何も承認していません）: " + "、".join(missing))
+    # 消費税の候補は、--ids で明示すれば概算でも承認できる。ただし上書き額を入れた後の古い候補は承認させない
+    overrides = load_overrides(year_dir)
+    for sid, tax_rows in _tax_rows(rows).items():
+        if sid in ids and not all(r["承認"].strip() == "済" for r in tax_rows)                 and _tax_hold_reason(tax_rows, overrides) == HOLD_STALE:
+            raise KessanError(f"{sid} は承認できません（何も承認していません）: {HOLD_STALE}")
     count = 0
     for r in rows:
         if r["取り込み元ID"].strip() in ids:
@@ -712,9 +760,14 @@ def set_amount(year_dir, item, amount):
     prefix = f"{SOURCE_PREFIX}{item}:"
     staging = read_rows(year_dir / STAGING_FILE)
     targets = [r for r in staging if r["取り込み元ID"].strip().startswith(prefix) and r["承認"].strip() == "済"]
-    if targets:
+    # 消費税の未承認の候補は古い額（概算など）のまま。流し直すまで承認させないよう印を付ける
+    stale = [r for r in staging if item == TAX_ITEM and r["取り込み元ID"].strip().startswith(prefix)
+             and r["承認"].strip() != "済"]
+    if targets or stale:
         for r in targets:
             r.update({"承認": "", "判定": NEEDS_REVIEW, "要確認理由": add_reasons(r["要確認理由"], AMOUNT_CHANGED_REASON)})
+        for r in stale:
+            r["要確認理由"] = add_reasons(r["要確認理由"], STALE_TAX_REASON)
         ensure_writable(year_dir, [STAGING_FILE])
         try:
             replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in staging])

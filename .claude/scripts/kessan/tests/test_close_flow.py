@@ -194,3 +194,38 @@ def test_approve_all_includes_consumption_tax_with_override(company_books, capsy
     assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
     assert "概算" not in capsys.readouterr().out
     assert {r["承認"] for r in read_rows(year / "adjustments-staging.csv")} == {"済"}
+
+
+def test_set_amount_without_rerun_does_not_let_estimate_be_approved(company_books, capsys):
+    """close-candidates（概算 51,364）→ close-set-amount 消費税 40,000 → close-candidates を流さずに承認しても、
+    古い概算の候補は承認されない（--all は残して理由を出す、--ids は止める）。流し直せば承認できる。"""
+    year, nxt = company_books
+    tax_id = "close:消費税:2026-03-31"
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    assert main(["close-set-amount", "--year-dir", str(year), "--item", "消費税", "--amount", "40000"]) == 0
+    rows = [r for r in read_rows(year / "adjustments-staging.csv") if r["取り込み元ID"] == tax_id]
+    assert all("close-set-amount で額を入れたので close-candidates をやり直す" in r["要確認理由"] for r in rows)
+    capsys.readouterr()
+    assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
+    out = capsys.readouterr().out
+    assert f"承認せずに残しました: {tax_id}" in out and "close-candidates" in out
+    approval = {r["取り込み元ID"]: r["承認"] for r in read_rows(year / "adjustments-staging.csv")}
+    assert approval[tax_id] == ""
+    assert main(["close-approve", "--year-dir", str(year), "--ids", tax_id]) == 1
+    assert "close-candidates" in capsys.readouterr().err
+    assert {r["取り込み元ID"]: r["承認"] for r in read_rows(year / "adjustments-staging.csv")}[tax_id] == ""
+
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    assert main(["close-approve", "--year-dir", str(year), "--ids", tax_id]) == 0
+    rows = [r for r in read_rows(year / "adjustments-staging.csv") if r["取り込み元ID"] == tax_id]
+    assert {r["承認"] for r in rows} == {"済"} and any(r["借方金額"] == "40000" for r in rows)
+
+
+def test_approve_all_does_not_list_already_approved_tax(company_books, capsys):
+    year, nxt = company_books
+    tax_id = "close:消費税:2026-03-31"
+    assert main(["close-candidates", "--year-dir", str(year), "--next-year-dir", str(nxt)]) == 0
+    assert main(["close-approve", "--year-dir", str(year), "--ids", tax_id]) == 0  # 概算のまま明示して承認済み
+    capsys.readouterr()
+    assert main(["close-approve", "--year-dir", str(year), "--all"]) == 0
+    assert "承認せずに残しました" not in capsys.readouterr().out

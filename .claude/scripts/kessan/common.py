@@ -235,7 +235,7 @@ def _validate_period(start, end):
     return s, e
 
 
-def _read_period_data(path):
+def read_period_data(path):
     """period.yaml の中身（dict）。読めない・dict でなければ KessanError（load_period と load_company_name で同じ文言）。"""
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -254,7 +254,7 @@ def load_period(year_dir):
     path = Path(year_dir) / PERIOD_FILE
     if not path.exists():
         raise KessanError(f"{PERIOD_FILE} がありません（init --start --end で作成）: {Path(year_dir)}")
-    data = _read_period_data(path)
+    data = read_period_data(path)
     return _validate_period(data.get("期首日"), data.get("期末日"))
 
 
@@ -345,7 +345,7 @@ def load_company_name(year_dir):
     path = Path(year_dir) / PERIOD_FILE
     if not path.exists():
         return ""
-    name = _read_period_data(path).get("会社名")
+    name = read_period_data(path).get("会社名")
     return "" if name is None else str(name).strip()
 
 
@@ -366,7 +366,7 @@ def init_year_dir(year_dir, start, end, tax=None, company_name=None):
                 "（年度フォルダを取り違えていないか確認）"
             )
         if tax_dict is not None or company_name is not None:
-            data = _read_period_data(period_path)
+            data = read_period_data(period_path)
             if tax_dict is not None:
                 data["消費税"] = tax_dict
             if company_name is not None:
