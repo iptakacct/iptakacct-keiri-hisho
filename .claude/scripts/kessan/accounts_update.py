@@ -14,7 +14,7 @@ from common import (
     STAGING_COLUMNS, TAX_COLUMNS, KessanError, add_reasons, ensure_writable, parse_amount, project, read_rows,
     remove_reason, replace_rows,
 )
-from review_xlsx import FINGERPRINT_COLUMN, row_fingerprint
+from review_xlsx import FINGERPRINT_COLUMN, group_fingerprint
 from tax_edit import tax_value_error
 
 SET_FIELDS = ("借方科目", "借方補助", "貸方科目", "貸方補助", "取引先", "判定", "要確認理由") + tuple(TAX_COLUMNS)
@@ -175,11 +175,11 @@ class ApplyReviewResult:
 
 
 def _fingerprint_matches(rows, expected):
-    """確認用Excelに書かれていた指紋（expected）が、今の staging.csv の行（複数なら全部）と一致するか。
+    """確認用Excelに書かれていた指紋（expected）が、今の staging.csv の行（同じ取り込み元IDが複数行なら全行をまとめて）と一致するか。
 
     expected が空（指紋列が無い古い形式のファイル等）なら、内容確認ができないので一致とはみなさない。
     """
-    return bool(expected) and all(row_fingerprint(row) == expected for row in rows)
+    return bool(expected) and group_fingerprint(rows) == expected
 
 
 def apply_review(year_dir, accounts, review_rows):

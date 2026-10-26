@@ -295,3 +295,66 @@ def test_apply_review_counts_marks_other_than_done(year_dir, accounts):
     edit_review(path, {"bank:a": {"承認": "済"}, "receipt:r1": {"承認": "OK"}, "bank:auto": {"承認": "×"}})
     result = apply_review(year_dir, accounts, read_review(path))
     assert (result.approved, result.not_done_marks) == (1, 2)
+
+
+# --- 段階3a：課税の年度の税の列と指紋 ---
+
+def make_taxable(year_dir):
+    (year_dir / "period.yaml").write_text(
+        '期首日: "2025-04-01"\n期末日: "2026-03-31"\n消費税:\n  区分: 課税\n  方式: 原則\n  計算: 割戻し\n  控除: 全額控除\n',
+        encoding="utf-8")
+
+
+def test_review_shows_tax_columns_when_taxable(year_dir):
+    make_taxable(year_dir)
+    setup(year_dir, [pending_bank(借方税区分="課税仕入10%", 借方インボイス="適格", 貸方税区分="対象外")])
+    rows = sheet_rows(write_review(year_dir, today=TODAY).path, "確認")
+    header = rows[0]
+    assert header[header.index("貸方") + 1:header.index("貸方") + 4] == ["借方税区分", "貸方税区分", "インボイス"]
+    row = dict(zip(header, rows[1]))
+    assert (row["借方税区分"], row["貸方税区分"], row["インボイス"]) == ("課税仕入10%", "対象外", "適格")
+    assert header[-1] == FINGERPRINT_COLUMN
+
+
+def test_review_has_no_tax_columns_when_exempt(year_dir):
+    setup(year_dir, [pending_bank(借方税区分="課税仕入10%")])
+    assert sheet_rows(write_review(year_dir, today=TODAY).path, "確認")[0] == REVIEW_COLUMNS
+
+
+def test_tax_change_blocks_approval(year_dir, accounts):
+    make_taxable(year_dir)
+    setup(year_dir, [pending_bank(借方税区分="課税仕入10%", 借方インボイス="適格")])
+    path = write_review(year_dir, today=TODAY).path
+    rows = read_rows(year_dir / "staging.csv")
+    rows[0]["借方税区分"] = "課税仕入8%軽"
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, rows)
+    edit_review_by_name(path, {"bank:a": {"承認": "済"}})
+    result = apply_review(year_dir, accounts, read_review(path))
+    assert (result.approved, result.changed) == (0, ["bank:a"])
+    assert read_rows(year_dir / "staging.csv")[0]["承認"] == ""
+
+
+def edit_review_by_name(path, changes):
+    """税の列がある確認用Excelへ、ヘッダー名で書き込む。"""
+    workbook = load_workbook(path)
+    ws = workbook["確認"]
+    header = [c.value for c in ws[1]]
+    for row in ws.iter_rows(min_row=2):
+        for name, value in changes.get(row[header.index("取り込み元ID")].value, {}).items():
+            row[header.index(name)].value = value
+    workbook.save(path)
+
+
+def test_multi_row_voucher_can_be_approved_from_review(year_dir, accounts):
+    """split-tax で分けた同じ取り込み元IDの複数行も、確認用Excelの「済」で承認できる。"""
+    make_taxable(year_dir)
+    base = dict(取り込み元ID="rcpt:m", 日付="2025-04-12", 伝票番号="S1", 摘要="スーパー", 判定="要確認", 読み取り信頼度="高")
+    setup(year_dir, [
+        staging_row(**base, 借方科目="消耗品費", 借方金額="1080", 借方税区分="課税仕入10%", 借方インボイス="適格"),
+        staging_row(**base, 借方科目="消耗品費", 借方金額="540", 借方税区分="課税仕入8%軽", 借方インボイス="適格"),
+        staging_row(**base, 貸方科目="現金", 貸方金額="1620"),
+    ])
+    path = write_review(year_dir, today=TODAY).path
+    edit_review_by_name(path, {"rcpt:m": {"承認": "済"}})
+    result = apply_review(year_dir, accounts, read_review(path))
+    assert (result.approved, result.changed) == (3, [])

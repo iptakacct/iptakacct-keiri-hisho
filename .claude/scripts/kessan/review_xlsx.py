@@ -5,9 +5,10 @@
   読み取り信頼度が低い行はオレンジ、「明細に該当なし」の行は黄色
 - シート「突き合わせ先が複数」「未払候補」：evidence.csv から
 - シート「読めなかった資料」：extracted/ の 種類=読めない のファイルから
+- 課税の年度では、「貸方」の右に 借方税区分・貸方税区分・インボイス の列を足す（免税の年度は足さない）
 - 読み戻しでは「取り込み元ID・承認・修正メモ」だけを読む（Excel側で科目等を書き換えても反映しない）
 - 各行に非表示の「確認用指紋」列を持たせ、出力後に staging.csv の内容（日付・借方・貸方・金額・摘要）が
-  変わった行は、apply_review が古い「済」のまま承認しないようにする（`row_fingerprint` 参照）
+  変わった行（税の6列を含む）は、apply_review が古い「済」のまま承認しないようにする（`row_fingerprint` 参照）
 """
 import hashlib
 import zipfile
@@ -19,10 +20,11 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils.exceptions import InvalidFileException
 
-from common import KessanError, cannot_write, parse_amount, read_rows
+from common import TAX_COLUMNS, KessanError, cannot_write, parse_amount, read_rows
 from evidence import STATE_MATCHED, STATE_MULTIPLE, STATE_UNPAID, candidate_ids, read_evidence
 from extracted import extracted_files, load_document
 from match import NO_MATCH, load_abbreviations, name_in_description
+from tax import load_tax_settings
 
 REVIEW_SHEET = "確認"
 FINGERPRINT_COLUMN = "確認用指紋"
@@ -31,7 +33,10 @@ REVIEW_COLUMNS = ["番号", "取り込み元ID", "日付", "金額", "摘要", "
 # staging.csv の内容が確認用Excel出力時から変わっていないかを見る指紋の元になる列。
 # 承認欄・要確認理由・証憑ファイルは意図的に含めない（承認そのものや、確立済み判定・証憑突き合わせの更新では
 # 「内容が変わった」とみなさない。借方・貸方・金額・日付・摘要が変わった時だけ検知する）。
-FINGERPRINT_FIELDS = ("日付", "借方科目", "借方補助", "借方金額", "貸方科目", "貸方補助", "貸方金額", "摘要")
+# 税の6列は課税・免税を問わず含める（出力後に税を直した行は、古い「済」のまま承認しない）。
+FINGERPRINT_FIELDS = ("日付", "借方科目", "借方補助", "借方金額", "貸方科目", "貸方補助", "貸方金額", "摘要") + tuple(TAX_COLUMNS)
+# 課税の年度だけ、「貸方」の右に足す列（インボイスは借方・貸方のうち入っている方を1つ表示する）
+TAX_REVIEW_COLUMNS = ["借方税区分", "貸方税区分", "インボイス"]
 READ_BACK_COLUMNS = ("取り込み元ID", "承認", "修正メモ")  # 必須の列（無ければ確認用Excelとして扱えない）
 MULTIPLE_SHEET = "突き合わせ先が複数"
 MULTIPLE_COLUMNS = ["証憑ID", "証憑ファイル", "日付", "金額", "取引先", "内容", "候補の取り込み元ID", "取引先名が摘要に含まれる候補"]
@@ -44,17 +49,26 @@ SUSPICIOUS_REASONS = ("二重計上の疑い", "二重取り込みの疑い", "�
 LOW_CONFIDENCE_COLOR = "FFE0B2"
 NO_MATCH_COLOR = "FFF9C4"
 WIDTHS = {"番号": 6, "取り込み元ID": 26, "日付": 12, "金額": 12, "摘要": 30, "借方": 22, "貸方": 22,
-          "証憑ファイル": 28, "要確認理由": 40, "読み取り信頼度": 8, "承認": 8, "修正メモ": 30, FINGERPRINT_COLUMN: 18}
+          "借方税区分": 16, "貸方税区分": 16, "インボイス": 10, "証憑ファイル": 28, "要確認理由": 40, "読み取り信頼度": 8, "承認": 8, "修正メモ": 30, FINGERPRINT_COLUMN: 18}
 
 
-def row_fingerprint(row):
-    """staging.csv の行から、確認用Excel出力時点の内容を表す指紋（sha256の先頭16桁）を作る。
+def _fingerprint_key(row):
+    return "|".join(str(row.get(f, "") or "").strip() for f in FINGERPRINT_FIELDS)
+
+
+def group_fingerprint(rows):
+    """同じ取り込み元IDの行（split-tax で分けた複合仕訳は複数行）をまとめた指紋（sha256の先頭16桁）。
 
     write_review が書き込み時に埋め、apply_review が承認時に現在の staging.csv から作り直して比較する
     （出力後に set_accounts 等で内容が変わった行を、古い「済」のまま承認してしまわないようにする）。
     """
-    key = "|".join(str(row.get(f, "") or "").strip() for f in FINGERPRINT_FIELDS)
+    key = "\n".join(_fingerprint_key(r) for r in rows)
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def row_fingerprint(row):
+    """1行だけの指紋（`group_fingerprint` の1行版）。"""
+    return group_fingerprint([row])
 
 
 @dataclass(frozen=True)
@@ -76,6 +90,18 @@ def _account_label(row, side):
     return f"{name}（{sub}）" if name and sub else name
 
 
+def review_columns(taxable):
+    """シート「確認」の列。課税の年度だけ「貸方」の右に税の列を足す。"""
+    if not taxable:
+        return list(REVIEW_COLUMNS)
+    at = REVIEW_COLUMNS.index("貸方") + 1
+    return REVIEW_COLUMNS[:at] + TAX_REVIEW_COLUMNS + REVIEW_COLUMNS[at:]
+
+
+def _invoice_label(row):
+    return (row["借方インボイス"].strip() or row["貸方インボイス"].strip())
+
+
 def _sheet(workbook, title, columns, first=False):
     ws = workbook.active if first else workbook.create_sheet(title)
     ws.title = title
@@ -93,22 +119,30 @@ def write_review(year_dir, today=None):
     evidence = read_evidence(year_dir)
     evidence_files = {r["取り込み元ID"]: r["証憑ファイル"] for r in evidence if r["状態"] == STATE_MATCHED}
     with_id = [r for r in staging if r["取り込み元ID"].strip()]
+    groups = {}
+    for r in with_id:
+        groups.setdefault(r["取り込み元ID"].strip(), []).append(r)
     pending = [r for r in with_id if r["承認"].strip() != "済"]
     done = [r for r in with_id if r["承認"].strip() == "済"]
 
+    columns = review_columns(load_tax_settings(year_dir).taxable)
     workbook = Workbook()
-    ws = _sheet(workbook, REVIEW_SHEET, REVIEW_COLUMNS, first=True)
+    ws = _sheet(workbook, REVIEW_SHEET, columns, first=True)
     low = no_match = 0
     for number, r in enumerate(pending + done, start=1):
         source_id = r["取り込み元ID"].strip()
         where = f"staging.csv 取り込み元ID {source_id}"
         amount = max(parse_amount(r["借方金額"], where), parse_amount(r["貸方金額"], where))
-        ws.append([
-            number, source_id, r["日付"].strip(), amount, r["摘要"], _account_label(r, "借方"), _account_label(r, "貸方"),
-            evidence_files.get(source_id, r["証憑ファイル"]), r["要確認理由"], r["読み取り信頼度"], r["承認"].strip(), "",
-            row_fingerprint(r),
-        ])
-        ws.cell(row=ws.max_row, column=REVIEW_COLUMNS.index("日付") + 1).number_format = "@"
+        values = {
+            "番号": number, "取り込み元ID": source_id, "日付": r["日付"].strip(), "金額": amount, "摘要": r["摘要"],
+            "借方": _account_label(r, "借方"), "貸方": _account_label(r, "貸方"),
+            "借方税区分": r["借方税区分"].strip(), "貸方税区分": r["貸方税区分"].strip(), "インボイス": _invoice_label(r),
+            "証憑ファイル": evidence_files.get(source_id, r["証憑ファイル"]), "要確認理由": r["要確認理由"],
+            "読み取り信頼度": r["読み取り信頼度"], "承認": r["承認"].strip(), "修正メモ": "",
+            FINGERPRINT_COLUMN: group_fingerprint(groups[source_id]),
+        }
+        ws.append([values[c] for c in columns])
+        ws.cell(row=ws.max_row, column=columns.index("日付") + 1).number_format = "@"
         is_low = r["読み取り信頼度"].strip() == "低"
         is_no_match = NO_MATCH in r["要確認理由"]
         color = None
@@ -124,7 +158,7 @@ def write_review(year_dir, today=None):
         if color:
             for cell in ws[ws.max_row]:
                 cell.fill = PatternFill(fill_type="solid", fgColor=color)
-    for i, name in enumerate(REVIEW_COLUMNS):
+    for i, name in enumerate(columns):
         column_dimension = ws.column_dimensions[ws.cell(row=1, column=i + 1).column_letter]
         column_dimension.width = WIDTHS[name]
         if name == FINGERPRINT_COLUMN:

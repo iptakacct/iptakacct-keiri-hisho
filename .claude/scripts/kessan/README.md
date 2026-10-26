@@ -1,6 +1,6 @@
 # kessan：会計システムなしで帳簿を作る
 
-設計：`docs/superpowers/specs/2026-09-16-kessan-without-accounting-system-design.md`（全体）、`docs/superpowers/specs/2026-09-17-kessan-stage2-reading-design.md`（段階2：資料の読み取り・確認・承認）
+設計：`docs/superpowers/specs/2026-09-16-kessan-without-accounting-system-design.md`（全体）、`docs/superpowers/specs/2026-09-17-kessan-stage2-reading-design.md`（段階2：資料の読み取り・確認・承認）、`docs/superpowers/specs/2026-10-26-kessan-stage3-closing-design.md`（段階3：決算整理・消費税。§3 が消費税）
 
 数字（集計・残高・検算・突き合わせ・二重防止）はすべてこのスクリプトで確定させる。AIは資料の読み取りと科目の判断だけを行い、暗算で数字を作らない。AIは `staging.csv`・`journal.csv`・`evidence.csv`・`import-log.csv`・`statement-balances.csv`・`discard-log.csv` を直接編集せず、必ずコマンドを通す。手順はスキル `.claude/skills/kessan-books/SKILL.md`。
 
@@ -16,7 +16,7 @@ pip install pyyaml openpyxl pytest
 
 | ファイル | 中身 |
 |---|---|
-| `period.yaml` | 事業年度の期首日・期末日（`init --start --end` で作成）。期間外の明細は取り込まず、期間外の日付は登録できない |
+| `period.yaml` | 事業年度の期首日・期末日（`init --start --end` で作成）。期間外の明細は取り込まず、期間外の日付は登録できない。課税の年度は `消費税:`（区分・方式・計算・控除・少額特例）も持つ（下の「消費税」節） |
 | `inbox/` | 受領資料の原本（gitに入れない） |
 | `extracted/` | AIが資料を読んで書いた読み取り結果（`<資料のファイル名>.json`。例：`通帳-2025-04.pdf.json`）。gitで管理する |
 | `staging.csv` | 取り込んだ明細・仕訳候補。`承認` 列が `済` の行が `post` で登録される |
@@ -27,14 +27,14 @@ pip install pyyaml openpyxl pytest
 | `evidence.csv` | 証憑（領収書・請求書）と明細行の対応。`状態` は 明細に対応／新規仕訳／複数候補／未払候補／破棄（`discard` で証憑から作った行を破棄した）。末尾の `支払期日`・`支払方法の推定`・`自信度` は読み取り結果の値（段階3の未払管理の材料） |
 | `discard-log.csv` | `discard` で破棄した行の記録（日時・取り込み元ID・日付・金額・摘要・理由） |
 | `opening-balances.csv` | 期首残高（前期決算書の期末残高。残高は正常残高側をプラスで書く。減価償却累計額もプラス） |
-| `output/` | `check-result.md`（検算結果）、`trial-balance.csv`（試算表）、`review-YYYYMMDD.xlsx`（確認用Excel）、`set-accounts-YYYYMMDD.json`（AIの科目候補） |
+| `output/` | `check-result.md`（検算結果）、`trial-balance.csv`（試算表）、`review-YYYYMMDD.xlsx`（確認用Excel）、`set-accounts-YYYYMMDD.json`（AIの科目候補）、課税の年度は `consumption-tax-summary.csv`・`.xlsx`（消費税の集計表） |
 
 インスタンスの `context/company/` には次を置く。
 
 | ファイル | 中身 |
 |---|---|
 | `kessan-sources.yaml` | 口座・カード・現金と明細CSVの形式、`receipt_default`（領収書の既定の支払方法：`立替`／`現金`／空欄） |
-| `kessan-patterns.yaml` | 確立済みパターン（自動承認の根拠。オーナーの承認後に追加する） |
+| `kessan-patterns.yaml` | 確立済みパターン（自動承認の根拠。オーナーの承認後に追加する）。課税の年度で自動承認させるパターンには `税区分`・`インボイス` も書く（書かないと税区分が空のまま登録され、検算NGになる） |
 
 ## 手順
 
@@ -50,6 +50,7 @@ python ../.claude/scripts/kessan/cli.py import-bank --year-dir <Y> --account-id 
 python ../.claude/scripts/kessan/cli.py import-extracted --year-dir <Y>      # extracted/*.json をすべて（--file で指定も可）
 # AIが要確認の行の科目候補を <Y>/output/set-accounts-YYYYMMDD.json に書く
 python ../.claude/scripts/kessan/cli.py set-accounts --year-dir <Y> --file <Y>/output/set-accounts-YYYYMMDD.json
+python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --id <取り込み元ID> --part 10:1080 --part 8:540   # 課税の年度：税率が混在する明細を税率ごとに分ける
 python ../.claude/scripts/kessan/cli.py review --year-dir <Y>                # 確認用Excel
 python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-YYYYMMDD.xlsx
 python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-YYYYMMDD.xlsx --numbers 1 2   # チャットで番号を挙げて承認されたとき
@@ -59,8 +60,11 @@ python ../.claude/scripts/kessan/cli.py discard --year-dir <Y> --ids <取り込�
 python ../.claude/scripts/kessan/cli.py post --year-dir <Y>                  # 登録＋検算
 python ../.claude/scripts/kessan/cli.py check --year-dir <Y> --prev-year-dir <前期のY>
 python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
+python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-YYYYMMDD.json   # 課税の年度：登録済みの仕訳の税の列を直す
+python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y>           # 課税の年度：消費税の集計表と概算納付税額
 ```
 
+- `init` は課税の年度なら消費税の引数も渡す：`--consumption-tax 課税 --tax-method 原則 --tax-calc 割戻し --tax-allocation 全額控除 [--small-exemption]`（`--tax-method` は 原則／簡易／2割特例、`--tax-calc` は 割戻し／積上げ、`--tax-allocation` は 方式=原則のときだけ必須で 全額控除／個別対応／一括比例配分）。免税なら `--consumption-tax 免税` か引数なし（`period.yaml` に `消費税` が無ければ免税）。既にある年度フォルダに後から指定して、`period.yaml` の消費税だけを変えられる（帳簿は触らない）。
 - `init` の `--start`（期首日）・`--end`（期末日）は必須。既にある年度フォルダに違う期間を指定するとエラーになる（年度フォルダの取り違え防止）。
 - 明細は新しい順・古い順のどちらで出力されていてもよい（全行に残高があれば、残高の連続から判定して古い順に取り込む。残高が連続しない明細は行の欠落を疑ってエラーにする）。
 - 書き込む前に staging.csv・statement-balances.csv・import-log.csv が書き込めるか確かめる。途中の書き込みで失敗したときは、どこまで書いたかを出して止まる。閉じてから同じコマンドを再実行すると、明細の行は二重に取り込まず、書けなかった残高の記録・取り込み記録を埋める。
@@ -88,8 +92,8 @@ python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
 
 - `import-bank`・`import-extracted`・`set-accounts` の後、`kessan-patterns.yaml` に一致した明細行（取り込み元IDが `bank:` の行。パターンの `取引先` は明細の `摘要` とだけ照合し、AIが書ける staging の `取引先` 欄では一致させない）を `判定=確立済み`・`承認=済` にする。対象は、パターンに一致し、かつその行の `要確認理由` が空か「相手科目未設定」だけの行に限る（読み取り信頼度が低い行、それ以外の要確認理由（「疑い」「連続しない」等）が付いた行、証憑から作った行（`receipt:`）、複合仕訳は対象外）。AIの科目候補とパターンの科目が違う行は承認せず、要確認理由に書く。パターンの `摘要キーワード`・`取引先` は2文字未満だと登録できない（`load_patterns` がエラーにする。誤爆防止）。
 - `set-accounts`：`{取り込み元ID: {借方科目, 借方補助, 貸方科目, 貸方補助, 取引先, 判定, 要確認理由}}` のJSONを検証してから反映する。科目マスタに無い科目、staging に無い行、承認済みの行、`判定=確立済み` の指定、明細側（口座・カード・現金）の科目の変更は、1件でもあれば何も反映しない。`要確認理由` は上書きせず既存の理由に追記する（スクリプトが付けた理由は消えない。借方・貸方の科目が両方埋まったときだけ「相手科目未設定」を外す）。
-- `review`：確認用Excel。シート「確認」は未承認の行が上。二重計上・二重取り込み・証憑の重複の疑い、支払の可能性、取引先名が摘要に無い行は赤（最優先）、読み取り信頼度が低い行はオレンジ、明細に該当なしの行は黄色。各行に非表示の「確認用指紋」列を持たせる（`apply-review` が内容の変化を検知するために使う）。
-- `apply-review`：Excelの `承認` 列が `済` で `修正メモ` が空の行だけを承認する（Excel側で科目・金額を書き換えても反映しない）。ただし、確認用Excel出力後に `set-accounts` 等で内容（日付・借方・貸方・金額・摘要）が変わった行は、`承認=済` のままでも承認しない（「確認用指紋」列で検知し、変わった一覧を出す。`review` を出し直して確認する）。修正メモがある行は承認せず（承認済みなら承認を外して `判定=要確認` に戻す）、メモの一覧を出す。`承認` 欄に「済」以外（「OK」等）が書かれた行は承認せず件数を出す。Excelで「済」を消しても承認は外れない（外すのは修正メモ）。
+- `review`：確認用Excel。シート「確認」は未承認の行が上。二重計上・二重取り込み・証憑の重複の疑い、支払の可能性、取引先名が摘要に無い行は赤（最優先）、読み取り信頼度が低い行はオレンジ、明細に該当なしの行は黄色。各行に非表示の「確認用指紋」列を持たせる（`apply-review` が内容の変化を検知するために使う）。課税の年度は「貸方」の右に 借方税区分・貸方税区分・インボイス（借方・貸方のうち入っている方）の列を足す（免税の年度には出ない）。同じ取り込み元IDが複数行（`split-tax` で分けた複合仕訳）の指紋は、その行をまとめて1つにする。
+- `apply-review`：Excelの `承認` 列が `済` で `修正メモ` が空の行だけを承認する（Excel側で科目・金額を書き換えても反映しない）。ただし、確認用Excel出力後に `set-accounts` 等で内容（日付・借方・貸方・金額・摘要・税の6列）が変わった行は、`承認=済` のままでも承認しない（「確認用指紋」列で検知し、変わった一覧を出す。`review` を出し直して確認する）。修正メモがある行は承認せず（承認済みなら承認を外して `判定=要確認` に戻す）、メモの一覧を出す。`承認` 欄に「済」以外（「OK」等）が書かれた行は承認せず件数を出す。Excelで「済」を消しても承認は外れない（外すのは修正メモ）。
 - `approve --review-file <確認用Excel> --numbers N …`：チャットで番号を挙げて承認されたときに使う。確認用Excelで番号を取り込み元IDに置き換え、`apply-review` と同じ指紋の確認をする（Excel出力後に内容が変わった行は承認せず一覧に出す）。Excelに無い番号があれば何も変えない。
 - `approve --ids …`：取り込み元IDを指定して承認する（指紋の確認は無い）。どちらも、借方・貸方の科目が埋まっていない行があれば何も変えない。
 
@@ -113,6 +117,26 @@ python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
 - Excel で保存すると日付が `2025/4/1` 形式になることがある。`post` は `YYYY-MM-DD`（例：`2025-04-01`）以外の日付を受け付けないので、セルの表示形式を確認する。
 - 金額に桁区切り（`1,000`）・円記号・全角数字が入っていても読めるが、マイナスの金額・金額が0の伝票は登録できない。
 
+## 消費税（課税の年度）
+
+課税事業者の年度だけ、仕訳に消費税の区分を持たせて集計表を作る。免税の年度（`period.yaml` に `消費税` が無い、または `区分: 免税`）では、税の列を埋めず、税の検算もしない。金額は税込のまま帳簿に持ち、税抜額・税額は集計のときに計算する（端数は切り捨て）。
+
+- **`period.yaml` の `消費税`**：`区分`（免税／課税）、`方式`（原則／簡易／2割特例）、`計算`（割戻し／積上げ）、`控除`（方式=原則のとき：全額控除／個別対応／一括比例配分）、`少額特例`（true／false。税込1万円未満の課税仕入を少額特例にする）。`init` の引数で書く。
+- **税の6列**（`staging.csv`・`journal.csv`・`adjustments.csv`）：`借方税区分`・`借方インボイス`・`借方個別対応`・`貸方税区分`・`貸方インボイス`・`貸方個別対応`。税区分は 課税売上10%／課税仕入10%／課税仕入8%軽／非課税売上／非課税仕入／対象外 など（`tax.py` の `TAX_CATEGORIES`）、インボイスは 適格／経過80／経過70／経過50／経過30／少額特例／なし、個別対応は 課税対応／非課税対応／共通（個別対応方式の課税仕入だけ）。
+- **領収書・請求書の読み取り結果**には、任意で `税率`（`10`／`8`／`"混在"`）と `登録番号`（`T`＋13桁）を書く。`evidence.csv` に同名の列で残り、税区分とインボイスの自動補完に使う。
+- **自動補完**（`tax_fill`）：`import-bank`・`import-extracted`・`set-accounts` の後、`review`・`apply-review`・`approve`・`post` の前に、未承認の行の空欄だけを埋める（手で入れた値は変えない）。収益・費用・固定資産の科目は科目マスタ（`accounts-master.csv`）の既定税区分、証憑の税率が8なら 課税仕入8%軽 に、課税仕入のインボイスは登録番号があれば 適格、無ければ日付に応じた経過措置（`config/consumption-tax/invoice-transition.yaml`）か なし（`少額特例` を使う会社は1万円未満が 少額特例）、個別対応方式なら 共通。補完できない・疑わしいものは `要確認理由` に書く。承認済みの行は触らない。
+  - 「税率が複数（split-tax で分ける）」：証憑の税率が混在。`split-tax` で分ける。
+  - 「証憑が無い課税仕入（インボイスを確認）」：インボイスを決める証憑が無い。証憑を取り込むか、`set-accounts` でインボイスを入れる。
+  - 「軽減税率の可能性（証憑で税率を確認）」：会議費・交際費・福利厚生費・新聞図書費で証憑に税率が無い。証憑を見て 10% か 8% か決める。
+  - 「税区分が科目の既定（…）と違う」：入れた税区分が科目の既定と食い違う。意図したものか確認する。
+- **`split-tax --id <取り込み元ID> --part 税率:税込金額 …`**：税率が混在する1枚の領収書を、税率ごとの行に分けた複合仕訳（`S1`, `S2`…）にする。明細側（口座・カード・現金）は1行のまま、相手側を分ける。合計が一致しないと何もしない。未承認で伝票番号の無い行だけ。承認はその後に行う。
+- **`set-tax --file <JSON>`**：登録済み（`journal.csv`・`adjustments.csv`）の税の列だけを直す。`[{"伝票番号": "12", "行": 1, "借方税区分": "課税仕入8%軽"}]` の形（行は伝票内の1からの番号）。金額・科目は変えない。全件を検証してから反映し、直したあとに検算を走らせる（NGが残れば終了コード3）。承認前の行は `set-accounts` で直す。
+- **`set-accounts` の税の列**：科目候補のJSONに上の6列も書ける。
+- **検算**（課税の年度）：税区分が空・使えない値、課税仕入のインボイスの欠け、個別対応の欠けをNGにする。
+- **`tax-summary`**：検算にNGがあれば出さない。`output/consumption-tax-summary.csv`・`.xlsx` に、区分・税区分・インボイスごとの件数・税込・税抜・消費税額・国税・地方税・控除対象税額と、課税売上割合・概算納付税額を出す。方式による概算：原則は売上の税 − 控除対象税額（全額控除／個別対応／一括比例配分）、2割特例は売上の税の20%、簡易は事業区分が要るため概算しない。
+- **設定ファイル**（`config/consumption-tax/`、根拠URL・確認日つき。税率・割合はコードに書かない）：`rates.yaml`（10%・8%の国税／地方税の内訳）、`invoice-transition.yaml`（免税事業者等からの課税仕入れの経過措置の期間と割合）。
+- 扱わないもの：旧税率（8%・5%・3%）、輸入、特定課税仕入、税抜経理、売上の積上げ（売上は割戻しで計算する）。
+
 ## 終了コード
 
 | コード | 意味 |
@@ -120,7 +144,7 @@ python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
 | 0 | 正常終了（`check`・`post` は検算NGなし） |
 | 1 | エラーで止まった（入力の不備など。何も書いていない。ただし、`post` でメッセージに「登録は完了済み」とある場合は帳簿への登録は済んでいて後始末だけが失敗している。`import-bank`・`import-extracted`・`set-accounts` で「取り込みは完了しています」「科目候補の反映は完了しています」とある場合は、反映は済んでいて確立済みパターンの自動承認だけが止まっている（直して同じコマンドを再実行すると、二重には反映せず自動承認をやり直す）。取り込み・取り消しの途中の書き込みで止まった場合は、メッセージに更新済みのファイルが出る） |
 | 2 | コマンドの使い方の誤り（必須の引数が無い等。argparse が出す） |
-| 3 | `post` で登録は完了したが、検算でNGがある（`check-result.md` を確認） |
+| 3 | `post`（と `set-tax`）で登録（修正）は完了したが、検算でNGがある（`check-result.md` を確認） |
 | 4 | `import-extracted` で形式エラーのファイルがあった（そのファイルは取り込んでいない。他のファイルは取り込み済み。自動承認も止まったときは、そのエラーも出したうえで 4） |
 
 `check` は検算NGがあると 1 を返す。
