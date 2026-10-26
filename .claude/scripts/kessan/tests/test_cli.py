@@ -627,3 +627,12 @@ def test_add_payee_outside_instance(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("cli._company_file", outside)
     assert main(["add-payee", "--year-dir", str(year), "--name", "テスト商事", "--kana", "テストシヨウジ"]) == 1
     assert "--payees" in capsys.readouterr().err
+
+
+def test_cli_init_company_name(tmp_path):
+    from common import load_company_name
+    d = tmp_path / "y"
+    assert main(["init", "--year-dir", str(d), "--start", "2025-04-01", "--end", "2026-03-31", "--company-name", "テスト商事"]) == 0
+    assert load_company_name(d) == "テスト商事"
+    assert main(["init", "--year-dir", str(d), "--start", "2025-04-01", "--end", "2026-03-31"]) == 0
+    assert load_company_name(d) == "テスト商事"

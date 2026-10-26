@@ -78,6 +78,7 @@ def _parser():
         if name == "init":
             p.add_argument("--start", required=True, help="期首日 YYYY-MM-DD")
             p.add_argument("--end", required=True, help="期末日 YYYY-MM-DD")
+            p.add_argument("--company-name", help="会社名（決算書・達人XMLに載る。省略時は period.yaml を変えない）")
             p.add_argument("--consumption-tax", choices=["免税", "課税"], help="消費税の区分（省略時は period.yaml を変えない）")
             p.add_argument("--tax-method", choices=["原則", "簡易", "2割特例"])
             p.add_argument("--tax-calc", choices=["割戻し", "積上げ"])
@@ -315,7 +316,7 @@ def main(argv=None):
     year_dir = args.year_dir
     try:
         if args.command == "init":
-            init_year_dir(year_dir, args.start, args.end, tax=_init_tax(args))
+            init_year_dir(year_dir, args.start, args.end, tax=_init_tax(args), company_name=args.company_name)
             print(f"年度フォルダを用意しました: {year_dir}")
             return 0
         if not (year_dir / "journal.csv").exists():

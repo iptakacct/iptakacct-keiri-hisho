@@ -64,7 +64,7 @@ def test_master_has_added_accounts(accounts, name, category, side, section):
 # 区分（資産→負債→純資産→収益→費用）ごとに、決算書の表示区分の順に並ぶ
 SECTION_ORDER = [
     "流動資産", "有形固定資産", "無形固定資産", "投資その他の資産", "流動負債", "固定負債", "株主資本",
-    "売上高", "営業外収益", "特別利益", "販売費及び一般管理費", "営業外費用", "特別損失", "法人税等",
+    "売上高", "営業外収益", "特別利益", "売上原価", "販売費及び一般管理費", "営業外費用", "特別損失", "法人税等",
 ]
 
 
@@ -147,3 +147,57 @@ def test_extra_account_bad_value_rejected(tmp_path, item):
 def test_extra_file_with_wrong_root_rejected(tmp_path):
     with pytest.raises(KessanError, match="accounts:"):
         load_accounts(extra_path=write_extra(tmp_path, "- 業務委託料\n"))
+
+
+def _extra_file(tmp_path, body):
+    path = tmp_path / "kessan-accounts.yaml"
+    path.write_text("accounts:" + chr(10) + "  - " + body + chr(10), encoding="utf-8")
+    return path
+
+
+def test_section_must_be_known(tmp_path):
+    path = _extra_file(tmp_path, "{科目: 雑科目, 区分: 費用, 正常残高: 借, 表示区分: 謎の区分}")
+    with pytest.raises(KessanError, match="表示区分が不正"):
+        load_accounts(extra_path=path)
+
+
+def test_section_must_match_category(tmp_path):
+    path = _extra_file(tmp_path, "{科目: 雑科目, 区分: 資産, 正常残高: 借, 表示区分: 流動負債}")
+    with pytest.raises(KessanError, match="使えません"):
+        load_accounts(extra_path=path)
+    bad = tmp_path / "bad.csv"
+    bad.write_text("科目,区分,正常残高,表示区分" + chr(10) + "現金,資産,借,流動負債" + chr(10), encoding="utf-8-sig")
+    with pytest.raises(KessanError, match="科目マスタ"):
+        load_accounts(bad)
+
+
+def test_extra_account_section_validated(tmp_path):
+    from accounts import SECTIONS
+    assert SECTIONS["繰延資産"] == "資産" and SECTIONS["評価・換算差額等"] == "純資産" and SECTIONS["売上原価"] == "費用"
+    path = _extra_file(tmp_path, "{科目: 開業費, 区分: 資産, 正常残高: 借, 表示区分: 繰延資産}")
+    assert load_accounts(extra_path=path)["開業費"].section == "繰延資産"
+
+
+def test_gaikyo_tag_validated(tmp_path):
+    ok = _extra_file(tmp_path, "{科目: 業務委託料, 区分: 費用, 正常残高: 借, 表示区分: 販売費及び一般管理費, 概況書項目: 外注費}")
+    assert load_accounts(extra_path=ok)["業務委託料"].gaikyo == "外注費"
+    bad = _extra_file(tmp_path, "{科目: 業務委託料, 区分: 費用, 正常残高: 借, 表示区分: 販売費及び一般管理費, 概況書項目: 外注}")
+    with pytest.raises(KessanError, match="概況書項目が不正"):
+        load_accounts(extra_path=bad)
+
+
+def test_master_has_purchase_and_tags(accounts):
+    from accounts import GAIKYO_TAGS
+    p = accounts["仕入高"]
+    assert (p.category, p.normal_side, p.section, p.default_tax, p.gaikyo) == ("費用", "借", "売上原価", "課税仕入10%", "仕入")
+    names = list(accounts)
+    assert names.index("売上高") < names.index("仕入高") < names.index("役員報酬")
+    expected = {"現金": "現金預金", "普通預金": "現金預金", "定期預金": "現金預金", "売掛金": "売掛金", "役員貸付金": "貸付金",
+                "建物": "建物", "建物附属設備": "建物", "車両運搬具": "車両船舶", "土地": "土地", "買掛金": "買掛金",
+                "短期借入金": "その他借入金", "長期借入金": "その他借入金", "役員借入金": "個人借入金", "仕入高": "仕入",
+                "役員報酬": "役員報酬", "給料手当": "従業員給料", "法定福利費": "人件費", "福利厚生費": "人件費", "外注費": "外注費",
+                "交際費": "交際費", "減価償却費": "減価償却費", "地代家賃": "地代家賃", "租税公課": "租税公課", "支払利息": "支払利息"}
+    for name, tag in expected.items():
+        assert accounts[name].gaikyo == tag, name
+    assert {a.name for a in accounts.values() if a.gaikyo} == set(expected)
+    assert all(a.gaikyo in GAIKYO_TAGS for a in accounts.values() if a.gaikyo)

@@ -9,6 +9,20 @@ from tax import TAX_CATEGORIES
 
 MASTER_PATH = Path(__file__).with_name("accounts-master.csv")
 CATEGORIES = ("資産", "負債", "純資産", "収益", "費用")
+# 表示区分 → 科目の区分（決算書の区分。マスタも会社別の科目もここにある表示区分だけ使える）
+SECTIONS = {
+    "流動資産": "資産", "有形固定資産": "資産", "無形固定資産": "資産", "投資その他の資産": "資産", "繰延資産": "資産",
+    "流動負債": "負債", "固定負債": "負債",
+    "株主資本": "純資産", "評価・換算差額等": "純資産",
+    "売上高": "収益", "営業外収益": "収益", "特別利益": "収益",
+    "売上原価": "費用", "販売費及び一般管理費": "費用", "営業外費用": "費用", "特別損失": "費用", "法人税等": "費用",
+}
+# 法人事業概況説明書に書く項目（科目の概況書項目に使える値）
+GAIKYO_TAGS = (
+    "現金預金", "受取手形", "売掛金", "棚卸資産", "貸付金", "建物", "機械装置", "車両船舶", "土地",
+    "支払手形", "買掛金", "個人借入金", "その他借入金",
+    "仕入", "労務費", "外注費", "役員報酬", "従業員給料", "人件費", "交際費", "減価償却費", "地代家賃", "租税公課", "支払利息",
+)
 
 
 @dataclass(frozen=True)
@@ -18,6 +32,7 @@ class Account:
     normal_side: str
     section: str
     default_tax: str = ""
+    gaikyo: str = ""
 
 
 def _validate(acc, where):
@@ -25,6 +40,12 @@ def _validate(acc, where):
         raise KessanError(f"{where}の値が不正です: {acc}")
     if acc.default_tax and acc.default_tax not in TAX_CATEGORIES:
         raise KessanError(f"{where}の既定税区分が不正です（{acc.name}: {acc.default_tax}）")
+    if acc.section not in SECTIONS:
+        raise KessanError(f"{where}の表示区分が不正です（{acc.name}: {acc.section}）。使える値: {'・'.join(SECTIONS)}")
+    if SECTIONS[acc.section] != acc.category:
+        raise KessanError(f"{where}の表示区分「{acc.section}」は区分「{acc.category}」の科目には使えません（{acc.name}）")
+    if acc.gaikyo and acc.gaikyo not in GAIKYO_TAGS:
+        raise KessanError(f"{where}の概況書項目が不正です（{acc.name}: {acc.gaikyo}）。使える値: {'・'.join(GAIKYO_TAGS)}")
 
 
 def _text(value):
@@ -57,7 +78,7 @@ def _load_extra(path, accounts):
         name = _text(item.get("科目"))
         where = f"{path.name} {i}番目（{name}）"
         acc = Account(name, _text(item.get("区分")), _text(item.get("正常残高")), _text(item.get("表示区分")),
-                      _text(item.get("既定税区分")))
+                      _text(item.get("既定税区分")), _text(item.get("概況書項目")))
         try:
             if not name or not acc.section:
                 raise KessanError(f"{where}: 科目と表示区分は必須です")
@@ -79,7 +100,7 @@ def load_accounts(path=MASTER_PATH, extra_path=None):
     accounts = {}
     for r in read_rows(path):
         acc = Account(r["科目"].strip(), r["区分"].strip(), r["正常残高"].strip(), r["表示区分"].strip(),
-                      (r.get("既定税区分") or "").strip())
+                      (r.get("既定税区分") or "").strip(), (r.get("概況書項目") or "").strip())
         _validate(acc, "科目マスタ")
         accounts[acc.name] = acc
     if extra_path is not None and Path(extra_path).exists():

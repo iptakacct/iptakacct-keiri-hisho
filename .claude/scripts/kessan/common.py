@@ -267,8 +267,21 @@ def _write_period(path, data):
     os.replace(str(tmp_path), str(path))
 
 
-def init_year_dir(year_dir, start, end, tax=None):
-    """年度フォルダを用意する。tax（消費税の設定dict）があれば period.yaml に書く（期首日・期末日はそのまま）。"""
+def load_company_name(year_dir):
+    """period.yaml の会社名。無ければ空文字。"""
+    path = Path(year_dir) / PERIOD_FILE
+    if not path.exists():
+        return ""
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, UnicodeDecodeError, OSError):
+        return ""
+    name = data.get("会社名") if isinstance(data, dict) else None
+    return "" if name is None else str(name).strip()
+
+
+def init_year_dir(year_dir, start, end, tax=None, company_name=None):
+    """年度フォルダを用意する。tax（消費税の設定dict）・company_name（会社名）があれば period.yaml に書く（期首日・期末日はそのまま）。"""
     from tax import parse_tax_settings, tax_to_dict  # 循環importを避ける
     year_dir = Path(year_dir)
     start, end = _validate_period(start, end)
@@ -281,15 +294,20 @@ def init_year_dir(year_dir, start, end, tax=None):
                 f"{PERIOD_FILE} の期間（{current[0]}〜{current[1]}）と指定（{start}〜{end}）が違います"
                 "（年度フォルダを取り違えていないか確認）"
             )
-        if tax_dict is not None:
+        if tax_dict is not None or company_name is not None:
             data = yaml.safe_load(period_path.read_text(encoding="utf-8")) or {}
-            data["消費税"] = tax_dict
+            if tax_dict is not None:
+                data["消費税"] = tax_dict
+            if company_name is not None:
+                data["会社名"] = company_name
             _write_period(period_path, data)
     else:
         year_dir.mkdir(parents=True, exist_ok=True)
         data = {"期首日": start, "期末日": end}
         if tax_dict is not None:
             data["消費税"] = tax_dict
+        if company_name is not None:
+            data["会社名"] = company_name
         _write_period(period_path, data)
     for sub in ("inbox", "output"):
         (year_dir / sub).mkdir(parents=True, exist_ok=True)

@@ -1,3 +1,4 @@
+import yaml
 import pytest
 
 from common import (
@@ -239,3 +240,28 @@ def test_upgrade_rejects_ragged_rows(tmp_path):
     path.write_text(",".join(old) + "\n" + ",".join(["x"] * (len(old) + 1)) + "\n", encoding="utf-8-sig")
     with pytest.raises(KessanError, match="列数の合わない行"):
         append_rows(path, JOURNAL_COLUMNS, [])
+
+
+def test_init_company_name(tmp_path):
+    from common import load_company_name
+    d = tmp_path / "y"
+    init_year_dir(d, "2025-04-01", "2026-03-31", tax={"区分": "免税"}, company_name="テスト商事株式会社")
+    assert load_company_name(d) == "テスト商事株式会社"
+    # 既存の period.yaml に足す（他のキーは変えない）
+    d2 = tmp_path / "y2"
+    init_year_dir(d2, "2025-04-01", "2026-03-31", tax={"区分": "免税"})
+    before = yaml.safe_load((d2 / "period.yaml").read_text(encoding="utf-8"))
+    assert load_company_name(d2) == ""
+    init_year_dir(d2, "2025-04-01", "2026-03-31", company_name="株式会社あ")
+    after = yaml.safe_load((d2 / "period.yaml").read_text(encoding="utf-8"))
+    assert after == {**before, "会社名": "株式会社あ"}
+    # 省略時は変えない
+    init_year_dir(d2, "2025-04-01", "2026-03-31")
+    assert load_company_name(d2) == "株式会社あ"
+
+
+def test_load_company_name_missing_is_blank(tmp_path):
+    from common import load_company_name
+    assert load_company_name(tmp_path / "none") == ""
+    init_year_dir(tmp_path / "y", "2025-04-01", "2026-03-31")
+    assert load_company_name(tmp_path / "y") == ""
