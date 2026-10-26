@@ -71,6 +71,7 @@ python ../.claude/scripts/kessan/cli.py add-payee --year-dir <Y> --name <取引�
 python ../.claude/scripts/kessan/cli.py close-set-amount --year-dir <Y> --item 消費税|法人税等 --amount <達人で計算した額>
 python ../.claude/scripts/kessan/cli.py close-candidates --year-dir <Y> [--next-year-dir <翌期のY>] [--prev-year-dir …]   # 決算整理の候補と所見
 python ../.claude/scripts/kessan/cli.py close-approve --year-dir <Y> (--ids close:… | --all)
+python ../.claude/scripts/kessan/cli.py close-unapprove --year-dir <Y> --ids close:…   # 承認を外す（登録前）
 python ../.claude/scripts/kessan/cli.py close-reject --year-dir <Y> --ids close:… --reason <理由>
 python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]   # 承認済みの候補を adjustments.csv に登録＋検算
 ```
@@ -164,11 +165,12 @@ python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-d
 - 候補はすべて「要確認」で `adjustments-staging.csv`（伝票番号 C1…）に入り、`output/close-report.md` に項目ごとにまとめる。承認（`close-approve`）したものだけが `close-post` で `adjustments.csv` に `A1`, `A2`…（登録区分 決算整理）で入る。同じ取り込み元ID（`close:<項目>:<キー>`）が承認済み・登録済みなら作り直さず、未承認なら最新の内容で置き換え、もう出ない未承認の候補は消す
 - 項目の順：未払・未収 → 前払（と期首の戻し）→ 減価償却 → 役員報酬・残高の所見（候補なし）→ 消費税・法人税等
 - 数字はすべてスクリプトが確定する。端数は円未満切り捨て。償却率は `config/depreciation/rates.yaml`（国税庁の別表。根拠URL・確認日つき）から読む
-- **未払**：`evidence.csv` の未払候補の請求書（期末日以前）を、翌期の支払（`--next-year-dir` の staging・journal。期日の前後10日、期日が無ければ期末から92日）と取引先・金額で照合して候補にする。**未収**は、翌期の入金（期末から60日以内）のうち当期の売上先と合うもの。期末の売掛金で説明できる入金は所見にする
+- **未払**：`evidence.csv` の未払候補の請求書（期末日以前）を、翌期の支払（`--next-year-dir` の staging・journal。期日の前後10日、期日が無ければ期末日の翌日から92日）と取引先・金額で照合して候補にする。**未収**は、翌期の入金（期末から60日以内）のうち当期の売上先と合うもの。期末の売掛金で説明できる入金は所見にする
 - **前払**：`kessan-prepaid.yaml` の登録簿に合う支払ごとに 金額 × 期末より後の月数 ÷ 月数 を前払費用に。月数は1〜12だけ（1年を超えるものは長期前払費用として手で扱う）。キーワードと取引先を両方書いたら両方に一致した行だけが対象（AND）。期首の前払費用は同じ名前の科目へ戻す候補
 - **減価償却**：`fixed-assets.csv` から計算する。定額法・200%定率法は事業供用月から期末月まで（除却日があればその月まで）の月割り。**一括償却（10万円以上20万円未満）は 取得価額 × 月数 ÷ 36**（除却しても続く）。**少額特例（30万円未満、中小企業者等だけ）は事業供用した年度だけ**全額、年間上限は300万円 × 月数 ÷ 12。**12か月未満の事業年度では定額法・定率法は計算せず所見**にする
 - **消費税**（課税の年度）：年税額は `close-set-amount --item 消費税` の額（達人の計算結果）があればそれ、無ければ tax-summary の概算（同じ回の他の候補を含める）。**簡易課税は概算しないので上書きが必須**。仮払税金（補助なしか補助「消費税」）の期末残高を中間納付として差し引き、残りを未払消費税等（マイナスなら未収入金〈補助 消費税〉）にする。消費税の候補は、他のすべての候補を承認してからでないと登録できない（額が変わるため）。他の候補を `close-reject` で却下すると、承認済みの消費税の候補は承認が外れる（`close-candidates` を流し直す）
 - **法人税等**：見積もらない。`close-set-amount --item 法人税等` に入れた**期末の未払額**（年税額ではない）があるときだけ候補にする。仮払税金（補助「法人税等」）の中間納付があれば、借方 法人税等（未払額＋中間納付）／貸方 未払法人税等・仮払税金（法人税等）にして仮払税金も消す
+- **承認の取り下げ**：`close-unapprove`（承認と判定を戻す。登録済みは不可）。staging.csv を手で編集しない
 - **却下**：オーナーが拒む候補は `close-reject --reason`（理由は必須）。以後の `close-candidates` で出なくなり、報告書に理由つきで載る。承認済みの候補が再計算で出なくなったときは承認が外れて所見が出る
 - 上書き額と却下は `close-overrides.yaml` に保存する（直接編集しない）
 - 登録後に `close-candidates` を流し直すと、登録済みの内容と再計算が違う候補は所見になる。登録済みの消費税・法人税等の中間納付は、仮払税金の残高が0になっても足し戻して比べる

@@ -237,7 +237,7 @@ def _reconcile(year_dir, candidates):
             if r["取り込み元ID"].strip() == sid:
                 r.update({"承認": "", "判定": NEEDS_REVIEW, "要確認理由": add_reasons(r["要確認理由"], STALE_REASON)})
         notes.append(Note(_item_of(sid), f"{sid} は承認済みでしたが今回の再計算では出ていないため、承認を外しました"
-                                         f"（不要なら {STAGING_FILE} から削除、必要なら承認し直す）"))
+                                         f"（不要なら close-reject で却下、必要なら承認し直す）"))
     new_rows, states = list(kept_rows), {}
     for c in candidates:
         sid = c.source_id
@@ -251,7 +251,7 @@ def _reconcile(year_dir, candidates):
             states[sid] = "承認済み"
             if _shape(current[sid]) != _shape(fresh):
                 notes.append(Note(c.item, f"{sid} は承認済みのため作り直していませんが、再計算の結果と違います"
-                                          f"（作り直すなら {STAGING_FILE} の承認欄を空にしてから close-candidates）"))
+                                          f"（作り直すなら close-unapprove で承認を外してから close-candidates）"))
         else:
             states[sid] = "新規"
             for r in fresh:
@@ -391,6 +391,37 @@ def approve_candidates(year_dir, source_ids):
     for r in rows:
         if r["取り込み元ID"].strip() in ids:
             r["承認"] = "済"
+            count += 1
+    ensure_writable(year_dir, [STAGING_FILE])
+    try:
+        replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, [project(r, STAGING_COLUMNS) for r in rows])
+    except OSError:
+        raise cannot_write(STAGING_FILE) from None
+    return count
+
+
+def unapprove_candidates(year_dir, source_ids):
+    """取り込み元IDの候補の承認を外す（承認=空・判定=要確認）。外した行数を返す。
+
+    staging に無いID・登録済み（adjustments.csv）のIDが1つでもあれば何も変えない。
+    """
+    year_dir = Path(year_dir)
+    ids = list(dict.fromkeys(s.strip() for s in source_ids if s and s.strip()))
+    if not ids:
+        raise KessanError("承認を外す候補がありません")
+    posted = {r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE)}
+    done = [s for s in ids if s in posted]
+    if done:
+        raise KessanError("登録済みの候補は承認を外せません（登録済みの伝票は手で直す）: " + "、".join(done))
+    rows = read_rows(year_dir / STAGING_FILE)
+    present = {r["取り込み元ID"].strip() for r in rows}
+    missing = [s for s in ids if s not in present]
+    if missing:
+        raise KessanError(f"{STAGING_FILE} に無い取り込み元ID（何も変えていません）: " + "、".join(missing))
+    count = 0
+    for r in rows:
+        if r["取り込み元ID"].strip() in ids:
+            r.update({"承認": "", "判定": NEEDS_REVIEW})
             count += 1
     ensure_writable(year_dir, [STAGING_FILE])
     try:

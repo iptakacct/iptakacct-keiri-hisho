@@ -13,7 +13,7 @@ description: 「決算整理して」「決算の仕訳を作って」「未払�
 - **オーナー**：候補の承認・却下、達人で計算した消費税・法人税等の額の提供、台帳・登録簿・支払先の対応の承認
 
 **してはいけないこと**
-- `adjustments-staging.csv`・`adjustments.csv`・`close-overrides.yaml`・`evidence.csv`・`journal.csv` を直接編集しない（読むのはよい。例外は ⑥ の承認欄を空にする操作だけ）。書き換えは必ずコマンドを通す
+- `adjustments-staging.csv`・`adjustments.csv`・`close-overrides.yaml`・`evidence.csv`・`journal.csv` を直接編集しない（読むのはよい）。書き換えは必ずコマンドを通す
 - 自分で承認しない（`close-approve` はオーナーが見て「いい」と言った候補だけ。オーナーの答えがないまま `--all` を使わない）
 - 推測で金額を作らない。消費税・法人税等は、スクリプトの概算か、オーナーが達人で計算した額だけを使う
 - 検算にNGがあるまま進めない（スクリプトも拒否する）
@@ -107,12 +107,13 @@ $K close-candidates --year-dir $Y [--next-year-dir $N]     # 上書きを候補�
 ```bash
 $K close-approve --year-dir $Y --ids close:未払:ev1 close:前払:… 
 $K close-approve --year-dir $Y --all                        # オーナーが全部OKと答えたときだけ
+$K close-unapprove --year-dir $Y --ids close:未払:ev1                        # 承認を取り下げる
 $K close-reject --year-dir $Y --ids close:未払:ev2 --reason "当期の費用ではない（オーナー確認済み）"
 ```
 
 - **オーナーが不要と言った候補は `close-reject`**（理由は必須）。却下した候補は以後の `close-candidates` で出なくなり、`close-report.md` の末尾に理由つきで載る。staging の行を手で消して済ませない（次の `close-candidates` で復活する）
-- 承認済みだった候補が、その後の再計算で出なくなったときは、承認が外れて所見が出る（不要なら staging から消す、必要なら承認し直す）
-- 承認した候補の内容を変えたいとき（登録前）は、元の原因（台帳・登録簿・証憑の解決・上書き額）を直したうえで、`adjustments-staging.csv` のその候補の承認欄を空にして `close-candidates` を流し直す（作り直しの案内が所見に出る。これだけは例外として直接編集してよい）
+- 承認済みだった候補が、その後の再計算で出なくなったときは、承認が外れて所見が出る（不要なら `close-reject` で却下、必要なら `close-candidates` を流し直して承認し直す）
+- 承認を取り下げたい・承認した候補の内容を変えたいとき（登録前）は `close-unapprove --ids …` で承認を外す。内容を変えるなら、元の原因（台帳・登録簿・証憑の解決・上書き額）を直して `close-candidates` を流し直し、新しい内容を承認し直す。二度と出したくない候補は `close-reject`
 
 ## ⑦ 登録と検算
 
@@ -134,7 +135,7 @@ $K close-post --year-dir $Y [--prev-year-dir <前期のY>]
 
 ## 未払・未収
 
-- 未払：evidence.csv の `状態=未払候補` の請求書のうち、日付が期末日以前のもの。翌期の支払（支払期日の前後10日、期日が無ければ期末から92日）と取引先・金額で照合し、理由に結果を書く。取引先は `kessan-payees.yaml` の対応（漢字名⇔振込名義のカナ）で当てる。計上すると証憑の状態が 未払計上 になる
+- 未払：evidence.csv の `状態=未払候補` の請求書のうち、日付が期末日以前のもの。翌期の支払（支払期日の前後10日、期日が無ければ期末日の翌日から92日）と取引先・金額で照合し、理由に結果を書く。取引先は `kessan-payees.yaml` の対応（漢字名⇔振込名義のカナ）で当てる。計上すると証憑の状態が 未払計上 になる
 - 未収：翌期の入金のうち、当期の売上先と合うもの（期末から60日以内）を売掛金の候補にする。期末の売掛金で説明できそうな入金は候補にせず所見にする
 - 取引先が漢字で摘要にカナで出るなど、名前が合わないときは `add-payee`（下）で対応を足してから `close-candidates` をやり直す
 

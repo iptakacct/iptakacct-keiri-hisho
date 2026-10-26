@@ -381,3 +381,29 @@ def test_reject_other_candidate_unapproves_tax(year_dir, accounts):
     (r,) = staging(year_dir)
     assert (r["取り込み元ID"], r["承認"], r["判定"]) == ("close:消費税:2026-03-31", "", "要確認")
     assert "他の候補の却下で額が変わる" in r["要確認理由"]
+
+
+def test_unapprove_clears_approval_and_cli(year_dir, accounts, capsys):
+    base_books(year_dir)
+    close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 1000), fee("k2", 2000)])])
+    close.approve_candidates(year_dir, ["close:テスト:k1", "close:テスト:k2"])
+    assert close.unapprove_candidates(year_dir, ["close:テスト:k1"]) == 1
+    assert [(r["取り込み元ID"], r["承認"], r["判定"]) for r in staging(year_dir)] == [
+        ("close:テスト:k1", "", "要確認"), ("close:テスト:k2", "済", "要確認")]
+    assert cli.main(["close-unapprove", "--year-dir", str(year_dir), "--ids", "close:テスト:k2"]) == 0
+    assert "承認を外しました: 1行" in capsys.readouterr().out
+    assert all(r["承認"] == "" for r in staging(year_dir))
+
+
+def test_unapprove_unknown_or_posted_refused(year_dir, accounts):
+    base_books(year_dir)
+    close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 1000), fee("k2", 2000)])])
+    close.approve_candidates(year_dir, ["close:テスト:k1", "close:テスト:k2"])
+    with pytest.raises(KessanError, match="close:テスト:zz"):
+        close.unapprove_candidates(year_dir, ["close:テスト:k1", "close:テスト:zz"])
+    assert all(r["承認"] == "済" for r in staging(year_dir))  # 何も変えない
+    close.post_candidates(year_dir, accounts, items=[FakeItem([])])
+    with pytest.raises(KessanError, match="登録済み"):
+        close.unapprove_candidates(year_dir, ["close:テスト:k1"])
+    with pytest.raises(KessanError, match="ありません"):
+        close.unapprove_candidates(year_dir, [])

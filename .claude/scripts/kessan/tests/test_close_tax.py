@@ -273,3 +273,17 @@ def test_rerun_after_posting_interim_payments_matches(year_dir, accounts):
     assert close.post_candidates(year_dir, accounts) == ["A1", "A2"]
     r = run(year_dir, accounts)
     assert r.candidates_kept == 2 and not any("違います" in n.message for n in r.notes)
+
+
+def test_rerun_after_posting_new_interim_payment_is_reported(year_dir, accounts):
+    # 登録後に仮払税金（消費税）が新しく入ると、足し戻しても額が合わず「違います」が出る
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    run(year_dir, accounts)
+    close.approve_candidates(year_dir, [ID_TAX])
+    close.post_candidates(year_dir, accounts)
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("9", "2026-03-20", debit=("仮払税金", "", 500), credit=("現金", "", 500), 摘要="追加の納付"))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    r = run(year_dir, accounts)
+    assert any("違います" in n.message for n in r.notes)

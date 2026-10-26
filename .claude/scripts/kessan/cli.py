@@ -23,6 +23,7 @@
   python ../.claude/scripts/kessan/cli.py close-set-amount --year-dir <Y> --item 消費税|法人税等 --amount 123400
   python ../.claude/scripts/kessan/cli.py close-candidates --year-dir <Y> [--next-year-dir work/kessan/2027-03期] [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py close-approve --year-dir <Y> (--ids close:消費税:2026-03-31 … | --all)
+  python ../.claude/scripts/kessan/cli.py close-unapprove --year-dir <Y> --ids close:…   （承認を外す）
   python ../.claude/scripts/kessan/cli.py close-reject --year-dir <Y> --ids close:未払:… --reason "不要な理由"
   python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
 
@@ -39,7 +40,9 @@ from accounts import load_accounts
 from accounts_update import apply_review, approve, approve_numbers, load_updates, set_accounts
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
-from close import approve_candidates, candidate_ids, post_candidates, reject_candidates, run_close, set_amount
+from close import (
+    approve_candidates, candidate_ids, post_candidates, reject_candidates, run_close, set_amount, unapprove_candidates,
+)
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from evidence_resolve import resolve_evidence
 from extracted import extracted_files
@@ -57,7 +60,7 @@ from undo import discard, unimport
 
 COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary",
-            "close-candidates", "close-approve", "close-post", "close-set-amount", "close-reject")
+            "close-candidates", "close-approve", "close-unapprove", "close-post", "close-set-amount", "close-reject")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -124,6 +127,8 @@ def _parser():
             target = p.add_mutually_exclusive_group(required=True)
             target.add_argument("--ids", nargs="+", help="承認する候補の取り込み元ID（close:…）")
             target.add_argument("--all", action="store_true", help="adjustments-staging.csv の候補をすべて承認する")
+        if name == "close-unapprove":
+            p.add_argument("--ids", required=True, nargs="+", help="承認を外す候補の取り込み元ID（close:…）")
         if name == "close-reject":
             p.add_argument("--ids", required=True, nargs="+", help="却下する候補の取り込み元ID（close:…）")
             p.add_argument("--reason", required=True, help="却下の理由（close-report.md に載る）")
@@ -484,6 +489,9 @@ def main(argv=None):
         if args.command == "close-approve":
             ids = candidate_ids(year_dir) if args.all else args.ids
             print(f"承認: {approve_candidates(year_dir, ids)}行")
+            return 0
+        if args.command == "close-unapprove":
+            print(f"承認を外しました: {unapprove_candidates(year_dir, args.ids)}行")
             return 0
         if args.command == "close-reject":
             reject_candidates(year_dir, args.ids, args.reason)
