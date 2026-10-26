@@ -1,7 +1,7 @@
 import pytest
 
 from common import (
-    JOURNAL_COLUMNS, KessanError, append_rows, init_year_dir, load_period, parse_amount, project, read_rows,
+    EVIDENCE_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS, TAX_COLUMNS, KessanError, append_rows, init_year_dir, load_period, parse_amount, project, read_rows,
     replace_rows, to_int, write_rows,
 )
 
@@ -187,3 +187,57 @@ def test_remove_reason_removes_only_the_exact_part():
     from common import remove_reason
     assert remove_reason("相手科目未設定／ページの残高が連続しない", "相手科目未設定") == "ページの残高が連続しない"
     assert remove_reason("相手科目未設定（補足）", "相手科目未設定") == "相手科目未設定（補足）"
+
+
+def test_append_upgrades_old_header(tmp_path):
+    old = [c for c in JOURNAL_COLUMNS if c not in TAX_COLUMNS]
+    path = tmp_path / "journal.csv"
+    write_rows(path, old, [dict.fromkeys(old, "x")])
+    append_rows(path, JOURNAL_COLUMNS, [dict.fromkeys(JOURNAL_COLUMNS, "y")])
+    rows = read_rows(path)
+    assert list(rows[0].keys()) == JOURNAL_COLUMNS
+    assert rows[0]["借方税区分"] == "" and rows[0]["摘要"] == "x"
+    assert rows[1]["借方税区分"] == "y"
+
+
+def test_append_rejects_unknown_column(tmp_path):
+    path = tmp_path / "journal.csv"
+    write_rows(path, JOURNAL_COLUMNS + ["余計"], [])
+    with pytest.raises(KessanError, match="列が想定と違います"):
+        append_rows(path, JOURNAL_COLUMNS, [])
+
+
+def test_tax_columns_are_appended_after_registration_time():
+    assert JOURNAL_COLUMNS[-len(TAX_COLUMNS):] == TAX_COLUMNS
+    assert JOURNAL_COLUMNS[-len(TAX_COLUMNS) - 1] == "登録日時"
+    assert EVIDENCE_COLUMNS[-2:] == ["税率", "登録番号"]
+
+
+def test_init_upgrades_existing_files(tmp_path):
+    d = tmp_path / "y"
+    init_year_dir(d, "2025-04-01", "2026-03-31")
+    old = {
+        "journal.csv": [c for c in JOURNAL_COLUMNS if c not in TAX_COLUMNS],
+        "staging.csv": [c for c in STAGING_COLUMNS if c not in TAX_COLUMNS],
+        "evidence.csv": [c for c in EVIDENCE_COLUMNS if c not in ("税率", "登録番号")],
+    }
+    for name, cols in old.items():
+        write_rows(d / name, cols, [dict.fromkeys(cols, "v")])
+    init_year_dir(d, "2025-04-01", "2026-03-31")
+    for name, cols in (("journal.csv", JOURNAL_COLUMNS), ("staging.csv", STAGING_COLUMNS),
+                       ("evidence.csv", EVIDENCE_COLUMNS)):
+        rows = read_rows(d / name)
+        assert list(rows[0].keys()) == cols
+        assert rows[0]["摘要" if name != "evidence.csv" else "内容"] == "v"
+    assert read_rows(d / "journal.csv")[0]["貸方個別対応"] == ""
+    assert read_rows(d / "evidence.csv")[0]["税率"] == ""
+
+
+def test_upgrade_rejects_ragged_rows(tmp_path):
+    path = tmp_path / "a.csv"
+    old = [c for c in JOURNAL_COLUMNS if c not in TAX_COLUMNS]
+    path.write_text(",".join(old) + "
+" + ",".join(["x"] * (len(old) + 1)) + "
+", encoding="utf-8-sig")
+    with pytest.raises(KessanError, match="列数の合わない行"):
+        append_rows(path, JOURNAL_COLUMNS, [])

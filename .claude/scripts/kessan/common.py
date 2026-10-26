@@ -16,15 +16,18 @@ class KessanError(Exception):
     """利用者に内容を伝えて処理を止めるべきエラー。"""
 
 
+# 消費税の列（段階3a）。税込のまま持ち、税抜額・税額は集計時に計算する。免税の年度では空のまま
+TAX_COLUMNS = ["借方税区分", "借方インボイス", "借方個別対応", "貸方税区分", "貸方インボイス", "貸方個別対応"]
 JOURNAL_COLUMNS = [
     "伝票番号", "日付", "借方科目", "借方補助", "借方金額", "貸方科目", "貸方補助", "貸方金額",
     "摘要", "取引先", "証憑ファイル", "取り込み元ID", "登録区分", "登録日時",
-]
+] + TAX_COLUMNS
 STAGING_COLUMNS = JOURNAL_COLUMNS + ["読み取り信頼度", "判定", "要確認理由", "承認"]
 EVIDENCE_COLUMNS = [
     "証憑ID", "証憑ファイル", "種類", "日付", "金額", "取引先", "内容", "科目候補", "補助候補",
     "状態", "取り込み元ID", "取り込み日時",
     "支払期日", "支払方法の推定", "自信度",  # 段階3（未払の管理）用。読み取り結果の値をそのまま残す
+    "税率", "登録番号",  # 段階3a（消費税）用
 ]
 IMPORT_LOG_COLUMNS = ["取り込み日時", "ファイル名", "口座ID", "対象期間", "件数", "入金合計", "出金合計", "登録伝票番号範囲"]
 STATEMENT_BALANCE_COLUMNS = ["科目", "補助", "日付", "残高", "ファイル名"]
@@ -67,18 +70,48 @@ def write_rows(path, columns, rows):
         writer.writerows(rows)
 
 
+def _read_header(path):
+    try:
+        with Path(path).open(encoding="utf-8-sig", newline="") as f:
+            return next(csv.reader(f), [])
+    except UnicodeDecodeError:
+        raise _utf8_error(path) from None
+
+
+def _bad_header(path, columns, header):
+    return KessanError(
+        f"{Path(path).name} の列が想定と違います（期待: {'、'.join(columns)}／実際: {'、'.join(header)}）")
+
+
+def upgrade_header(path, columns):
+    """古い列構成（columns の一部の列しかない）のCSVを、columns の列構成で書き直す。書き直したら True。
+
+    足りない列は空欄で埋め、既存の値と行の順序はそのまま。columns に無い列があれば KessanError。
+    """
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    columns = list(columns)
+    header = _read_header(path)
+    if header == columns:
+        return False
+    if len(set(header)) != len(header) or not set(header) <= set(columns):
+        raise _bad_header(path, columns, header)
+    rows = read_rows(path)
+    # 列数の合わない行（余分な値は DictReader が捨ててしまう）があれば、データを失わないよう止める
+    if any(None in r or None in r.values() for r in rows):
+        raise KessanError(f"{path.name} に列数の合わない行があります。列を直してから再実行してください")
+    replace_rows(path, columns, [project(r, columns) for r in rows])
+    return True
+
+
 def append_rows(path, columns, rows):
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
         write_rows(path, columns, rows)
         return
-    try:
-        with path.open(encoding="utf-8-sig", newline="") as f:
-            header = next(csv.reader(f), [])
-    except UnicodeDecodeError:
-        raise _utf8_error(path) from None
-    if header != list(columns):
-        raise KessanError(f"{path.name} の列が想定と違います（期待: {'、'.join(columns)}／実際: {'、'.join(header)}）")
+    if _read_header(path) != list(columns):
+        upgrade_header(path, columns)
     with path.open("rb") as f:
         f.seek(-1, os.SEEK_END)
         ends_with_newline = f.read(1) == b"\n"
@@ -244,3 +277,5 @@ def init_year_dir(year_dir, start, end):
     for name, columns in YEAR_FILES.items():
         if not (year_dir / name).exists():
             write_rows(year_dir / name, columns, [])
+        else:
+            upgrade_header(year_dir / name, columns)

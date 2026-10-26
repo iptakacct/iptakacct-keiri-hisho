@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from common import IMPORT_LOG_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS, KessanError, read_rows, write_rows
+from common import IMPORT_LOG_COLUMNS, JOURNAL_COLUMNS, STAGING_COLUMNS, TAX_COLUMNS, KessanError, read_rows, write_rows
 from helpers import line, staging_row
 from post import post_approved
 
@@ -226,3 +226,16 @@ def test_unreadable_import_log_blocks_before_writing(year_dir, accounts):
         post_approved(year_dir, accounts, now=NOW)
     assert read_rows(year_dir / "journal.csv") == []
     assert (year_dir / "staging.csv").read_bytes() == before
+
+
+def test_post_with_old_journal(year_dir, accounts):
+    old = [c for c in JOURNAL_COLUMNS if c not in TAX_COLUMNS]
+    write_rows(year_dir / "journal.csv", old,
+               [dict.fromkeys(old, "") | {"伝票番号": "1", "日付": "2025-04-01", "借方科目": "現金", "借方金額": "1",
+                                          "貸方科目": "資本金", "貸方金額": "1"}])
+    write_staging(year_dir, [capital()])
+    assert post_approved(year_dir, accounts, now=NOW).vouchers == ["2"]
+    rows = read_rows(year_dir / "journal.csv")
+    assert list(rows[0].keys()) == JOURNAL_COLUMNS
+    assert [r["伝票番号"] for r in rows] == ["1", "2"]
+    assert all(rows[0][c] == "" for c in TAX_COLUMNS)
