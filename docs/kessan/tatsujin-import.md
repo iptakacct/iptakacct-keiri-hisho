@@ -147,7 +147,12 @@
   </KANJYOKAMOKU>
   ```
   BS・PLの科目が混在して並ぶ。`KANJYOKAMOKU_CODE` は freee の内部ID（科目の区分ごとに同じ値が重複する。普通預金は `0`）で、達人の科目コードではない
-- 決算書の `DATA`：取得した会社（ひとり法人プラン）では、どの年度・どの指定でも**空**だった（決算書の作成が済んでいないと空になる可能性）。中身の構造はMFの実物で確認した（上の「決算書の中身」）
+- 決算書の `DATA`：こちらが `fetch` で直接取ると空だった（チェックボックスの値の渡し方が違ったとみられる）。画面のボタンから出した実物（オーナーが取得）では中身が入っていた。MFとの違い：
+  - 区分の要素に `Amount` 属性が無い（`Label` だけ）。区分合計は書かない
+  - `BASIC/PATTERN` の各要素が空
+  - 段階利益を `Item` で書く：`GrossProfit` に `<Item Label="商品売上総利益">`、`OperatingIncome` に `<Item Label="営業利益">`、経常利益は要素名が **`OrdinaryProfit`**（MFは `OrdinaryIncome`）で `<Item Label="経常利益">`。`IncomeBeforeIncomeTaxes`・`NetIncome` は空
+  - `StatementChangesNetAssets` は資本金・出資金申込証拠金・資本剰余金・別途積立金・繰越利益剰余金・評価・換算差額等の6行を固定で出し、金額は空
+  - 両社とも達人で取り込めている前提なら、`Amount` 属性・`PATTERN`・区分合計は省略してよいと読める。`OrdinaryProfit`／`OrdinaryIncome` のどちらを達人が読むかは未確認（kessan はMFの形に合わせ、合計も書くのが安全）
 
 ### kessan で作るもの（見込み）
 - 決算書・内訳書・概況書の3つを、上の形のXML（Shift_JIS）で出せば、達人の既存の取り込みメニュー（MF・freeeと同じ経路）に乗る見込み。内訳書は科目・補助科目ごとの残高を出すだけでよく、kessan の帳簿（取引先・口座の列）から作れる
