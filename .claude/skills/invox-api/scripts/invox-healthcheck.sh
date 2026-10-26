@@ -21,6 +21,18 @@ mkdir -p "$LOG_DIR"
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(timestamp)] $1" >> "$LOG_FILE"; }
 
+# 二重起動を防ぐ（スリープ復帰直後に同じ秒で複数起動されることがある）。
+# mkdirが成功した側だけが実行する。異常終了で残った古いロック（30分超）は片づける
+LOCK_DIR="$LOG_DIR/healthcheck.lock"
+if [ -d "$LOCK_DIR" ] && [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+fi
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  log "先に動いているサイクルがあるため、今回は何もしません"
+  exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
 json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"

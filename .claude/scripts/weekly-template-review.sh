@@ -19,7 +19,7 @@ WORK_DIR="$SCRIPT_DIR/work"
 LOG_FILE="$WORK_DIR/weekly-template-review.log"
 STATE_FILE="$WORK_DIR/template-review-state.json"
 # メンション先は .env の SLACK_MENTION_USER_ID（未設定ならメンションなし）
-SLACK_USER_ID=""
+SLACK_USER_ID="$(grep -E '^SLACK_MENTION_USER_ID=' "$ENV_FILE" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '" ' || true)"
 MODEL="claude-sonnet-5"
 MODE="run"
 case "${1:-}" in
@@ -36,6 +36,21 @@ fi
 mkdir -p "$WORK_DIR"
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(timestamp)] $1" >> "$LOG_FILE"; }
+
+# 二重起動を防ぐ（スリープ復帰直後に同じ秒で複数起動されることがある）。
+# mkdirが成功した側だけが実行する。異常終了で残った古いロック（30分超）は片づける。
+# --diff（差分を出すだけ）はロック不要
+if [ "$MODE" != "diff" ]; then
+  LOCK_DIR="$WORK_DIR/weekly-template-review.lock"
+  if [ -d "$LOCK_DIR" ] && [ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    log "先に動いているサイクルがあるため、今回は何もしません"
+    exit 0
+  fi
+  trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+fi
 
 json_escape() {
   local s="$1"
@@ -165,7 +180,7 @@ rm -f "$OUTPUT_FILE"
 MENTION_LINENO="$(printf '%s\n' "$CLEAN_OUTPUT" | grep -n -m1 -E '^MENTION: (yes|no)$' | cut -d: -f1)"
 if [ -z "$MENTION_LINENO" ]; then
   log "ERROR: claude -p の出力にMENTION行が見つかりません（前置き混入の疑い）: $(printf '%s' "$CLEAN_OUTPUT" | head -c 200)"
-  [ "$MODE" = "run" ] && notify_general "<@${SLACK_USER_ID}> テンプレ還流レビューが失敗しました（出力形式が不正）。.claude/scripts/work/weekly-template-review.log を確認してください。" || true
+  [ "$MODE" = "run" ] && notify_general "テンプレ還流レビューが失敗しました（出力形式が不正）。.claude/scripts/work/weekly-template-review.log を確認してください。" || true
   exit 1
 fi
 MENTION_LINE="$(printf '%s\n' "$CLEAN_OUTPUT" | sed -n "${MENTION_LINENO}p")"
@@ -186,6 +201,15 @@ fi
 if [ "$MODE" = "dry" ]; then
   echo "$MENTION_LINE"; echo "$BODY"
   log "dry-run 完了（$MENTION_LINE）"
+  exit 0
+fi
+
+# 候補なし（MENTION: no）だけの回は全体通知チャンネルに投稿しない（通知の整理）。
+# 見た範囲は進めておく（次回同じコミットを読み直さない）
+if [ "$MENTION_LINE" = "MENTION: no" ]; then
+  printf '{"last_commit": "%s", "last_run": "%s"}
+' "$HEAD_COMMIT" "$(timestamp)" > "$STATE_FILE"
+  log "完了：候補なしのため投稿しない（状態更新 last_commit=$HEAD_COMMIT）"
   exit 0
 fi
 

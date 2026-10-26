@@ -20,6 +20,16 @@ python .claude/skills/freee-monthly-check/lib/monthly_check_cli.py \
 
 `--month`省略時は直近の完了月（実行日の前月）を対象にする。レポートは`<インスタンス>/work/monthly-check/YYYY-MM.md`に保存され、実行後にチャットへA/B/C件数と主要項目を要約報告する。
 
+## レポートへの手作業追記（`monthly-closing-checklist.md`の手作業分の記録等）
+
+レポートファイルに、CLIが生成した内容を確認した結果や確定記録を手作業で追記したい場合は、追記する内容の直前に以下のマーカー行を入れる（無ければ自分で追加してよい）：
+
+```
+<!-- 手作業追記ここから（このマーカー以降は再生成時も保持されます） -->
+```
+
+このマーカー以降の内容は、同じ月のレポートを再実行してもCLIに上書きされず、新しく生成した内容の末尾にそのまま引き継がれる（`monthly_check.merge_with_manual_section`）。マーカーが無いまま追記すると、次回の再生成で内容が失われるので注意する（実際に手作業の確認結果・確定記録が消える事故があった）。
+
 ## 設定（`companies.json`の会社エントリ`monthly_check`）
 
 | キー | デフォルト | 意味 |
@@ -29,6 +39,7 @@ python .claude/skills/freee-monthly-check/lib/monthly_check_cli.py \
 | `variance_history_months` | 6 | 増減チェックの過去平均を取る月数 |
 | `subaccount_lookback_months` | 2 | 取引先・品目の付け忘れチェック（`check_missing_partner_or_item`）で遡る月数。freeeには補助科目が無いため、`monthly-closing-checklist.md`項目8注記の「補助科目の付け忘れ」を取引先(partner_id)・品目(item_id)で判定する。対象月に属性なしの明細のうち、直近この月数の同じ（勘定科目, 正規化した摘要）の明細が1ヶ月以上あり全て属性付きだったものを重要度Bで検出。摘要の無い明細は対象外 |
 | `variance_materiality_floor` | 10000 | 増減チェックの重要性の基準（円）。当月・過去平均の絶対値がどちらもこの額未満の科目は検出しない（少額・散発的な科目のノイズを抑えるため） |
+| `variance_exempt_accounts` | `[]` | 増減チェックから除外する勘定科目名の配列（完全一致）。発生が不定期（特定の条件が揃った月にしか発生しない）と分かっている科目を会社ごとに指定する。除外されるのは当月がゼロ発生の場合のみで、実際に金額が発生した月は通常どおり検出対象になる |
 
 ## レポートを読む際の前提
 

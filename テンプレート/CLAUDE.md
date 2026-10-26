@@ -31,14 +31,14 @@
 
 ### 【マネーフォワード クラウド会計の場合】
 
-オーナーが`/mcp`でマネーフォワードMCP（mfc_ca）にこの会社の事業者として接続・再接続したら、`mfc_ca_currentOffice`で接続先がこの会社であることを確認し、社名・事業者コードをチャットで一言報告した上で、以下を自動的に実行する（都度「やりますか」と聞かずに開始してよい）。
+この会社の作業を頼まれたら、以下を自動的に実行する（都度「やりますか」と聞かずに開始してよい）。**読み取りは自前のMF会計API（`mf-api-post`）で会社名を指定して行い**（事業者の切替は要らない。出力に出る社名・事業者コードがこの会社であることを確かめる）、**登録はマネーフォワードMCP（`mfc_ca`）で行う**（`mf-api-post`は現状読み取り専用。手順は`mf-fee-post`スキル）。
 
-1. `mfc_ca_getConnectedAccounts`で口座連携の状態を確認する。連携エラーがあれば全体通知チャンネルに投稿する。
-2. 未仕訳明細を取得し、`context/company/accounting-rules.md`の確立済みパターンに一致するものだけ確認なしで登録する（登録直後に仕訳を再取得して内容を検証する）。
+1. 口座連携の状態を確認する（`../.claude/rules/mcp-connection.md`「仕訳の自動処理の前に」節）。連携エラーがあれば全体通知チャンネルに投稿する。
+2. `read <会社> "/transactions?start_date=...&end_date=..." --all-pages`で未仕訳明細（`journalizing_status == "none"`）を取得し、`context/company/accounting-rules.md`の確立済みパターンに一致するものだけ確認なしで登録する（登録はMCPで、`mfc_ca_currentOffice`で接続先がこの会社であることを確かめてから。登録直後に`read`で仕訳を読み直して内容を検証する）。
 3. 新しい摘要・取引先、計算ルールが未確立なものは登録せず、`#<フォルダ名>`（Slack）に「要確認」としてまとめて報告する。
 4. 処理結果（登録件数・要確認件数）をチャットで一言報告する。
 
-新しいパターンが確認され次第`accounting-rules.md`に追記し、次回以降は自動登録の対象に加える。`mf-fee-post`スキルを使う場合は、`config/mf-companies.json`にこの会社を追加しておくこと。
+新しいパターンが確認され次第`accounting-rules.md`に追記し、次回以降は自動登録の対象に加える。`mf-api-post`の`companies.json`にこの会社を追加して認可しておくこと（`mf-fee-post`スキルの読み取りもこれを使う）。
 
 ### 【freee会計の場合】
 
@@ -57,7 +57,7 @@
 
 ## 参照先
 
-- `context/` — 会社・顧客・メンバー・社内規程などの事実情報（`company/accounting-rules.md`＝経理ルール・会計システム、`company/systems.md`＝周辺システム一覧）
-- `work/` — 日々の作業ファイル（`daily/` に日次ログ、`drafts/` に下書き）
+- `context/` — 会社・顧客・メンバー・社内規程などの事実情報（`company/accounting-rules.md`＝経理ルール・会計システム、`company/systems.md`＝周辺システム一覧、`company/tax-profile.md`＝決算・申告の基本情報、`company/設立書類の確認メモ.md`・`company/経理のデータの流れ.md`・`company/税務調査対策メモ.md`）
+- `work/` — 日々の作業ファイル（`daily/` に日次ログ、`drafts/` に下書き。ひな形：`依頼文の文例集.md`・`自動化の範囲.md`・`経理の流れ.html`・`引き継ぎチェックリスト.md`・`月次レポート-YYYY-MM.md`・`決算整理-YYYY.md`・`経営サマリー-YYYY-MM.md`）
 - `../.claude/rules/`（ルート直下、全クライアント共通） — 文体・セキュリティ・出力書式などの詳細規範
 - `.claude/rules/`（このインスタンス固有） — 共通ルールでは足りない追加ルールが出てきた場合のみここに追加

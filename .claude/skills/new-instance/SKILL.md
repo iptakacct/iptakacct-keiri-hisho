@@ -21,11 +21,11 @@ description: 「新しいクライアントを追加して」「〇〇社のイ�
 
 4. ルートの`CLAUDE.md`「インスタンス一覧」に1行追記する
 5. フォルダ名と同じ名前でSlackチャンネルを作成する（`slack_create_conversation`、`channel_name`にはフォルダ名をそのまま使う）。このクライアントの作業内容は、以降このチャンネルに投稿していく（`.claude/rules/output-format.md`参照）
-6. 会計システムがマネーフォワード クラウド会計の場合、mfc_ca MCP（claude.aiカスタムコネクタ）の接続を案内する
-   - このMCPは「1接続＝1事業者」で、接続先の切替にはオーナー本人が`/mcp`を操作する必要がある（AI側からは認証操作を開始できない）
-   - 手順：`/mcp`→マネーフォワードMCP→（既に他社に繋がっていれば）「Clear authentication」→再度ツールを呼ぶタイミングで事業者選択画面が出るので、このクライアントの事業者を選んでもらう
-   - 接続できたら`mfc_ca_currentOffice`で接続先の事業者名を確認し、想定のクライアントと一致するか確かめ、`config/mf-companies.json`にエントリを追加する
-   - 会計システムがfreee会計の場合は、mfc_caの接続案内の代わりに`freee-api-post`スキルのセットアップ（`.claude/skills/freee-api-post/setup-guide.md`：OAuthプライベートアプリ作成→`companies.json`へのエントリ追加→認可）を`/setup`の中で行う旨を伝える。テンプレートは両システム対応で作られているので、コピー直後の`CLAUDE.md`・`accounting-rules.md`には両方のブロックが残っている（片付けは`/setup`で行う）
+6. 会計システムがマネーフォワード クラウド会計の場合、`mf-api-post`スキル（自前のMF会計API）で会社を追加・認可する（`.claude/skills/mf-api-post/setup-guide.md`の手順）
+   - 前提：先方の会計の画面への管理者追加と、アプリポータルのユーザー登録（アプリ連携）を管理者に依頼済みであること（同じ節の手順1・2）
+   - `.claude/skills/mf-api-post/companies.json`に行を足し、`setup-guide.md`の手順で認可する
+   - 認可できたら`bash .claude/skills/mf-api-post/scripts/mf-healthcheck.sh`で疎通を確かめ、`read <会社> "/offices"`の会社名・事業者コードが想定のクライアントと一致するか確かめる。読み取りに事業者の切替は要らない（登録はMCP `mfc_ca` で行う。`mf-fee-post`参照）
+   - 会計システムがfreee会計の場合は、`mf-api-post`の代わりに`freee-api-post`スキルのセットアップ（`.claude/skills/freee-api-post/setup-guide.md`：OAuthプライベートアプリ作成→`companies.json`へのエントリ追加→認可）を`/setup`の中で行う旨を伝える。テンプレートは両システム対応で作られているので、コピー直後の`CLAUDE.md`・`accounting-rules.md`には両方のブロックが残っている（片付けは`/setup`で行う）
    - マネーフォワード・freee以外の会計システムの場合はこのステップをスキップし、その旨をオーナーに伝える（対応するMCP・API連携が未整備であれば、claude-in-chromeでのブラウザ操作を案内する）
 7. 完了したら「`<クライアント名>/` を作成してコミットし、Slackチャンネル `#<クライアント名>` も作成しました。次は `/setup` でヒアリングに進めます」と報告する。`/setup`を続けて実行するかはオーナーの指示を待つ（自動では進めない）
 

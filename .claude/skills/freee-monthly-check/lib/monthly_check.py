@@ -174,7 +174,8 @@ def _period_amount(row):
 
 
 def check_variance(balances_by_month, target_month, variance_threshold=0.30,
-                   variance_materiality_floor=DEFAULT_VARIANCE_MATERIALITY_FLOOR):
+                   variance_materiality_floor=DEFAULT_VARIANCE_MATERIALITY_FLOOR,
+                   variance_exempt_accounts=frozenset()):
     """勘定科目ごとに、対象月の発生額(_period_amount＝closing-opening)と、
     対象月以外の月の平均との乖離率をチェックする。abs(乖離率) >= variance_thresholdなら検出する。
     過去平均が0で当月に金額がある場合は「新規発生」として個別に検出する
@@ -187,7 +188,14 @@ def check_variance(balances_by_month, target_month, variance_threshold=0.30,
       行が存在する月」だけの平均なので、たまにしか発生しない少額科目は
       発生しなかった月に必ず-100%になり、閾値をいくら上げてもノイズとして
       残り続けるため（2026-08-23、サンプルB実データのB分類11件中10件が
-      これに該当した）。"""
+      これに該当した）。
+
+    variance_exempt_accounts: 検出対象から除外する勘定科目名の集合。発生が
+      不定期（特定の条件が揃った月にしか発生しない）と分かっている科目を
+      会社ごとに指定する。完全一致のみ判定する（部分一致はしない）。
+      除外するのは当月がゼロ発生（＝「-100%」の誤検知パターン）の場合のみ。
+      当月に実際の金額が発生している場合は、除外対象科目でも通常どおり
+      増減チェックの対象になる（急な高額発生を見逃さないため）。"""
     target_rows = balances_by_month.get(target_month, [])
     target_by_account = {
         row["account_item_id"]: row
@@ -225,6 +233,9 @@ def check_variance(balances_by_month, target_month, variance_threshold=0.30,
         historical_avg = sum(history_amounts) / len(history_amounts)
 
         if max(abs(current_amount), abs(historical_avg)) < variance_materiality_floor:
+            continue
+
+        if current_amount == 0 and account_item_name in variance_exempt_accounts:
             continue
 
         if historical_avg == 0:
@@ -606,6 +617,7 @@ def run_monthly_check(api_call, token, company_id, company_name, target_month, c
     variance_materiality_floor = config.get(
         "variance_materiality_floor", DEFAULT_VARIANCE_MATERIALITY_FLOOR
     )
+    variance_exempt_accounts = set(config.get("variance_exempt_accounts", []))
     subaccount_lookback_months = config.get("subaccount_lookback_months", 2)
 
     findings = []
@@ -634,7 +646,7 @@ def run_monthly_check(api_call, token, company_id, company_name, target_month, c
             collect_account_item_names(rows, into=account_item_names)
         findings += check_variance(
             balances_by_month, target_month, variance_threshold,
-            variance_materiality_floor,
+            variance_materiality_floor, variance_exempt_accounts,
         )
     except Exception as e:
         errors.append(f"勘定科目の増減チェック: {e}")
@@ -662,3 +674,28 @@ def run_monthly_check(api_call, token, company_id, company_name, target_month, c
     resolve_finding_names(findings, account_item_names, partner_names)
 
     return build_report(target_month, company_name, findings, errors=errors)
+
+
+MANUAL_SECTION_MARKER = (
+    "<!-- 手作業追記ここから（このマーカー以降は再生成時も保持されます） -->"
+)
+
+
+def merge_with_manual_section(new_report, existing_content):
+    """レポートファイルを上書きする前に、既存ファイルの内容に手作業追記マーカー
+    (MANUAL_SECTION_MARKER)が含まれていれば、マーカー以降の内容（手作業で追記した
+    確認結果・確定記録など）を新しいレポート(new_report)の末尾にそのまま引き継ぐ。
+
+    existing_content: 上書き対象のファイルが既に存在する場合はその内容の文字列、
+      存在しない（初回生成）場合はNone。
+    マーカーが無い場合（existing_contentがNone、または過去に手作業追記が
+    無かった場合）は、new_reportをそのまま返す＝従来どおりの挙動。"""
+    if existing_content is None:
+        return new_report
+
+    marker_index = existing_content.find(MANUAL_SECTION_MARKER)
+    if marker_index == -1:
+        return new_report
+
+    manual_section = existing_content[marker_index:]
+    return new_report.rstrip("\n") + "\n\n" + manual_section

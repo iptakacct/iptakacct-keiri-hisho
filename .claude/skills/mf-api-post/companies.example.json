@@ -1,0 +1,19 @@
+{
+  "_comment": "このファイルを companies.json にコピーして使う。office_id はマネーフォワードの事業者コード（例：1000-0001）。credentials_path は各インスタンスの .claude/scripts/ 配下（credentials* は .gitignore 対象）。instance は companies.json の会社が属するインスタンスのフォルダ名（ログ <instance>/work/mf-api-post.log の置き場）。",
+  "companies": [
+    {
+      "name": "株式会社サンプルA",
+      "office_id": "1000-0001",
+      "instance": "サンプルグループ",
+      "credentials_path": "サンプルグループ/.claude/scripts/credentials_mf_サンプルA.json",
+      "slack_channel": "CH-SAMPLE-GROUP"
+    },
+    {
+      "name": "株式会社サンプルB",
+      "office_id": "1000-0002",
+      "instance": "サンプルグループ",
+      "credentials_path": "サンプルグループ/.claude/scripts/credentials_mf_サンプルB.json",
+      "slack_channel": "CH-SAMPLE-GROUP"
+    }
+  ]
+}

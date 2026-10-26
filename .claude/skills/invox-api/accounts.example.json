@@ -1,12 +1,17 @@
 {
-  "_comment": "このファイルを accounts.json にコピーして使う。invox_company_code はinvoxの企業コード。1アカウントで複数社を部門で区別する場合は1エントリにまとめる。",
+  "_comment": "このファイルを accounts.json にコピーして使う。invox_company_code はinvoxの企業コード。1アカウントで複数社を部門で区別する場合は1エントリにまとめる。apply_staff_code は apply-invoice（申請）の既定の申請者コード（invox画面「設定＞担当者」で確認。省略可）。department_to_company は prepare-journals が請求書の部門名から会社を振り分ける対応表（invox部門名→会計システム上の会社名、部門名は完全一致。省略可だが prepare-journals には必須）。",
   "accounts": [
     {
       "name": "サンプルA",
       "invox_company_code": "SMPL1",
       "instance": "サンプルA",
       "credentials_path": "サンプルA/.claude/scripts/credentials_invox_SAMPLEA.json",
-      "slack_channel": "CH-SAMPLE-A"
+      "slack_channel": "CH-SAMPLE-A",
+      "apply_staff_code": "staff-admin",
+      "department_to_company": {
+        "A部門": "サンプルA株式会社",
+        "B部門": "サンプルB株式会社"
+      }
     }
   ]
 }

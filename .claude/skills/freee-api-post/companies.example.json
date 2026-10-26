@@ -1,5 +1,5 @@
 {
-  "_comment": "このファイルを companies.json にコピーして使う。company_id はfreeeの事業所ID（認可時にURLで確認できる）。credentials_path は各インスタンスの .claude/scripts/ 配下（credentials* は .gitignore 対象）。",
+  "_comment": "このファイルを companies.json にコピーして使う。company_id はfreeeの事業所ID（認可時にURLで確認できる）。credentials_path は各インスタンスの .claude/scripts/ 配下（credentials* は .gitignore 対象）。任意項目: ignored_company_ids（疎通確認で無視する事業所ID）／auto_post（false にするとこちらから仕訳を書き込む自動処理の対象外。監視・読み取りは続く）／monitor（{enabled:false}で監視対象外、{receipts:false}でファイルボックスの未添付証憑だけ止める）／notify_webhook_env（監視・預金利息の通知先Webhookの .env キー名。無ければ GENERAL_SLACK_WEBHOOK_URL）／payroll（給与確定リマインド。lib/payroll_check.py）。",
   "companies": [
     {
       "name": "株式会社サンプルA",
@@ -7,11 +7,23 @@
       "instance": "サンプルA",
       "credentials_path": "サンプルA/.claude/scripts/credentials_freee_サンプルA.json",
       "slack_channel": "CH-SAMPLE-A",
+      "auto_post": true,
+      "monitor": {
+        "enabled": true,
+        "receipts": true
+      },
       "monthly_check": {
         "variance_threshold": 0.30,
         "recurring_min_months": 6,
         "variance_history_months": 6,
-        "variance_materiality_floor": 10000
+        "variance_materiality_floor": 10000,
+        "variance_exempt_accounts": []
+      },
+      "payroll": {
+        "enabled": false,
+        "pay_month_offset": 0,
+        "slack_webhook_env": "SAMPLE_A_SLACK_WEBHOOK_URL",
+        "fix_url": "https://p.secure.freee.co.jp/payroll_statements#/XXXXXXX/{year}/{month}"
       }
     }
   ]

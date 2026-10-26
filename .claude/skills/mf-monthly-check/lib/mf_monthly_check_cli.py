@@ -1,5 +1,5 @@
 """mf-monthly-check CLIエントリポイント。HTTPやMCP呼び出しは一切行わない
-——Claudeが/mcp接続中にmfc_ca MCPツールで取得し組み立てたJSONファイルを
+——Claudeが mf_cli read の出力（形はMCPと同じ）から組み立てたJSONファイルを
 読み込み、分析してレポートをファイルに書き出すだけ。"""
 import argparse
 import json
@@ -25,8 +25,18 @@ def run(args):
             month: mf_monthly_check.extract_account_leaves(rows)
             for month, rows in (raw_input_data.get("trial_pl_by_month") or {}).items()
         },
+        "trial_pl_totals_by_month": {
+            month: mf_monthly_check.extract_pl_totals(rows)
+            for month, rows in (raw_input_data.get("trial_pl_by_month") or {}).items()
+        },
         "trial_bs": mf_monthly_check.extract_account_leaves(raw_input_data.get("trial_bs")),
         "fetch_errors": raw_input_data.get("fetch_errors") or {},
+        "fiscal_year_start": raw_input_data.get("fiscal_year_start"),
+        "fiscal_year_end": raw_input_data.get("fiscal_year_end"),
+        "trial_pl_ytd": raw_input_data.get("trial_pl_ytd"),
+        # 繰越のずれチェック用。SKILL.mdの形（科目名→値の配列）で渡されるのでそのまま引き継ぐ
+        "trial_bs_prior_closing": raw_input_data.get("trial_bs_prior_closing"),
+        "trial_bs_current_opening": raw_input_data.get("trial_bs_current_opening"),
     }
 
     config = raw_input_data.get("config") or {}

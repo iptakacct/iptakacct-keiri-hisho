@@ -18,9 +18,11 @@ try:
 except OSError:
     ALLOWED = []
 
+
 def deny(reason):
     print(reason, file=sys.stderr)
     sys.exit(2)  # exit 2 = ブロック
+
 
 def url_allowed(url):
     u = url.lower()
@@ -28,34 +30,44 @@ def url_allowed(url):
     return any(u.startswith(a.lower().rstrip('/') + '/') or u.startswith(a.lower().rstrip('/'))
                for a in ALLOWED)
 
-data = json.load(sys.stdin)
-if data.get("tool_name") != "Bash":
-    sys.exit(0)
-cmd = (data.get("tool_input") or {}).get("command", "")
 
-# git clone / リポジトリ取得を許可リスト制に
-m = re.search(r'\b(?:git\s+clone|gh\s+repo\s+clone)\s+(\S+)', cmd)
-if m and not url_allowed(m.group(1)):
-    deny("ブロック: 許可リスト外のリポジトリ取得です → " + m.group(1)
-         + "\n信頼できる場合は .claude/hooks/guard.py の ALLOWED に追加してください。")
+def check_bash(cmd):
+    # git clone / リポジトリ取得を許可リスト制に
+    m = re.search(r'\b(?:git\s+clone|gh\s+repo\s+clone)\s+(\S+)', cmd)
+    if m and not url_allowed(m.group(1)):
+        deny("ブロック: 許可リスト外のリポジトリ取得です → " + m.group(1)
+             + "\n信頼できる場合は .claude/hooks/guard-allowlist.txt に追加してください。")
 
-# npm / pip の git 直インストールをブロック
-m = re.search(r'\b(?:npm\s+(?:install|i)|pip3?\s+install|uv\s+pip\s+install)\s+.*?'
-              r'((?:git\+|github:|https?://github\.com/|git@)\S+)', cmd)
-if m and not url_allowed(m.group(1).replace('git+', '')):
-    deny("ブロック: 許可リスト外の git 直インストールです → " + m.group(1))
+    # npm / pip の git 直インストールをブロック
+    m = re.search(r'\b(?:npm\s+(?:install|i)|pip3?\s+install|uv\s+pip\s+install)\s+.*?'
+                  r'((?:git\+|github:|https?://github\.com/|git@)\S+)', cmd)
+    if m and not url_allowed(m.group(1).replace('git+', '')):
+        deny("ブロック: 許可リスト外の git 直インストールです → " + m.group(1))
 
-# git push 先を許可リスト制に
-m = re.search(r'\bgit\s+push(?:\s+(-\S+\s+)*)?\s*(\S+)?', cmd)
-if ALLOWED and re.search(r'\bgit\s+push\b', cmd):
-    remote = (m.group(2) if m and m.group(2) and not m.group(2).startswith('-') else 'origin')
+    # git push 先を許可リスト制に
+    m = re.search(r'\bgit\s+push(?:\s+(-\S+\s+)*)?\s*(\S+)?', cmd)
+    if ALLOWED and re.search(r'\bgit\s+push\b', cmd):
+        remote = (m.group(2) if m and m.group(2) and not m.group(2).startswith('-') else 'origin')
+        try:
+            url = subprocess.run(['git', 'remote', 'get-url', remote],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+        except Exception:
+            url = ''
+        if url and not url_allowed(url):
+            deny("ブロック: 許可リスト外のリモートへの push です → " + url
+                 + "\n持ち出し防止のため、社外リモートへの push は禁止しています。")
+
+
+def main():
     try:
-        url = subprocess.run(['git', 'remote', 'get-url', remote],
-                             capture_output=True, text=True, timeout=5).stdout.strip()
+        data = json.load(sys.stdin)
     except Exception:
-        url = ''
-    if url and not url_allowed(url):
-        deny("ブロック: 許可リスト外のリモートへの push です → " + url
-             + "\n持ち出し防止のため、社外リモートへの push は禁止しています。")
+        return 0  # 入力が読めないときは作業を止めない
+    if data.get("tool_name") != "Bash":
+        return 0
+    check_bash((data.get("tool_input") or {}).get("command", "") or "")
+    return 0
 
-sys.exit(0)
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -7,13 +7,24 @@ import tempfile
 import urllib.request
 import urllib.error
 import urllib.parse
+import hashlib
+import sys
+import contextlib
 from datetime import datetime, timedelta, timezone
+
+# 使い捨てrefresh_tokenの取り合いを防ぐロックは、MF側と同じ部品・同じ置き場を使う。
+# 見つからないときにロックなしで黙って続けるとトークンを失いうるので、起動時に失敗させる
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "..", "mf-api-post", "lib"))
+import mf_lock  # noqa: E402
 
 TOKEN_ENDPOINT = "https://accounts.secure.freee.co.jp/public_api/token"
 AUTHORIZE_ENDPOINT = "https://accounts.secure.freee.co.jp/public_api/authorize"
 API_BASE = "https://api.freee.co.jp"
 REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 REFRESH_BUFFER_MINUTES = 30
+# 応答が返らないと処理もロックも残り続けるため、必ず打ち切る
+HTTP_TIMEOUT_SECONDS = 60
 
 
 class FreeeApiError(Exception):
@@ -64,7 +75,7 @@ def _post_form(url: str, data: dict) -> dict:
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise FreeeApiError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')}") from e
@@ -106,13 +117,26 @@ def ensure_access_token(credentials_path: str) -> str:
     更新した場合はファイルにアトミックに保存する（refresh_tokenは1回使い切りのため、
     保存を忘れると次回の更新に失敗する）。"""
     creds = load_credentials(credentials_path)
-    if token_needs_refresh(creds["expires_at"]):
+    if not token_needs_refresh(creds["expires_at"]):
+        return creds["access_token"]
+
+    # 同じ認証情報を使う処理が重なると、後発は使用済みのrefresh_tokenで更新して失敗する。
+    # 更新の前後だけロックを取り、取ったら読み直す（待つ間に先客が更新していればそれを使う）
+    with mf_lock.company_lock(token_lock_name(credentials_path)):
+        creds = load_credentials(credentials_path)
+        if not token_needs_refresh(creds["expires_at"]):
+            return creds["access_token"]
         token_response = refresh_token_pair(
             creds["client_id"], creds["client_secret"], creds["refresh_token"]
         )
         creds = merge_token_response(creds, token_response)
         save_credentials_atomic(credentials_path, creds)
-    return creds["access_token"]
+        return creds["access_token"]
+
+
+def token_lock_name(credentials_path: str) -> str:
+    digest = hashlib.sha1(os.path.abspath(credentials_path).encode("utf-8")).hexdigest()[:12]
+    return f"freee-token-{digest}"
 
 
 def api_call(access_token: str, company_id: int, method: str, path: str, json_body: dict | None = None) -> dict:
@@ -128,7 +152,7 @@ def api_call(access_token: str, company_id: int, method: str, path: str, json_bo
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise FreeeApiError(f"HTTP {e.code}: {e.read().decode('utf-8', 'replace')}") from e

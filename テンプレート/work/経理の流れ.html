@@ -1,0 +1,131 @@
+<title>〈会社名〉 経理の流れ</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=BIZ+UDPGothic:wght@400;700&display=swap">
+<style>
+:root{--bg:#F4F6F8;--paper:#FFFFFF;--ink:#1D2433;--sub:#5D6678;--line:#DCE0E7;
+--src:#EEF1F6;--mf:#E6EDFA;--mf-ink:#2D5BA8;--pay:#FBF1DF;--pay-ink:#8A5A0E;--rep:#E2F3EB;--rep-ink:#167A55;
+--auto:#167A55;--auto-bg:#E2F3EB;--hand:#8A5A0E;--hand-bg:#FBF1DF;--wait:#6B5BA8;--wait-bg:#EEEBF8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#13171F;--paper:#1B212C;--ink:#E6E9EF;--sub:#A2AABA;--line:#323A49;
+--src:#232A36;--mf:#1F2B42;--mf-ink:#8DB0EE;--pay:#382C17;--pay-ink:#E2B05A;--rep:#173328;--rep-ink:#5FCB9E;
+--auto:#5FCB9E;--auto-bg:#173328;--hand:#E2B05A;--hand-bg:#382C17;--wait:#B3A6EC;--wait-bg:#2C2747}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#13171F;--paper:#1B212C;--ink:#E6E9EF;--sub:#A2AABA;--line:#323A49;
+--src:#232A36;--mf:#1F2B42;--mf-ink:#8DB0EE;--pay:#382C17;--pay-ink:#E2B05A;--rep:#173328;--rep-ink:#5FCB9E;
+--auto:#5FCB9E;--auto-bg:#173328;--hand:#E2B05A;--hand-bg:#382C17;--wait:#B3A6EC;--wait-bg:#2C2747}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:"BIZ UDPGothic","Hiragino Sans","Yu Gothic",sans-serif;font-size:15px;line-height:1.65}
+.wrap{max-width:1100px;margin:0 auto;padding-inline:16px;padding-block:24px 56px;display:flex;flex-direction:column;gap:24px}
+h1{font-size:24px;margin:0}
+h2{font-size:18px;margin:0 0 12px}
+.lead{color:var(--sub);margin:6px 0 0;max-width:70ch}
+section{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:20px}
+.chip{display:inline-block;align-self:flex-start;font-size:12px;font-weight:700;border-radius:999px;padding:1px 9px;white-space:nowrap}
+.auto{color:var(--auto);background:var(--auto-bg)}.hand{color:var(--hand);background:var(--hand-bg)}.wait{color:var(--wait);background:var(--wait-bg)}
+.legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.scroll{overflow-x:auto}
+.lanes{display:grid;grid-template-columns:120px repeat(4,minmax(170px,1fr));gap:8px;min-width:860px}
+.hd{font-size:13px;font-weight:700;color:var(--sub);padding:6px 10px;border-radius:8px;text-align:center}
+.hd.s{background:var(--src)}.hd.m{background:var(--mf);color:var(--mf-ink)}.hd.p{background:var(--pay);color:var(--pay-ink)}.hd.r{background:var(--rep);color:var(--rep-ink)}
+.name{font-weight:700;font-size:16px;display:flex;align-items:center;padding:10px 4px;border-top:1px solid var(--line)}
+.cell{border-top:1px solid var(--line);padding:10px 4px;display:flex;flex-direction:column;gap:4px;position:relative}
+.box{border-radius:8px;padding:8px 10px;font-size:14px}
+.box small{display:block;color:var(--sub);font-size:12px}
+.s .box,.cell.s .box{background:var(--src)}.cell.m .box{background:var(--mf)}.cell.p .box{background:var(--pay)}.cell.r .box{background:var(--rep)}
+.empty{color:var(--sub);font-size:13px;padding:8px 10px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.card{border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px}
+.card h3{margin:0;font-size:16px}
+.card p{margin:0;color:var(--sub);font-size:14px}
+.may{margin-top:4px;padding-top:8px;border-top:1px dashed var(--line);color:var(--ink)!important}
+.note{font-size:13px;color:var(--sub);margin:12px 0 0}
+.month{display:grid;grid-template-columns:110px 1fr;gap:0}
+.month div{padding:10px 8px;border-top:1px solid var(--line)}
+.month .d{font-weight:700}
+.facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin-bottom:14px}
+.fact{background:var(--mf);border-radius:10px;padding:12px 14px}
+.fact b{display:block;font-size:22px;color:var(--mf-ink);font-variant-numeric:tabular-nums}
+.fact span{font-size:13px;color:var(--sub)}
+.qs{display:grid;gap:10px}
+.q{border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.q h3{margin:0 0 4px;font-size:16px}
+.q ul{margin:0;padding-left:1.2em;color:var(--sub);font-size:14px}
+.ng{color:#B23B3B;background:#F9E6E6}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .ng{color:#EC8B8B;background:#3A1F22}}
+:root[data-theme="dark"] .ng{color:#EC8B8B;background:#3A1F22}
+.no{display:inline-block;font-size:11px;font-weight:700;color:var(--sub);background:var(--paper);border:1px solid var(--line);border-radius:5px;padding:0 5px;margin-right:6px;font-variant-numeric:tabular-nums}
+.ref{font-size:12px;font-weight:700;color:var(--sub);margin-left:6px;white-space:nowrap}
+</style>
+
+<!-- ひな形。〈〉を会社に合わせて書き換える。流れ（行）は会社に合わせて増減する。
+     使い方は .claude/rules/client-connection-setup.md「経理の全体図」。 -->
+<div class="wrap">
+  <header>
+    <h1>〈会社名〉 経理の流れ</h1>
+    <p class="lead">お金と書類が、どこから来て、会計に入り、支払われ、毎月どう確かめられるか。横に読むと1つの流れです（〈日付〉時点）。</p>
+    <div class="legend"><span class="chip auto">自動</span><span class="chip hand">人の作業</span><span class="chip wait">準備中</span></div>
+  </header>
+
+  <section>
+    <h2>〈N〉つの流れ</h2>
+    <div class="scroll"><div class="lanes">
+      <div></div><div class="hd s">元になるもの</div><div class="hd m">会計に入る</div><div class="hd p">お金が動く</div><div class="hd r">毎月の確認</div>
+
+      <div class="name">① 売上</div>
+      <div class="cell s"><div class="box"><span class="no">①-1</span>〈案件管理・請求のツール〉<small>〈何が入っているか〉</small></div></div>
+      <div class="cell m"><div class="box"><span class="no">①-2</span>売掛金／売上高<small>〈入り方：連携・CSV・手入力〉</small></div><span class="chip auto">自動</span></div>
+      <div class="cell p"><div class="box"><span class="no">①-3</span>入金（〈口座〉）<small>〈消込の方法〉</small></div><span class="chip auto">自動</span></div>
+      <div class="cell r"><div class="box"><span class="no">①-4</span>〈確認すること〉</div><span class="chip auto">自動</span></div>
+
+      <div class="name">② 原価・外注</div>
+      <div class="cell s"><div class="box"><span class="no">②-1</span>〈受領のツール〉<small>〈承認の流れ〉</small></div></div>
+      <div class="cell m"><div class="box"><span class="no">②-2</span>買掛金<small>〈入り方〉</small></div><span class="chip hand">〈作業者〉</span></div>
+      <div class="cell p"><div class="box"><span class="no">②-3</span>〈支払の方法・時期〉</div><span class="chip hand">〈担当→承認者〉</span></div>
+      <div class="cell r"><div class="box"><span class="no">②-4</span>〈確認すること〉</div><span class="chip auto">自動</span></div>
+
+      <div class="name">③ 給与・立替</div>
+      <div class="cell s"><div class="box"><span class="no">③-1</span>〈給与・経費のツール〉</div></div>
+      <div class="cell m"><div class="box"><span class="no">③-2</span>〈科目〉<small>〈入り方〉</small></div><span class="chip auto">自動</span></div>
+      <div class="cell p"><div class="box"><span class="no">③-3</span>〈支給日・納付〉</div></div>
+      <div class="cell r"><div class="box"><span class="no">③-4</span>〈確認すること〉</div><span class="chip auto">自動</span></div>
+
+      <div class="name">④ 銀行・カード</div>
+      <div class="cell s"><div class="box"><span class="no">④-1</span>〈口座・カード〉</div></div>
+      <div class="cell m"><div class="box"><span class="no">④-2</span>明細から仕訳</div><span class="chip hand">〈作業者〉</span></div>
+      <div class="cell p"><div class="empty">〈資金移動など〉</div></div>
+      <div class="cell r"><div class="box"><span class="no">④-3</span>未仕訳の件数・連携切れ</div><span class="chip auto">自動</span></div>
+    </div></div>
+  </section>
+
+  <section>
+    <h2>毎月の確認で自動で出るもの</h2>
+    <div class="cards">
+      <div class="card"><span class="chip auto">〈いつ〉</span><h3>〈名前〉<span class="ref">〈番号〉</span></h3><p>〈中身〉</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>1か月の動き</h2>
+    <div class="month">
+      <div class="d">月末</div><div>〈支払〉</div>
+      <div class="d">第〈N〉営業日</div><div>〈締め〉</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>まだ人の手が残るところと、自動化の見込み</h2>
+    <div class="cards">
+      <div class="card"><span class="chip hand">〈担当〉</span><h3>〈作業〉<span class="ref">〈全体図の番号 例：②-3〉</span></h3><p>〈中身・件数〉</p><p class="may"><span class="chip auto">見込み 〈高・中・低〉</span> 〈どう自動化できるか／人が残る理由〉</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>〈作業者〉との打ち合わせで確かめたいこと</h2>
+    <p class="lead" style="margin-bottom:12px">帳簿とデータから見えている数字</p>
+    <div class="facts">
+      <div class="fact"><b>〈数字〉</b><span>〈何の数字か（請求書の登録の遅れ・未仕訳の件数・書き換え漏れなど）〉</span></div>
+    </div>
+    <div class="qs">
+      <div class="q"><span class="chip ng">決めたい</span><h3>〈決めること〉<span class="ref">〈番号〉</span></h3><ul><li>〈中身・案〉</li></ul></div>
+      <div class="q"><span class="chip wait">聞きたい</span><h3>提出が遅いもの／データが不正確なもの／承認が遅いところ／手作業が多いところ／毎回人に聞いている確認</h3><ul><li>〈具体的な問い〉</li></ul></div>
+      <div class="q"><span class="chip wait">お知らせ</span><h3>〈こちらから伝えること〉</h3><ul><li>〈中身〉</li></ul></div>
+    </div>
+  </section>
+</div>

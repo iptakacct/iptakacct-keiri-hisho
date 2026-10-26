@@ -1,14 +1,14 @@
 """マネーフォワード月次経理チェックの分析ロジック・レポート生成。
-分析関数（check_*）はmfc_ca MCPツールのレスポンスと同じ構造のdict/listを
-受け取る純粋関数で、MCP呼び出しから独立してユニットテストできる。
-データ取得（mfc_ca MCPツールの呼び出し）はこのファイルの責務ではない——
+分析関数（check_*）は mf_cli read の出力（形はMCPと同じ）のdict/listを
+受け取る純粋関数で、API呼び出しから独立してユニットテストできる。
+データ取得（mf_cli read）はこのファイルの責務ではない——
 呼び出し側（Claude）が組み立てたJSONを読むだけ。"""
 
 import re
 
 
 def flatten_journal_branches(journals):
-    """mfc_ca_getJournalsの'journals'配列を、branch単位のフラットなリストに
+    """read "/journals"（旧MCPのgetJournalsと同じ形）の'journals'配列を、branch単位のフラットなリストに
     変換する。1つのjournalに複数branchがある場合、それぞれ独立した1件として扱う。
     重複・定例チェックの照合キーは(transaction_date, value, debitor_account_name,
     creditor_account_name)——マネーフォワードの生データはtrade_partner_nameが
@@ -168,7 +168,7 @@ def check_recurring_missing(lines, target_month, recurring_min_months=6):
 
 
 def extract_account_leaves(rows):
-    """mfc_ca_getReportsTrialBalanceProfitLoss/BalanceSheetの'rows'配列
+    """read "/reports/trial_balance_pl|bs"（旧MCPのgetReportsTrialBalance*と同じ形）の'rows'配列
     （ネストしたツリー構造）を再帰的にたどり、type=='account'のリーフノードだけを
     {科目名: values配列}の辞書として返す。values配列の構成は
     [opening_balance, debit_amount, credit_amount, closing_balance, ratio]で固定。
@@ -183,7 +183,8 @@ def extract_account_leaves(rows):
 
 
 def check_variance(pl_leaves_by_month, target_month, variance_threshold=0.30,
-                    variance_history_months=6, variance_materiality_floor=10000):
+                    variance_history_months=6, variance_materiality_floor=10000,
+                    variance_exempt_accounts=frozenset()):
     """勘定科目ごとに、対象月の期間発生額(values[1]-values[2])と、対象月以外の月
     （最大variance_history_months分）の平均との乖離率をチェックする。
     abs(乖離率) >= variance_thresholdかつ金額がvariance_materiality_floor以上
@@ -194,7 +195,15 @@ def check_variance(pl_leaves_by_month, target_month, variance_threshold=0.30,
     完全新規の科目が一切検出されなかった）。
     pl_leaves_by_month: {"YYYY-MM": extract_account_leavesの戻り値}。
     variance_history_monthsは対象月を除く直近何ヶ月を過去平均の母数にするかの
-    上限（実際に渡された月数がそれより少なければ渡された分だけを使う）。"""
+    上限（実際に渡された月数がそれより少なければ渡された分だけを使う）。
+
+    variance_exempt_accounts: 検出対象から除外する勘定科目名の集合。発生が
+      不定期（特定の条件が揃った月にしか発生しない）と分かっている科目を
+      会社ごとに指定する。完全一致のみ判定する（部分一致はしない）。除外
+      するのは当月がゼロ発生（＝「-100%」の誤検知パターン）の場合のみで、
+      当月に実際の金額が発生している場合は通常どおり増減チェックの対象に
+      なる（急な高額発生を見逃さないため。2026-09-16、freee-monthly-check
+      の同種実装のレビューで固めた仕様）。"""
     target_leaves = pl_leaves_by_month.get(target_month, {})
 
     history_months = sorted(m for m in pl_leaves_by_month if m != target_month)
@@ -219,6 +228,9 @@ def check_variance(pl_leaves_by_month, target_month, variance_threshold=0.30,
         historical_avg = sum(history_amounts) / len(history_amounts) if history_amounts else 0
 
         if max(abs(current_amount), abs(historical_avg)) < variance_materiality_floor:
+            continue
+
+        if current_amount == 0 and name in variance_exempt_accounts:
             continue
 
         if historical_avg == 0:
@@ -252,10 +264,122 @@ def check_variance(pl_leaves_by_month, target_month, variance_threshold=0.30,
     return findings
 
 
+def extract_pl_totals(rows):
+    """試算表PLの最上位の行（売上高合計・営業利益／営業損失 等）を
+    {行名: その期間の発生額（closing-opening）} にする。損失の行は負の値で入る。"""
+    return {r["name"]: r["values"][3] - r["values"][0] for r in rows or [] if r.get("values")}
+
+
+def _operating_profit(totals):
+    for name, value in (totals or {}).items():
+        if name.startswith("営業利益") or name.startswith("営業損失"):
+            return value
+    return None
+
+
+def check_profit_trend(totals_by_month, pl_leaves_by_month, target_month,
+                       drop_ratio=0.5, materiality_floor=100000, top_n=5):
+    """月ごとの営業利益を前月と比べる（赤字や利益が大きく減ったところは、
+    言わなくても月次チェックで見る）。
+    当月が営業赤字ならA、前月黒字から drop_ratio 以上減ったらB。
+    利益への影響が大きい科目を top_n 件添える（影響＝貸方−借方の前月差）。"""
+    months = sorted(m for m in totals_by_month if m <= target_month)
+    if target_month not in totals_by_month or len(months) < 2:
+        return []
+    prev_month = months[-2]
+    cur = _operating_profit(totals_by_month[target_month])
+    prev = _operating_profit(totals_by_month[prev_month])
+    if cur is None or prev is None:
+        return []
+    if cur < 0:
+        severity = "A"
+    elif prev > 0 and prev - cur >= materiality_floor and cur <= prev * (1 - drop_ratio):
+        severity = "B"
+    else:
+        return []
+    cur_leaves = pl_leaves_by_month.get(target_month, {})
+    prev_leaves = pl_leaves_by_month.get(prev_month, {})
+    impacts = []
+    for name in set(cur_leaves) | set(prev_leaves):
+        c, p = cur_leaves.get(name), prev_leaves.get(name)
+        c_amt = (c[2] - c[1]) if c else 0
+        p_amt = (p[2] - p[1]) if p else 0
+        if c_amt != p_amt:
+            impacts.append((name, p_amt, c_amt, c_amt - p_amt))
+    impacts.sort(key=lambda x: (-abs(x[3]), x[0]))
+    return [{
+        "check": "profit_trend",
+        "severity": severity,
+        "current": cur,
+        "previous": prev,
+        "previous_month": prev_month,
+        "history": [(m, _operating_profit(totals_by_month[m])) for m in months[-3:]],
+        "impacts": impacts[:top_n],
+    }]
+
+
+def build_profit_trend_section(totals_by_month, target_month, months=3):
+    """「損益の推移」の節（毎回出す）。直近 months か月の売上と営業利益を並べる。"""
+    ms = sorted(m for m in totals_by_month if m <= target_month)[-months:]
+    if not ms:
+        return ""
+    lines = ["## 損益の推移", "", "| 月 | 売上高 | 営業利益 |", "|---|---|---|"]
+    for m in ms:
+        t = totals_by_month[m]
+        op = _operating_profit(t)
+        op_text = "" if op is None else f"{op:,}円"
+        lines.append(f"| {m} | {t.get('売上高合計', 0):,}円 | {op_text} |")
+    return "\n".join(lines)
+
+
 TARGET_BS_ACCOUNTS = {
     "売掛金", "買掛金", "未払金", "未払費用", "仮払金", "仮受金",
     "立替金", "預り金", "前払費用", "未収入金", "前受金",
 }
+
+
+# 繰越のずれを拾う下限（これ未満の差は端数として見ない）
+CARRYOVER_MATERIALITY_FLOOR = 1
+
+
+def check_carryover(prior_bs_leaves, current_bs_leaves,
+                    materiality_floor=CARRYOVER_MATERIALITY_FLOOR):
+    """前期末の残高が当期首に反映されているかを、科目ごとに突き合わせる。
+
+    ⚠️ **マネーフォワードは、会計期間を締めても繰越処理をしないと翌期の期首残高が入らない**。
+    繰越を忘れると、翌期のBSが前期末とずれたまま
+    1年分の記帳が進み、決算で初めて気づくことになる。
+
+    判定は単純に「前期末の closing_balance（values[3]）＝当期首の opening_balance（values[0]）」。
+    ずれる原因は2つあり、どちらも要確認：
+      1. 繰越をしていない（期首残高がゼロ、または古い繰越のまま）
+      2. 繰越した後に前期へ遡って仕訳を入れた（＝繰越をやり直す必要がある）
+
+    どちらかを機械的に見分けることはできないので、両方の可能性を添えて出す。
+    前期末がゼロで当期首もゼロの科目は差が無いので出ない。
+
+    prior_bs_leaves / current_bs_leaves は extract_account_leaves の戻り値
+    （{科目名: [opening, debit, credit, closing, ratio]}）。
+    """
+    findings = []
+    names = set(prior_bs_leaves or {}) | set(current_bs_leaves or {})
+    for name in sorted(names):
+        prior = (prior_bs_leaves or {}).get(name) or []
+        current = (current_bs_leaves or {}).get(name) or []
+        prior_closing = prior[3] if len(prior) > 3 else 0
+        current_opening = current[0] if len(current) > 0 else 0
+        diff = (current_opening or 0) - (prior_closing or 0)
+        if abs(diff) < materiality_floor:
+            continue
+        findings.append({
+            "check": "carryover",
+            "severity": "A",
+            "account_name": name,
+            "prior_closing": prior_closing or 0,
+            "current_opening": current_opening or 0,
+            "diff": diff,
+        })
+    return findings
 
 
 def check_negative_balance(bs_leaves, target_account_names=TARGET_BS_ACCOUNTS):
@@ -509,6 +633,81 @@ def check_upsider_billing_duplicate(journals, target_month):
     return findings
 
 
+CROSS_ROUTE_ACCOUNTS = ("買掛金", "未払金", "未払費用")
+
+
+def _route(journal):
+    """仕訳の入力の経路。明細から登録したもの（transaction_id あり）は手入力と分ける。"""
+    by = (journal.get("entered_by") or "").replace("JOURNAL_TYPE_", "")
+    return by + ("+明細" if journal.get("transaction_id") else "")
+
+
+def _who_key(s):
+    import re
+    import unicodedata
+    s = (s or "").replace("㈱", "株式会社").replace("(株)", "株式会社").replace("（株）", "株式会社")
+    s = unicodedata.normalize("NFKC", s)
+    return re.sub(r"[\s・.,、。()（）]", "", s)
+
+
+def check_cross_route_duplicate(journals, target_month, window_days=31,
+                                accounts=CROSS_ROUTE_ACCOUNTS):
+    """同じ相手・同じ金額の負債の計上（買掛金・未払金等の貸方）が、入力の経路の違う仕訳で2回入っていないか。
+    手入力とCSV取り込み、手入力と請求書連携のように、別々の経路で同じ請求書を計上した二重計上を拾う。
+    実例：買掛金で、手入力2件とCSV取り込み1件が同じ請求書を計上していた。
+    相手は補助科目か取引先、金額は行ごとの税込、借方の科目も同じもの。片方が対象月に入り、日付の差が window_days 以内の組を挙げる。
+    （借方の科目が違えば別の取引とみなす：同じ立替者の同額の立替〈ホテル代とヘアメイク代〉を拾わないため）"""
+    import datetime as _dt
+    rows = []
+    seen = set()
+    for j in journals:
+        jid = j.get("id")
+        if jid in seen or j.get("is_realized") is False:
+            continue
+        seen.add(jid)
+        date = (j.get("transaction_date") or "")[:10]
+        if not date:
+            continue
+        for b in j.get("branches") or []:
+            c = b.get("creditor") or {}
+            if c.get("account_name") not in accounts:
+                continue
+            who = c.get("sub_account_name") or c.get("trade_partner_name")
+            amount = int(c.get("value") or 0) + int(c.get("tax_value") or 0)
+            if not who or amount <= 0:
+                continue
+            debit = (b.get("debitor") or {}).get("account_name")
+            rows.append({"key": (c["account_name"], _who_key(who), amount, debit), "who": who, "date": date,
+                         "journal_id": jid, "number": j.get("number"), "route": _route(j),
+                         "account_name": c["account_name"], "value": amount})
+    groups = {}
+    for r in rows:
+        groups.setdefault(r["key"], []).append(r)
+    findings, reported = [], set()
+    for key, items in groups.items():
+        items.sort(key=lambda r: r["date"])
+        for i, a in enumerate(items):
+            for b in items[i + 1:]:
+                if a["route"] == b["route"] or a["journal_id"] == b["journal_id"]:
+                    continue
+                if a["date"][:7] != target_month and b["date"][:7] != target_month:
+                    continue
+                gap = (_dt.date.fromisoformat(b["date"]) - _dt.date.fromisoformat(a["date"])).days
+                if gap > window_days:
+                    continue
+                pair = (key, a["journal_id"], b["journal_id"])
+                if pair in reported:
+                    continue
+                reported.add(pair)
+                findings.append({
+                    "check": "cross_route_duplicate", "severity": "A",
+                    "transaction_date": b["date"], "account_name": a["account_name"],
+                    "who": a["who"], "value": a["value"], "entries": [a, b],
+                })
+    findings.sort(key=lambda f: (f["transaction_date"], -f["value"]))
+    return findings
+
+
 def check_prepaid_expense_amortization_missing(journals, target_month):
     """前払費用の当月償却（貸方への振替）が漏れていないかを検出する。
 
@@ -581,14 +780,20 @@ def describe_finding(finding):
         return f"勘定科目「{finding['account_name']}」の増減"
     if check == "negative_balance":
         return f"「{finding['account_name']}」のマイナス残高"
+    if check == "carryover":
+        return f"「{finding['account_name']}」の繰越のずれ（繰越もれの疑い）"
     if check == "stale_subaccount":
         return f"「{finding['account_name']}（{finding['sub_account_name']}）」の滞留候補"
     if check == "upsider_billing_duplicate":
         return "UPSIDER請求書取り込みによる二重計上候補"
     if check == "prepaid_expense_amortization_missing":
         return "前払費用の当月償却漏れ候補"
+    if check == "cross_route_duplicate":
+        return f"「{finding['account_name']}（{finding['who']}）」の経路違いの二重計上候補"
     if check == "missing_subaccount":
         return f"「{finding['account_name']}」の補助科目の付け忘れ候補"
+    if check == "profit_trend":
+        return "営業赤字" if finding["current"] < 0 else "営業利益の大幅な減少"
     return check
 
 
@@ -649,6 +854,21 @@ def format_finding_detail(finding):
             "確認事項：\n"
             "消込先の誤りや二重計上・計上漏れがないか確認してください。"
         )
+    if check == "carryover":
+        return (
+            f"科目：{finding['account_name']}\n"
+            f"前期末の残高：{finding['prior_closing']:,}円\n"
+            f"当期首の残高：{finding['current_opening']:,}円"
+            f"（差 {finding['diff']:+,}円）\n\n"
+            "理由：\n"
+            "前期末の残高が当期首に反映されていません。"
+            "マネーフォワードは会計期間を締めても、繰越処理をしないと"
+            "翌期の期首残高が入りません。\n\n"
+            "確認事項：\n"
+            "①繰越をまだ行っていないか、②繰越の後に前期へ遡って仕訳を入れたか"
+            "（この場合は繰越をやり直す）のどちらかです。"
+            "前期の締めが終わっているなら、MFの画面で繰越を実行してください。"
+        )
     if check == "stale_subaccount":
         return (
             f"科目：{finding['account_name']}（補助科目：{finding['sub_account_name']}）\n"
@@ -687,6 +907,20 @@ def format_finding_detail(finding):
             "当月分の前払費用の振替仕訳が漏れていないか確認してください（簡易判定のため、"
             "取得ウィンドウ外の期間の残高は見えていない可能性がある点に注意）。"
         )
+    if check == "cross_route_duplicate":
+        entries = "\n".join(
+            f"- No.{e['number']}（{e['date']}、{e['route']}）仕訳ID：{e['journal_id']}"
+            for e in finding["entries"])
+        return (
+            f"相手：{finding['who']}\n"
+            f"金額：{finding['value']:,}円（税込）\n"
+            f"{entries}\n\n"
+            "理由：\n"
+            "同じ相手・同じ金額の計上が、入力の経路の違う仕訳（手入力とCSV取り込み等）で2回入っています。\n\n"
+            "確認事項：\n"
+            "元の請求書が1枚なら二重計上です。片方を画面から削除してもらう（取消仕訳で回避しない）。"
+            "毎月同額の定額取引なら、別の月の分でないか日付と請求書番号を確かめてください。"
+        )
     if check == "missing_subaccount":
         prior = "、".join(finding["prior_months_present"])
         subs = "、".join(finding["prior_sub_account_names"])
@@ -701,6 +935,18 @@ def format_finding_detail(finding):
             "対象月は補助科目なしで計上されています。\n\n"
             "確認事項：\n"
             "補助科目の付け忘れでないか確認し、必要なら補助科目を付けてください。"
+        )
+    if check == "profit_trend":
+        hist = "、".join(f"{m}：{v:,}円" for m, v in finding["history"])
+        imp = "\n".join(f"- {n}：{p:,}円 → {c:,}円（利益への影響 {d:+,}円）"
+                        for n, p, c, d in finding["impacts"])
+        return (
+            f"営業利益：{finding['previous_month']} {finding['previous']:,}円 → 当月 {finding['current']:,}円\n"
+            f"直近の推移：{hist}\n\n"
+            f"前月から利益への影響が大きい科目：\n{imp}\n\n"
+            "確認事項：\n"
+            "計上漏れ・見積り（精算書待ちの売上等）・期ズレでないかを確認し、"
+            "事業の実態なら理由を一言添えて報告してください。"
         )
     return ""
 
@@ -755,13 +1001,14 @@ def run_monthly_check(input_data, config=None):
     """組み立て済みの入力JSON（dict）を受け取り、4つのチェックを実行して
     Markdownレポート文字列を返す。データ種別ごとにtry/exceptで区切り、
     あるチェックの失敗が他のチェックを止めないようにする。
-    fetch_errorsに記録済みのエラー（Claude側のMCP取得失敗）も、対応する
+    fetch_errorsに記録済みのエラー（Claude側のデータ取得失敗）も、対応する
     チェックをスキップした上でレポートのエラー節に転記する。"""
     config = config or {}
     variance_threshold = config.get("variance_threshold", 0.30)
     recurring_min_months = config.get("recurring_min_months", 6)
     variance_history_months = config.get("variance_history_months", 6)
     variance_materiality_floor = config.get("variance_materiality_floor", 10000)
+    variance_exempt_accounts = set(config.get("variance_exempt_accounts", []))
     duplicate_known_safe_pairs = {
         tuple(pair) for pair in config.get("duplicate_known_safe_pairs", [])
     }
@@ -813,6 +1060,12 @@ def run_monthly_check(input_data, config=None):
 
         try:
             journals = input_data.get("journals") or []
+            findings += check_cross_route_duplicate(journals, target_month)
+        except Exception as e:
+            errors.append(f"経路違いの二重計上チェック: {e}")
+
+        try:
+            journals = input_data.get("journals") or []
             findings += check_prepaid_expense_amortization_missing(journals, target_month)
         except Exception as e:
             errors.append(f"前払費用の当月償却漏れチェック: {e}")
@@ -825,9 +1078,18 @@ def run_monthly_check(input_data, config=None):
             findings += check_variance(
                 pl_leaves_by_month, target_month, variance_threshold,
                 variance_history_months, variance_materiality_floor,
+                variance_exempt_accounts,
             )
         except Exception as e:
             errors.append(f"勘定科目の増減チェック: {e}")
+        try:
+            findings += check_profit_trend(
+                input_data.get("trial_pl_totals_by_month") or {},
+                input_data.get("trial_pl_by_month") or {}, target_month,
+                drop_ratio=config.get("profit_drop_ratio", 0.5),
+                materiality_floor=config.get("profit_drop_floor", 100000))
+        except Exception as e:
+            errors.append(f"損益の推移チェック: {e}")
 
     if fetch_errors.get("trial_bs"):
         errors.append(f"BS異常残高チェック: {fetch_errors['trial_bs']}")
@@ -838,4 +1100,24 @@ def run_monthly_check(input_data, config=None):
         except Exception as e:
             errors.append(f"BS異常残高チェック: {e}")
 
-    return build_report(target_month, company_name, findings, errors=errors)
+    # 繰越のずれ。
+    # 前期末のBSと当期首のBSの両方が入力にあるときだけ行う。
+    # 入力の作り方は SKILL.md「繰越のずれチェックの入力」を参照。
+    if input_data.get("trial_bs_prior_closing") and input_data.get("trial_bs_current_opening"):
+        try:
+            findings += check_carryover(
+                input_data["trial_bs_prior_closing"],
+                input_data["trial_bs_current_opening"],
+                materiality_floor=config.get(
+                    "carryover_materiality_floor", CARRYOVER_MATERIALITY_FLOOR),
+            )
+        except Exception as e:
+            errors.append(f"繰越のずれチェック: {e}")
+
+    report = build_report(target_month, company_name, findings, errors=errors)
+    trend = build_profit_trend_section(
+        input_data.get("trial_pl_totals_by_month") or {}, target_month)
+    if trend:
+        report = report.rstrip("\n") + "\n\n" + trend
+    return report.rstrip("\n") + "\n"
+

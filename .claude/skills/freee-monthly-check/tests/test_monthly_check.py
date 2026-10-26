@@ -281,6 +281,66 @@ class TestCheckVariance(unittest.TestCase):
         )
         self.assertEqual(len(findings), 1)
 
+    def test_exempt_account_is_excluded_even_when_zero_this_month(self):
+        balances_by_month = {
+            "2026-01": [_pl_row(500, "交際費", 20000)],
+            "2026-02": [_pl_row(500, "交際費", 30000)],
+            "2026-03": [_pl_row(500, "交際費", 15000)],
+            "2026-04": [_pl_row(500, "交際費", 25000)],
+            "2026-05": [_pl_row(500, "交際費", 18000)],
+            "2026-06": [_pl_row(500, "交際費", 22000)],
+            "2026-07": [],  # 交際費の行が無い月＝発生ゼロ
+        }
+        findings = monthly_check.check_variance(
+            balances_by_month, "2026-07",
+            variance_exempt_accounts={"交際費"},
+        )
+        self.assertEqual(findings, [])
+
+    def test_exempt_account_still_flagged_when_amount_is_nonzero_and_spikes(self):
+        balances_by_month = {
+            "2026-01": [_pl_row(500, "交際費", 20000)],
+            "2026-02": [_pl_row(500, "交際費", 22000)],
+            "2026-03": [_pl_row(500, "交際費", 18000)],
+            "2026-04": [_pl_row(500, "交際費", 21000)],
+            "2026-05": [_pl_row(500, "交際費", 19000)],
+            "2026-06": [_pl_row(500, "交際費", 20000)],
+            "2026-07": [_pl_row(500, "交際費", 100000)],  # スパイク、ゼロではない
+        }
+        findings = monthly_check.check_variance(
+            balances_by_month, "2026-07",
+            variance_exempt_accounts={"交際費"},
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["account_item_name"], "交際費")
+
+    def test_non_exempt_account_still_flagged_when_exempt_list_given(self):
+        balances_by_month = {
+            "2026-01": [_pl_row(300, "通信費", 50000)],
+            "2026-02": [_pl_row(300, "通信費", 52000)],
+            "2026-03": [_pl_row(300, "通信費", 49000)],
+            "2026-04": [_pl_row(300, "通信費", 51000)],
+            "2026-05": [_pl_row(300, "通信費", 50000)],
+            "2026-06": [_pl_row(300, "通信費", 50000)],
+            "2026-07": [_pl_row(300, "通信費", 150000)],
+        }
+        findings = monthly_check.check_variance(
+            balances_by_month, "2026-07",
+            variance_exempt_accounts={"交際費"},
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["account_item_name"], "通信費")
+
+    def test_default_exempt_accounts_is_empty_and_backward_compatible(self):
+        balances_by_month = {
+            "2026-01": [_pl_row(500, "交際費", 20000)],
+            "2026-07": [],
+        }
+        # variance_exempt_accountsを省略しても、既存どおり検出される
+        findings = monthly_check.check_variance(balances_by_month, "2026-07")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["account_item_name"], "交際費")
+
 
 def _bs_row(account_item_id, name, closing_balance, partners=None):
     return {
@@ -755,6 +815,41 @@ class TestRunMonthlyCheck(unittest.TestCase):
         )
         self.assertNotIn("## 実行時エラー", report)
 
+    def test_variance_exempt_accounts_config_is_passed_through(self):
+        def fake_api_call(token, company_id, method, path, json_body=None):
+            if path.startswith("/api/1/deals"):
+                return {"deals": []}
+            if path.startswith("/api/1/reports/trial_pl"):
+                if "2026-07" in path:
+                    return {"trial_pl": {"balances": []}}
+                return {
+                    "trial_pl": {
+                        "balances": [
+                            {"account_item_id": 500, "account_item_name": "交際費",
+                             "opening_balance": 0, "closing_balance": 20000}
+                        ]
+                    }
+                }
+            if path.startswith(f"/api/1/companies/{company_id}"):
+                return {
+                    "company": {
+                        "fiscal_years": [
+                            {"start_date": "2026-06-01", "end_date": "2027-05-31"}
+                        ]
+                    }
+                }
+            if path.startswith("/api/1/reports/trial_bs"):
+                return {"trial_bs": {"balances": []}}
+            raise AssertionError(f"unexpected path: {path}")
+        report = monthly_check.run_monthly_check(
+            fake_api_call, "TOKEN", 999, "テスト会社", "2026-07",
+            config={"variance_exempt_accounts": ["交際費"]},
+        )
+        self.assertNotIn("交際費", report)
+        self.assertNotIn("## 実行時エラー", report)
+        self.assertIn("A：0件", report)
+        self.assertIn("B：0件", report)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -833,3 +928,50 @@ class TestCheckMissingPartnerOrItem(unittest.TestCase):
         detail = monthly_check.format_finding_detail(findings[0])
         self.assertIn("通信A社", detail)
         self.assertIn("通信サービス利用料", detail)
+
+
+class TestMergeWithManualSection(unittest.TestCase):
+    def test_no_existing_content_returns_new_report_unchanged(self):
+        new_report = "# 月次経理チェック結果\n\n本文"
+        self.assertEqual(
+            monthly_check.merge_with_manual_section(new_report, None), new_report
+        )
+
+    def test_existing_content_without_marker_returns_new_report_unchanged(self):
+        new_report = "# 月次経理チェック結果\n\n新しい本文"
+        existing_content = "# 月次経理チェック結果\n\n古い本文（マーカー無し）"
+        self.assertEqual(
+            monthly_check.merge_with_manual_section(new_report, existing_content),
+            new_report,
+        )
+
+    def test_existing_content_with_marker_preserves_manual_section(self):
+        new_report = "# 月次経理チェック結果\n\n新しい本文"
+        existing_content = (
+            "# 月次経理チェック結果\n\n古い本文\n\n"
+            f"{monthly_check.MANUAL_SECTION_MARKER}\n"
+            "## 確認結果（手作業）\n\n担当者が確認した内容"
+        )
+        merged = monthly_check.merge_with_manual_section(new_report, existing_content)
+        self.assertIn("新しい本文", merged)
+        self.assertNotIn("古い本文", merged)
+        self.assertIn(monthly_check.MANUAL_SECTION_MARKER, merged)
+        self.assertIn("## 確認結果（手作業）", merged)
+        self.assertIn("担当者が確認した内容", merged)
+
+    def test_manual_section_survives_repeated_regeneration(self):
+        existing_content = (
+            "# 月次経理チェック結果\n\n1回目の本文\n\n"
+            f"{monthly_check.MANUAL_SECTION_MARKER}\n"
+            "## 確認結果（手作業）\n\n消えてはいけない内容"
+        )
+        first_merge = monthly_check.merge_with_manual_section(
+            "# 月次経理チェック結果\n\n2回目の本文", existing_content
+        )
+        second_merge = monthly_check.merge_with_manual_section(
+            "# 月次経理チェック結果\n\n3回目の本文", first_merge
+        )
+        self.assertIn("消えてはいけない内容", second_merge)
+        self.assertIn("3回目の本文", second_merge)
+        self.assertNotIn("1回目の本文", second_merge)
+        self.assertNotIn("2回目の本文", second_merge)

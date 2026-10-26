@@ -1,9 +1,11 @@
+import io
 import json
 import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 
+import invox_api
 from invox_api import (
     load_credentials,
     save_credentials_atomic,
@@ -84,6 +86,7 @@ class TestBasicAuthHeader(unittest.TestCase):
 
 from unittest import mock
 import urllib.error
+import invox_api
 from invox_api import (
     exchange_code_for_token,
     ensure_access_token,
@@ -203,6 +206,58 @@ class TestEnsureAccessToken(unittest.TestCase):
         self.assertEqual(saved["refresh_token"], "rt-new")
         mock_refresh.assert_called_once_with("cid", "csecret", "rt-old")
 
+    @mock.patch("invox_api.refresh_token_pair")
+    def test_uses_token_refreshed_by_other_process_while_waiting_for_lock(self, mock_refresh):
+        import contextlib
+        import invox_api
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "creds.json")
+            base = {"client_id": "cid", "client_secret": "csecret"}
+            save_credentials_atomic(path, {**base, "access_token": "at-old", "refresh_token": "rt-old",
+                                           "expires_at": "2000-01-01T00:00:00+00:00"})
+
+            @contextlib.contextmanager
+            def other_process_refreshed(name):
+                save_credentials_atomic(path, {**base, "access_token": "at-other", "refresh_token": "rt-other",
+                                               "expires_at": "2999-01-01T00:00:00+00:00"})
+                yield
+
+            with mock.patch.object(invox_api.mf_lock, "company_lock", other_process_refreshed):
+                token = ensure_access_token(path)
+        self.assertEqual(token, "at-other")
+        mock_refresh.assert_not_called()
+
+    def test_switches_to_winner_when_refresh_fails_after_other_process_refreshed(self):
+        import invox_api
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "creds.json")
+            base = {"client_id": "cid", "client_secret": "csecret"}
+            save_credentials_atomic(path, {**base, "access_token": "at-old", "refresh_token": "rt-old",
+                                           "expires_at": "2000-01-01T00:00:00+00:00"})
+
+            def refresh(cid, secret, rt):
+                # ロックを使わない別の処理が先に更新した直後に、使用済みの値で更新して失敗する
+                save_credentials_atomic(path, {**base, "access_token": "at-win", "refresh_token": "rt-win",
+                                               "expires_at": "2999-01-01T00:00:00+00:00"})
+                raise invox_api.InvoxApiError("HTTP 400: invalid_grant")
+
+            with mock.patch.object(invox_api, "refresh_token_pair", side_effect=refresh), \
+                    mock.patch.dict(os.environ, {"RUN_LOCK_DIR_BASE": d}):
+                self.assertEqual(ensure_access_token(path), "at-win")
+
+    def test_raises_when_refresh_fails_and_nobody_refreshed(self):
+        import invox_api
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "creds.json")
+            save_credentials_atomic(path, {"client_id": "cid", "client_secret": "csecret",
+                                           "access_token": "at-old", "refresh_token": "rt-old",
+                                           "expires_at": "2000-01-01T00:00:00+00:00"})
+            with mock.patch.object(invox_api, "refresh_token_pair",
+                                   side_effect=invox_api.InvoxApiError("HTTP 400")), \
+                    mock.patch.dict(os.environ, {"RUN_LOCK_DIR_BASE": d}):
+                with self.assertRaises(invox_api.InvoxApiError):
+                    ensure_access_token(path)
+
 
 class TestApiCall(unittest.TestCase):
     @mock.patch("invox_api.urllib.request.urlopen")
@@ -249,3 +304,55 @@ class TestApiCall(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _fake_raw_response(status, content_type, body):
+    class FakeRawResponse:
+        def __init__(self):
+            self.status = status
+            self.headers = {"Content-Type": content_type} if content_type else {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return body
+
+    return FakeRawResponse()
+
+
+class TestApiCallRaw(unittest.TestCase):
+    """journal/exportのように「JSONとは限らない本文」「204で本文なし」を返すAPI向けの生呼び出し。"""
+
+    @mock.patch("invox_api.urllib.request.urlopen")
+    def test_returns_status_content_type_and_raw_bytes(self, mock_urlopen):
+        body = "識別フラグ,伝票No.\r\n2111,,".encode("cp932")
+        mock_urlopen.return_value = _fake_raw_response(200, "text/csv; charset=Shift_JIS", body)
+        status, content_type, got = invox_api.api_call_raw(
+            "tok", "POST", "invoice_receive/invoice/journal/export",
+            json_body={"invox_company_code": "SMPL1", "journal_type": "expense"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "text/csv; charset=Shift_JIS")
+        self.assertEqual(got, body)  # デコードも加工もせず、そのままのバイト列
+        sent_request = mock_urlopen.call_args[0][0]
+        self.assertEqual(sent_request.get_header("Authorization"), "Bearer tok")
+        self.assertEqual(json.loads(sent_request.data.decode("utf-8"))["journal_type"], "expense")
+
+    @mock.patch("invox_api.urllib.request.urlopen")
+    def test_returns_204_with_empty_body(self, mock_urlopen):
+        mock_urlopen.return_value = _fake_raw_response(204, "", b"")
+        status, content_type, got = invox_api.api_call_raw(
+            "tok", "POST", "invoice_receive/invoice/journal/export", json_body={})
+        self.assertEqual(status, 204)
+        self.assertEqual(got, b"")
+
+    @mock.patch("invox_api.urllib.request.urlopen")
+    def test_raises_invoxapierror_on_http_error(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://api.invox.jp/x", 400, "Bad Request", {}, io.BytesIO(b'{"error":"ERA0001"}'))
+        with self.assertRaises(InvoxApiError):
+            invox_api.api_call_raw("tok", "POST", "invoice_receive/invoice/journal/export", json_body={})

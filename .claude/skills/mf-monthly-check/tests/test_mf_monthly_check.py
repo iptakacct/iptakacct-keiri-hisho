@@ -1,6 +1,8 @@
 import os
 import sys
+import json
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import mf_monthly_check
@@ -461,6 +463,48 @@ class TestCheckVariance(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertAlmostEqual(findings[0]["historical_avg"], 50000)
 
+    def test_exempt_account_not_flagged_when_zero_this_month(self):
+        pl_leaves_by_month = {
+            "2026-01": _pl_leaves(交際費=20000),
+            "2026-02": _pl_leaves(交際費=30000),
+            "2026-03": _pl_leaves(交際費=15000),
+            "2026-04": _pl_leaves(交際費=25000),
+            "2026-05": _pl_leaves(交際費=18000),
+            "2026-06": _pl_leaves(交際費=22000),
+            "2026-07": {},  # 交際費の発生なし
+        }
+        findings = mf_monthly_check.check_variance(
+            pl_leaves_by_month, "2026-07",
+            variance_exempt_accounts={"交際費"},
+        )
+        self.assertEqual(findings, [])
+
+    def test_exempt_account_still_flagged_when_amount_is_nonzero_and_spikes(self):
+        pl_leaves_by_month = {
+            "2026-01": _pl_leaves(交際費=20000),
+            "2026-02": _pl_leaves(交際費=22000),
+            "2026-03": _pl_leaves(交際費=18000),
+            "2026-04": _pl_leaves(交際費=21000),
+            "2026-05": _pl_leaves(交際費=19000),
+            "2026-06": _pl_leaves(交際費=20000),
+            "2026-07": _pl_leaves(交際費=100000),  # スパイク、ゼロではない
+        }
+        findings = mf_monthly_check.check_variance(
+            pl_leaves_by_month, "2026-07",
+            variance_exempt_accounts={"交際費"},
+        )
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["account_name"], "交際費")
+
+    def test_default_exempt_accounts_is_empty_and_backward_compatible(self):
+        pl_leaves_by_month = {
+            "2026-01": _pl_leaves(交際費=20000),
+            "2026-07": {},
+        }
+        findings = mf_monthly_check.check_variance(pl_leaves_by_month, "2026-07")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["account_name"], "交際費")
+
 
 class TestCheckNegativeBalance(unittest.TestCase):
     def test_flags_negative_balance_on_target_account(self):
@@ -803,6 +847,25 @@ class TestRunMonthlyCheck(unittest.TestCase):
         self.assertIn("A：0件", report)
         self.assertIn("B：0件", report)
 
+    def test_variance_exempt_accounts_config_is_passed_through(self):
+        input_data = {
+            "target_month": "2026-07",
+            "company_name": "株式会社サンプルA",
+            "journals": [],
+            "trial_pl_by_month": {
+                "2026-01": {"交際費": [0, 20000, 0, 20000, 0]},
+                "2026-07": {},
+            },
+            "trial_bs": {},
+            "fetch_errors": {"journals": None, "trial_pl": None, "trial_bs": None},
+        }
+        config = {"variance_exempt_accounts": ["交際費"]}
+        report = mf_monthly_check.run_monthly_check(input_data, config)
+        self.assertNotIn("交際費", report)
+        self.assertIn("A：0件", report)
+        self.assertIn("B：0件", report)
+        self.assertNotIn("## 実行時エラー", report)
+
 
 class TestCLIArgumentParsing(unittest.TestCase):
     def setUp(self):
@@ -837,6 +900,23 @@ class TestCLIArgumentParsing(unittest.TestCase):
         args = parser.parse_args(["--input", "input.json", "--output", "output.md"])
         # Should parse successfully even though output.md has no directory path
         self.assertEqual(args.output, "output.md")
+
+    def test_run_passes_carryover_bs_through(self):
+        """CLIが繰越のずれチェック用の前期末・当期首BSを落とさずに渡す"""
+        import tempfile
+        raw = {"target_month": "2026-04", "company_name": "テスト株式会社",
+               "journals": [], "trial_pl_by_month": {}, "trial_bs": [],
+               "trial_bs_prior_closing": {"売掛金": [0, 0, 0, 100, 0.0]},
+               "trial_bs_current_opening": {"売掛金": [0, 0, 0, 0, 0.0]}}
+        with tempfile.TemporaryDirectory() as d:
+            inp = os.path.join(d, "in.json")
+            out = os.path.join(d, "out.md")
+            with open(inp, "w", encoding="utf-8") as f:
+                json.dump(raw, f, ensure_ascii=False)
+            with mock.patch("builtins.print"):
+                self.mf_monthly_check_cli.main(["--input", inp, "--output", out])
+            with open(out, encoding="utf-8") as f:
+                self.assertIn("繰越のずれ", f.read())
 
 
 if __name__ == "__main__":
@@ -958,3 +1038,210 @@ class TestCheckMissingSubaccount(unittest.TestCase):
         })
         self.assertIn("補助科目の付け忘れ候補", report)
         self.assertIn("補助科目A", report)
+
+
+class TestCrossRouteDuplicate(unittest.TestCase):
+    """同じ請求書を手入力とCSV取り込みで2回計上した型（手入力とCSV取り込みで同じ請求書を2回）。"""
+
+    def _j(self, jid, date, by, sub, value, tx=None):
+        return {"id": jid, "number": jid, "transaction_date": date, "entered_by": by,
+                "transaction_id": tx,
+                "branches": [{"debitor": {"account_name": "外注費", "value": value},
+                              "creditor": {"account_name": "買掛金", "sub_account_name": sub,
+                                           "value": value, "tax_value": 0}}]}
+
+    def test_manual_and_import_same_amount_is_A(self):
+        js = [self._j("6058", "2026-06-30", "JOURNAL_TYPE_NORMAL", "㈱サンプル商事", 550000),
+              self._j("7660", "2026-07-31", "JOURNAL_TYPE_IMPORT", "株式会社サンプル商事", 550000)]
+        f = mf_monthly_check.check_cross_route_duplicate(js, "2026-07")
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "A")
+        self.assertIn("経路違い", mf_monthly_check.describe_finding(f[0]))
+        self.assertIn("No.6058", mf_monthly_check.format_finding_detail(f[0]))
+
+    def test_same_route_or_far_apart_is_not_reported(self):
+        same = [self._j("1", "2026-07-31", "JOURNAL_TYPE_IMPORT", "A", 1000),
+                self._j("2", "2026-07-31", "JOURNAL_TYPE_IMPORT", "A", 1000)]
+        far = [self._j("3", "2026-05-31", "JOURNAL_TYPE_NORMAL", "A", 1000),
+               self._j("4", "2026-07-31", "JOURNAL_TYPE_IMPORT", "A", 1000)]
+        self.assertEqual(mf_monthly_check.check_cross_route_duplicate(same, "2026-07"), [])
+        self.assertEqual(mf_monthly_check.check_cross_route_duplicate(far, "2026-07"), [])
+
+    def test_different_debit_account_is_not_reported(self):
+        a = self._j("5810", "2026-07-11", "JOURNAL_TYPE_NORMAL", "立替者X", 13000)
+        b = self._j("7654", "2026-08-03", "JOURNAL_TYPE_IMPORT", "立替者X", 13000)
+        b["branches"][0]["debitor"]["account_name"] = "旅費交通費"
+        self.assertEqual(mf_monthly_check.check_cross_route_duplicate([a, b], "2026-08"), [])
+
+class TestCheckCarryover:
+    """繰越のずれ（）。
+
+    マネーフォワードは会計期間を締めても、繰越処理をしないと翌期の期首残高が入らない。
+    前期末の closing_balance と当期首の opening_balance を科目ごとに突き合わせる。
+    """
+
+    def bs(self, **accounts):
+        """{科目名: (opening, closing)} から extract_account_leaves 相当の形を作る。"""
+        return {
+            name: [opening, 0, 0, closing, 0.0]
+            for name, (opening, closing) in accounts.items()
+        }
+
+    def test_一致していれば何も出ない(self):
+        prior = self.bs(売掛金=(0, 183221023), 普通預金=(0, 22215057))
+        current = self.bs(売掛金=(183221023, 183221023), 普通預金=(22215057, 22215057))
+        assert mf_monthly_check.check_carryover(prior, current) == []
+
+    def test_期首がゼロなら繰越もれとして出る(self):
+        prior = self.bs(売掛金=(0, 183221023))
+        current = self.bs(売掛金=(0, 0))
+        found = mf_monthly_check.check_carryover(prior, current)
+        assert len(found) == 1
+        assert found[0]["check"] == "carryover"
+        assert found[0]["account_name"] == "売掛金"
+        assert found[0]["prior_closing"] == 183221023
+        assert found[0]["current_opening"] == 0
+        assert found[0]["diff"] == -183221023
+
+    def test_ずれていれば出る(self):
+        """繰越の後に前期へ遡って仕訳を入れた場合（普通預金で実際に起きた形）。"""
+        prior = self.bs(普通預金=(0, 22215057))
+        current = self.bs(普通預金=(21125047, 21125047))
+        found = mf_monthly_check.check_carryover(prior, current)
+        assert len(found) == 1
+        assert found[0]["diff"] == 21125047 - 22215057
+
+    def test_重要度はA(self):
+        """繰越もれは1年分の記帳に影響するので、見落とせない区分で出す。"""
+        prior = self.bs(売掛金=(0, 100))
+        current = self.bs(売掛金=(0, 0))
+        assert mf_monthly_check.check_carryover(prior, current)[0]["severity"] == "A"
+
+    def test_両方ゼロの科目は出ない(self):
+        prior = self.bs(仮払金=(0, 0))
+        current = self.bs(仮払金=(0, 0))
+        assert mf_monthly_check.check_carryover(prior, current) == []
+
+    def test_端数は下限で無視できる(self):
+        """1円の差は既定（下限1円）では出すが、下限を上げれば無視できる。"""
+        prior = self.bs(売掛金=(0, 1000))
+        current = self.bs(売掛金=(999, 999))
+        assert len(mf_monthly_check.check_carryover(prior, current)) == 1
+        assert mf_monthly_check.check_carryover(prior, current, materiality_floor=2) == []
+        # 下限を上げても、大きなずれはそのまま出る
+        found = mf_monthly_check.check_carryover(
+            self.bs(売掛金=(0, 1000)), self.bs(売掛金=(900, 900)), materiality_floor=2)
+        assert len(found) == 1
+
+    def test_前期だけにある科目も拾う(self):
+        """当期のBSにその科目が出てこない＝期首残高が入っていない。"""
+        found = mf_monthly_check.check_carryover(self.bs(立替金=(0, 50000)), self.bs(売掛金=(0, 0)))
+        names = [f["account_name"] for f in found]
+        assert "立替金" in names
+
+    def test_当期だけにある科目も拾う(self):
+        """前期に無い残高が期首に入っている＝繰越の内容が合っていない。"""
+        found = mf_monthly_check.check_carryover(self.bs(売掛金=(0, 0)), self.bs(借入金=(3000000, 3000000)))
+        names = [f["account_name"] for f in found]
+        assert "借入金" in names
+
+    def test_科目名の順に並ぶ(self):
+        prior = self.bs(売掛金=(0, 100), 普通預金=(0, 200))
+        current = self.bs(売掛金=(0, 0), 普通預金=(0, 0))
+        found = mf_monthly_check.check_carryover(prior, current)
+        assert [f["account_name"] for f in found] == sorted(
+            [f["account_name"] for f in found]
+        )
+
+    def test_空の入力でも落ちない(self):
+        assert mf_monthly_check.check_carryover({}, {}) == []
+        assert mf_monthly_check.check_carryover(None, None) == []
+
+    def test_説明文に繰越もれと出る(self):
+        found = mf_monthly_check.check_carryover(self.bs(売掛金=(0, 100)), self.bs(売掛金=(0, 0)))
+        assert "繰越もれ" in mf_monthly_check.describe_finding(found[0])
+
+    def test_詳細に前期末と当期首の金額と対処が出る(self):
+        found = mf_monthly_check.check_carryover(self.bs(売掛金=(0, 183221023)), self.bs(売掛金=(0, 0)))
+        detail = mf_monthly_check.format_finding_detail(found[0])
+        assert "183,221,023円" in detail
+        assert "繰越処理をしないと" in detail
+        assert "繰越をやり直す" in detail
+
+
+class TestRunMonthlyCheckCarryover:
+    def base_input(self, **extra):
+        data = {
+            "target_month": "2026-10",
+            "company_name": "株式会社サンプルB",
+            "journals": [],
+            "trial_pl_by_month": {},
+            "trial_bs": {},
+        }
+        data.update(extra)
+        return data
+
+    def test_前期末と当期首が揃っていればチェックする(self):
+        report = mf_monthly_check.run_monthly_check(self.base_input(
+            trial_bs_prior_closing={"売掛金": [0, 0, 0, 183221023, 0.0]},
+            trial_bs_current_opening={"売掛金": [0, 0, 0, 0, 0.0]},
+        ))
+        assert "繰越のずれ" in report
+
+    def test_入力が無ければ黙って飛ばす(self):
+        """繰越チェックの入力はまだ全社で揃っていないので、無い会社では出さない。"""
+        report = mf_monthly_check.run_monthly_check(self.base_input())
+        assert "繰越のずれ" not in report
+
+    def test_片方だけなら飛ばす(self):
+        report = mf_monthly_check.run_monthly_check(self.base_input(
+            trial_bs_prior_closing={"売掛金": [0, 0, 0, 100, 0.0]},
+        ))
+        assert "繰越のずれ" not in report
+
+    def test_一致していれば出ない(self):
+        report = mf_monthly_check.run_monthly_check(self.base_input(
+            trial_bs_prior_closing={"売掛金": [0, 0, 0, 100, 0.0]},
+            trial_bs_current_opening={"売掛金": [100, 0, 0, 100, 0.0]},
+        ))
+        assert "繰越のずれ" not in report
+
+
+class TestCheckProfitTrend(unittest.TestCase):
+    """営業赤字・大幅な減益を拾う（2026-10-21）。"""
+
+    def _totals(self, op, sales=1000000, loss=False):
+        return {"売上高合計": sales, ("営業損失" if loss else "営業利益"): op}
+
+    def test_当月が営業赤字ならA(self):
+        totals = {"2026-08": self._totals(500000), "2026-09": self._totals(-200000, loss=True)}
+        leaves = {"2026-08": {"売上高": [0, 0, 1000000, 0, 0]}, "2026-09": {"売上高": [0, 0, 300000, 0, 0]}}
+        f = mf_monthly_check.check_profit_trend(totals, leaves, "2026-09")
+        self.assertEqual(f[0]["severity"], "A")
+        self.assertEqual(f[0]["impacts"][0], ("売上高", 1000000, 300000, -700000))
+
+    def test_前月の半分以下に減ったらB(self):
+        totals = {"2026-08": self._totals(27230000), "2026-09": self._totals(6340000)}
+        f = mf_monthly_check.check_profit_trend(totals, {}, "2026-09")
+        self.assertEqual(f[0]["severity"], "B")
+
+    def test_減り方が小さければ出さない(self):
+        totals = {"2026-08": self._totals(9783), "2026-09": self._totals(5982)}
+        self.assertEqual(mf_monthly_check.check_profit_trend(totals, {}, "2026-09"), [])
+        totals = {"2026-08": self._totals(16240000), "2026-09": self._totals(15010000)}
+        self.assertEqual(mf_monthly_check.check_profit_trend(totals, {}, "2026-09"), [])
+
+    def test_前月が無ければ出さない(self):
+        self.assertEqual(mf_monthly_check.check_profit_trend(
+            {"2026-09": self._totals(-1, loss=True)}, {}, "2026-09"), [])
+
+    def test_extract_pl_totalsは期間の発生額(self):
+        rows = [{"name": "売上高合計", "values": [100, 0, 50, 150, 0]},
+                {"name": "営業損失", "values": [-10, 0, 0, -40, 0]}]
+        self.assertEqual(mf_monthly_check.extract_pl_totals(rows), {"売上高合計": 50, "営業損失": -30})
+
+    def test_損益の推移の節を出す(self):
+        totals = {"2026-08": self._totals(1), "2026-09": self._totals(2)}
+        s = mf_monthly_check.build_profit_trend_section(totals, "2026-09")
+        self.assertIn("## 損益の推移", s)
+        self.assertIn("| 2026-09 | 1,000,000円 | 2円 |", s)

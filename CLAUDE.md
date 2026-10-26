@@ -12,7 +12,7 @@
 
 ## 参照先（全インスタンス共通）
 
-- `.claude/rules/` — 文体・トーン（`communication.md`）、成果物の書式（`output-format.md`）、機密の扱い（`security.md`）、自動化スクリプトの型（`automation.md`）、月次締めチェックリスト（`monthly-closing-checklist.md`）、法人格・団体種別の略語（`company-name-abbreviations.md`）、ミス対応の原則（`error-handling.md`）、データ取り込みの二重取り込み防止（`data-import.md`）。全クライアント共通のルール。
+- `.claude/rules/` — 文体・トーン（`communication.md`）、成果物の書式（`output-format.md`）、機密の扱い（`security.md`）、自動化スクリプトの型（`automation.md`）、月次締めチェックリスト（`monthly-closing-checklist.md`）、法人格・団体種別の略語（`company-name-abbreviations.md`）、ミス対応の原則（`error-handling.md`）、データ取り込みの二重取り込み防止（`data-import.md`）、仕訳起票の質（`journal-entry-quality.md`）、受領資料の保存（`source-materials.md`）、経営サマリー（`keiei-summary.md`）、MCPコネクタの接続・事業者切替・口座連携の確認（`mcp-connection.md`）、新しい会社の接続セットアップ（`client-connection-setup.md`）、月次の自動化前のデータの流れの把握（`monthly-onboarding.md`）。全クライアント共通のルール。
 - 各インスタンス（クライアントフォルダ）は、この共通ルールに加えて、自分のフォルダ内の `.claude/rules/` にインスタンス固有の追加ルールを持つことができる。
 - `.claude/skills/`・`.claude/agents/` — 全インスタンス共通のスキル・エージェント。Claude Codeは起動ディレクトリからリポジトリルートまでの親ディレクトリのスキルを読み込むので、クライアントフォルダで起動しても使える。各インスタンスの `.claude/skills/` には**そのクライアント固有のもの**だけを置く。
 - **インスタンス用スキル内の相対パスの基準**：`work/daily/`・`context/` のような相対パスは、対象クライアントのインスタンスフォルダ基準。クライアントフォルダで起動していればその直下、`keiri-hisho/` ルートで起動している場合は対象クライアントを確認してから、そのフォルダ配下に読み書きする。

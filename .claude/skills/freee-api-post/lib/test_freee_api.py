@@ -195,6 +195,33 @@ class TestEnsureAccessToken(unittest.TestCase):
         self.assertEqual(saved["refresh_token"], "rt-new")
         mock_refresh.assert_called_once_with("cid", "csecret", "rt-old")
 
+    @mock.patch("freee_api.refresh_token_pair")
+    def test_uses_token_refreshed_by_other_process_while_waiting_for_lock(self, mock_refresh):
+        # ロックを待つ間に先客が更新していたら、使用済みのrefresh_tokenで更新しない
+        import contextlib
+        import freee_api
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "creds.json")
+            save_credentials_atomic(path, {
+                "client_id": "cid", "client_secret": "csecret",
+                "access_token": "at-old", "refresh_token": "rt-old",
+                "expires_at": "2000-01-01T00:00:00+00:00",
+            })
+
+            @contextlib.contextmanager
+            def other_process_refreshed(name):
+                save_credentials_atomic(path, {
+                    "client_id": "cid", "client_secret": "csecret",
+                    "access_token": "at-other", "refresh_token": "rt-other",
+                    "expires_at": "2999-01-01T00:00:00+00:00",
+                })
+                yield
+
+            with mock.patch.object(freee_api.mf_lock, "company_lock", other_process_refreshed):
+                token = ensure_access_token(path)
+        self.assertEqual(token, "at-other")
+        mock_refresh.assert_not_called()
+
 
 class TestVerifySingleCompany(unittest.TestCase):
     def test_passes_when_only_expected_company_present(self):

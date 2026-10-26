@@ -10,7 +10,7 @@ description: オーナーが「おはよう」と挨拶した時、または /da
 # 手順
 
 1. 今日の日付（Asia/Tokyo）を確認する。
-2. Googleカレンダーから、今日 0:00〜24:00 の予定を取得する（`mcp__claude_ai_Google_Calendar__list_events` に `startTime`・`endTime`・`timeZone: Asia/Tokyo` を指定）。
+2. Googleカレンダーから、今日 0:00〜24:00 の予定を取得する（`mcp__claude_ai_Google_Calendar__list_events` に `startTime`・`endTime`・`timeZone: Asia/Tokyo` を指定）。メインのカレンダーに加え、`list_calendars` で別名義のカレンダー（例：グループウェアの予定を写したもの）があれば、そちらも同じ条件で取得して一緒に並べる。同じ時間・同じ件名の予定が両方にあれば1つにまとめる。
 3. 取得した予定を時系列に並べ、15分刻みの枠で工程表にする。
    - 会議・打ち合わせの予定には、直前に「準備」枠（目安15分）を置く。
    - 予定と予定の間が空いている場合、無理に埋めず空白のままにする（存在しない予定を作らない）。

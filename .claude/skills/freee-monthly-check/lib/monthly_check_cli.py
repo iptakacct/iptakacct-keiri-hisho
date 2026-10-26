@@ -49,6 +49,13 @@ def cmd_run(args):
     output_dir = os.path.join(args.repo_root, company["instance"], "work", "monthly-check")
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{target_month}.md")
+
+    existing_content = None
+    if os.path.exists(output_path):
+        with open(output_path, "r", encoding="utf-8") as f:
+            existing_content = f.read()
+    report = monthly_check.merge_with_manual_section(report, existing_content)
+
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(report)
 

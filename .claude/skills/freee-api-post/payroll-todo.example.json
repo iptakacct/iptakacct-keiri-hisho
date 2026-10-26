@@ -1,0 +1,55 @@
+{
+  "_comment": "給与の毎月やることリストを機械的に検知するためのルール雛形。payroll-todo.json にコピーして会社ごとに1ブロック書く（実データはコミットしない運用でもよい）。判定ロジックは lib/payroll_todo.py。人手向けの説明は各インスタンスの context/company/ の給与マスタに置く（内容が食い違ったらマスタが正）。ルールの type: zero_pay（支給0のはず）／require_payment（特定の支給項目が必須）／require_expense（承認済み経費精算が給与に乗っているか）／hourly_zero（時給者の支給が0でないか）／require_midnight（月給者の深夜割増が入っているか）／must_absent（明細が出てはいけない人）。",
+  "companies": [
+    {
+      "company_id": 100001,
+      "name": "サンプルA株式会社",
+      "closing_day": 31,
+      "pay_day": 25,
+      "pay_month": "next_month",
+      "slack_webhook_env": "",
+      "rules": [
+        {
+          "type": "zero_pay",
+          "employee_id": 1001,
+          "label": "従業員A",
+          "until": "2099-12-31",
+          "reason": "休業中（〜期限）。freeeは休業を反映せず基本給をフル支給で計算してくることがある"
+        },
+        {
+          "type": "require_payment",
+          "employee_id": 1002,
+          "label": "従業員B",
+          "payment_name": "成果報酬",
+          "since": "2026-01-01",
+          "reason": "毎月、別途報告される金額を手で入れる必要がある"
+        },
+        {
+          "type": "require_expense",
+          "employee_id": 1003,
+          "label": "従業員C",
+          "applicant_id": 900001,
+          "reason": "freee会計で経費精算を承認しただけでは給与に乗らない。給与データへの連携が別途必要"
+        },
+        {
+          "type": "hourly_zero",
+          "employee_id": 1004,
+          "label": "従業員D",
+          "reason": "勤怠は別システムで取っており、freeeへは金額を人が入れる"
+        },
+        {
+          "type": "require_midnight",
+          "employee_id": 1005,
+          "label": "従業員E",
+          "reason": "月給者。深夜割増だけ加算する取り決め"
+        },
+        {
+          "type": "must_absent",
+          "employee_id": 1006,
+          "label": "従業員F",
+          "reason": "連絡があるまで給与発生なし"
+        }
+      ]
+    }
+  ]
+}
