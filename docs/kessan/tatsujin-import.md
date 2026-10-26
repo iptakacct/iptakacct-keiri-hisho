@@ -1,7 +1,7 @@
 # 達人シリーズへの引き渡し：取り込み仕様メモ
 
 - 調査日：2026-09-16
-- ステータス：公開資料で調査済み／freeeの内訳書XMLは実物で確認（§3.5、2026-10-26）／決算書XMLの中身と達人の実機確認待ち
+- ステータス：公開資料で調査済み／MF・freeeが達人へ渡すXMLを実物で確認（§3.5、2026-10-26）／kessan で作ったXMLの実機での読み込み試験待ち
 
 ## 0. 前提の訂正（重要）
 
@@ -55,8 +55,53 @@
 ### マネーフォワード クラウド会計
 - 出す場所：「決算・申告」→「達人シリーズ連携」。決算書（法人税の達人用）・内訳書・概況書（内訳概況書の達人用）・消費税（消費税の達人用、年度別3種）をそれぞれエクスポート
 - 達人側：法人税の達人「業務メニュー」→「ユーティリティ」→「データのインポート」→「中間ファイル（決算書用）からのインポート」。その後「決算」→「決算書の作成」→「取込設定」で科目の対応を確認（未設定の科目は「ユーザー独自の科目」として入る。「1.売上高」は「総額表示」にする）
-- 実物は未取得（ブラウザでログイン中のMFアカウントに対象の会社が無かった）
+- 実物を取得して確認（2026-10-26、期首から半年分のデータがある会社）。エクスポートは画面のフォームが `GET /tatsujin/<種類>?month_search_from=YYYY/M&month_search_to=YYYY/M` を呼ぶだけで、種類は `tax_statement`（決算書）・`itemized_statement`（内訳書）・`summary_statement`（概況書、期間指定なし）・`excise_statement_sy35`／`_sy31`／（無印）（消費税 令和5年度以降／令和元年度以降／平成26年度以降）
+- 形式はfreeeと同じ（Shift_JISのXML、同じ外枠・同じ `GYOUMUPREFIX`）。違いは `PROGRAMNAME` に製品名、`KOMONSAKINAME` に**会社名**が入り、`CONNECTEDPROGRAMVER`／`PROGRAMVER` が `1.0.0` であること。内訳書の `DATA` の構造もfreeeと同一で、残高0の科目は `KANJYOKAMOKU_ZANDAKA` が空
 - 出典：[マネーフォワード クラウド会計 達人シリーズ連携](https://biz.moneyforward.com/support/account/?p=426)
+
+#### 決算書（`GYOUMUPREFIX` HJ21・`FUNCTIONID` 3）の中身（MFの実物）
+- `BASIC/PATTERN` に表示パターンのコードが入る（例：`Doubtful`=A2・C2、`DepImp`=B5・D5、`Sales`=E1、`Cos`=F3、`Sga`=G1）。各コードの意味は未確認（達人の「決算書の設定」の選択肢に対応すると思われる）
+- `DATA` は3つ。金額は円の整数。区分の要素は `Label`（表示名）と `Amount`（区分合計）を属性で持ち、その下の `<Item Label="科目名">金額</Item>` が科目
+  ```xml
+  <BalanceSheet>
+    <Assets Label="資産の部" Amount="…">
+      <CurrentAssets Label="流動資産" Amount="…"><Item Label="現金及び預金">…</Item>…</CurrentAssets>
+      <NoncurrentAssets Label="固定資産" Amount="…">
+        <PropertyPlantAndEquipment Label="有形固定資産" Amount="0"/>
+        <IntangibleAssets Label="無形固定資産" Amount="0"/>
+        <InvestmentsAndOtherAssets Label="投資その他の資産" Amount="…"><Item …/></InvestmentsAndOtherAssets>
+      </NoncurrentAssets>
+      <DeferredAssets Label="繰延資産" Amount="0"/>
+    </Assets>
+    <Liabilities Label="負債の部" Amount="…">
+      <CurrentLiabilities Label="流動負債" …/> <NoncurrentLiabilities Label="固定負債" …/>
+    </Liabilities>
+    <NetAssets Label="純資産の部" Amount="…"><Item Label="資本金">…</Item>…</NetAssets>
+  </BalanceSheet>
+  <IncomeStatement>
+    NetSales / CostOfSales / GrossProfit / SellingGeneralAndAdministrativeExpenses / OperatingIncome /
+    NonOperatingIncome / NonOperatingExpenses / OrdinaryIncome / ExtraordinaryIncome / ExtraordinaryLoss /
+    IncomeBeforeIncomeTaxes / IncomeTaxes / NetIncome   （いずれも Label・Amount 属性、内訳は Item）
+  </IncomeStatement>
+  <StatementChangesNetAssets>
+    <Select>1</Select>
+    <ChangesNetAssetsItem>
+      <AccountList>繰越利益剰余金</AccountList>
+      <BalanceEndPreviousPeriod>…</BalanceEndPreviousPeriod>
+      <ChangesItemsDuringPeriod>                       <!-- 変動がある科目だけ -->
+        <TotalChangesItemsDuringPeriod>…</TotalChangesItemsDuringPeriod>
+        <ChangesItem><Reason>当期純利益</Reason><Amount>…</Amount></ChangesItem>
+      </ChangesItemsDuringPeriod>
+      <BalanceEndCurrentPeriod>…</BalanceEndCurrentPeriod>
+    </ChangesNetAssetsItem>
+  </StatementChangesNetAssets>
+  ```
+- 科目名（`Item Label`）は会計ソフトの科目名のまま。達人に無い科目は取り込み時に「ユーザー独自の科目」になり、「取込設定」で対応付ける
+
+#### 概況書（`GYOUMUPREFIX` UG16・`FUNCTIONID` 2）の中身（MFの実物）
+- `DATA/SYUYOUKAMOKU`：法人事業概況説明書の「主要科目」欄に対応する固定の要素名（`URIAGE_SYUUNYUUDAKA` 売上高、`URIAGE_SYUUNYUUGENKA` 売上原価、`YAKUINHOUSYUU` 役員報酬、`JYUUGYOUINKYUURYOU` 従業員給料、`KOUSAIHI` 交際費、`EIGYOUSONEKI` 営業損益、`ZEIBIKIMAETOUKISONEKI` 税引前当期損益、`SISANNOBU` 資産の部合計、`GENKINYOKIN` 現金預金、`URIKAKEKIN` 売掛金、`KASITUKEKIN` 貸付金、`FUSAINOBU` 負債の部合計、`SONOTAKARIIREKIN` その他借入金、`SIHONNOBU` 純資産の部合計 など約40項目）。該当なしは空要素
+- `DATA/TUKIBETUURIAGEDAKA`：月別の売上等。`_01`〜`_12` の連番で、月ごとに `TUKIBETU_nn`（月）・`URIAGESYUUNYUUKINGAKU1_nn`（売上）・`SIIREKINGAKU1_nn`（仕入）・`GAICHUUHI_nn`・`JINKENHI_nn`・`GENSENTYOUSYUUZEIGAKU_nn`（源泉徴収税額）など
+- 消費税用（`excise_statement*`）も取得したが、kessan の対象（免税事業者）では使わないので構造は記録しない
 
 ### freee会計（実物を取得して確認）
 - 出す場所：「決算申告」→「連携用データの作成」（`/tax_return/corporate`）。対象年度を選び、次の2つを「インポート用ファイルのダウンロード(XML形式)」で出す
@@ -102,7 +147,11 @@
   </KANJYOKAMOKU>
   ```
   BS・PLの科目が混在して並ぶ。`KANJYOKAMOKU_CODE` は freee の内部ID（科目の区分ごとに同じ値が重複する。普通預金は `0`）で、達人の科目コードではない
-- 決算書の `DATA`：取得した会社（ひとり法人プラン）では、どの年度・どの指定でも**空**だった。中身の構造は未確認（決算書の作成が済んでいないと空になる可能性。MFの実物か、決算書を作成済みのfreeeの会社で取り直す）
+- 決算書の `DATA`：取得した会社（ひとり法人プラン）では、どの年度・どの指定でも**空**だった（決算書の作成が済んでいないと空になる可能性）。中身の構造はMFの実物で確認した（上の「決算書の中身」）
+
+### kessan で作るもの（見込み）
+- 決算書・内訳書・概況書の3つを、上の形のXML（Shift_JIS）で出せば、達人の既存の取り込みメニュー（MF・freeeと同じ経路）に乗る見込み。内訳書は科目・補助科目ごとの残高を出すだけでよく、kessan の帳簿（取引先・口座の列）から作れる
+- 残る確認は、kessan で作ったXMLが実機で読めるか（`PROGRAMNAME` に未知の名前を入れて弾かれないか、科目名の対応付けがどう出るか）。§4 の1・2は、この実機での読み込み試験に置き換える
 
 ## 4. オーナーに実機で確認してほしいこと
 
