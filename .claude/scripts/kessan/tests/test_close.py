@@ -275,3 +275,82 @@ def test_after_post_runs_even_if_staging_write_fails(year_dir, accounts, monkeyp
     monkeypatch.setattr(close, "replace_rows", original)
     close.run_close(year_dir, accounts, items=[item])
     assert staging(year_dir) == []  # 登録済みの候補は staging から消える
+
+
+def test_reject_drops_candidate_and_reports_reason(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000), fee("k2", 2000)])
+    close.run_close(year_dir, accounts, items=[item])
+    assert {r["取り込み元ID"] for r in staging(year_dir)} == {"close:テスト:k1", "close:テスト:k2"}
+    close.approve_candidates(year_dir, ["close:テスト:k1"])
+    close.reject_candidates(year_dir, ["close:テスト:k1"], "二重のため")  # 承認済みでも staging から消える
+    assert {r["取り込み元ID"] for r in staging(year_dir)} == {"close:テスト:k2"}
+    r = close.run_close(year_dir, accounts, items=[item])
+    assert r.candidates_rejected == 1
+    assert {x["取り込み元ID"] for x in staging(year_dir)} == {"close:テスト:k2"}
+    text = r.report_path.read_text(encoding="utf-8")
+    assert "却下した候補" in text and "close:テスト:k1：二重のため" in text
+    assert close.load_rejected(year_dir) == {"close:テスト:k1": "二重のため"}
+
+
+def test_reject_keeps_amounts_and_validates(year_dir, accounts):
+    base_books(year_dir)
+    close.set_amount(year_dir, "消費税", 100)
+    close.reject_candidates(year_dir, ["close:テスト:k1"], "不要")
+    close.set_amount(year_dir, "法人税等", 200)
+    assert close.load_overrides(year_dir) == {"消費税": 100, "法人税等": 200}
+    assert close.load_rejected(year_dir) == {"close:テスト:k1": "不要"}
+    with pytest.raises(KessanError, match="理由"):
+        close.reject_candidates(year_dir, ["close:テスト:k2"], " ")
+    with pytest.raises(KessanError, match="close:"):
+        close.reject_candidates(year_dir, ["bank:x"], "理由")
+    item = FakeItem([fee("k1", 1000)])
+    close.run_close(year_dir, accounts, items=[item])
+    assert staging(year_dir) == []
+
+
+def test_reject_posted_candidate_is_error(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000)])
+    close.run_close(year_dir, accounts, items=[item])
+    close.approve_candidates(year_dir, ["close:テスト:k1"])
+    close.post_candidates(year_dir, accounts, items=[item])
+    with pytest.raises(KessanError, match="登録済み"):
+        close.reject_candidates(year_dir, ["close:テスト:k1"], "やはり不要")
+    assert close.load_rejected(year_dir) == {}
+
+
+def test_cli_close_reject(year_dir, capsys):
+    base_books(year_dir)
+    assert cli.main(["close-set-amount", "--year-dir", str(year_dir), "--item", "法人税等", "--amount", "50000"]) == 0
+    assert cli.main(["close-candidates", "--year-dir", str(year_dir)]) == 0
+    ids = "close:法人税等:2026-03-31"
+    assert cli.main(["close-reject", "--year-dir", str(year_dir), "--ids", ids, "--reason", "別途計上"]) == 0
+    assert staging(year_dir) == []
+    assert cli.main(["close-candidates", "--year-dir", str(year_dir)]) == 0
+    assert staging(year_dir) == []
+    assert cli.main(["close-reject", "--year-dir", str(year_dir), "--ids", ids, "--reason", " "]) == 1
+
+
+def test_tax_candidate_posts_with_only_corporate_tax_left(year_dir, accounts):
+    """法人税等の候補は消費税の額を変えないので、未承認のまま消費税だけ登録できる。他の項目が残っていれば拒否のまま。"""
+    base_books(year_dir)
+    tax = close.Candidate(item="消費税", key="2026-03-31", date="2026-03-31", reason="t", lines=[
+        {"借方科目": "租税公課", "借方金額": "100", "貸方科目": "未払消費税等", "貸方金額": "100"}])
+    corp = close.Candidate(item="法人税等", key="2026-03-31", date="2026-03-31", reason="c", lines=[
+        {"借方科目": "法人税等", "借方金額": "200", "貸方科目": "未払法人税等", "貸方金額": "200"}])
+    items = [FakeItem([tax, corp])]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, ["close:消費税:2026-03-31"])
+    assert close.post_candidates(year_dir, accounts, items=items) == ["A1"]
+    assert {r["取り込み元ID"] for r in staging(year_dir)} == {"close:法人税等:2026-03-31"}
+    # 他の項目（テスト）が未承認で残っていれば、消費税は登録できない
+    other = [FakeItem([tax, corp, fee("k1", 1000)])]
+    year2 = year_dir.parent / "2026-03期b"
+    from common import init_year_dir
+    init_year_dir(year2, "2025-04-01", "2026-03-31")
+    base_books(year2)
+    close.run_close(year2, accounts, items=other)
+    close.approve_candidates(year2, ["close:消費税:2026-03-31"])
+    with pytest.raises(KessanError, match="消費税の候補"):
+        close.post_candidates(year2, accounts, items=other)

@@ -23,6 +23,7 @@
   python ../.claude/scripts/kessan/cli.py close-set-amount --year-dir <Y> --item 消費税|法人税等 --amount 123400
   python ../.claude/scripts/kessan/cli.py close-candidates --year-dir <Y> [--next-year-dir work/kessan/2027-03期] [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py close-approve --year-dir <Y> (--ids close:消費税:2026-03-31 … | --all)
+  python ../.claude/scripts/kessan/cli.py close-reject --year-dir <Y> --ids close:未払:… --reason "不要な理由"
   python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
@@ -38,7 +39,7 @@ from accounts import load_accounts
 from accounts_update import apply_review, approve, approve_numbers, load_updates, set_accounts
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
-from close import approve_candidates, candidate_ids, post_candidates, run_close, set_amount
+from close import approve_candidates, candidate_ids, post_candidates, reject_candidates, run_close, set_amount
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from evidence_resolve import resolve_evidence
 from extracted import extracted_files
@@ -56,7 +57,7 @@ from undo import discard, unimport
 
 COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary",
-            "close-candidates", "close-approve", "close-post", "close-set-amount")
+            "close-candidates", "close-approve", "close-post", "close-set-amount", "close-reject")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -123,6 +124,9 @@ def _parser():
             target = p.add_mutually_exclusive_group(required=True)
             target.add_argument("--ids", nargs="+", help="承認する候補の取り込み元ID（close:…）")
             target.add_argument("--all", action="store_true", help="adjustments-staging.csv の候補をすべて承認する")
+        if name == "close-reject":
+            p.add_argument("--ids", required=True, nargs="+", help="却下する候補の取り込み元ID（close:…）")
+            p.add_argument("--reason", required=True, help="却下の理由（close-report.md に載る）")
         if name == "close-set-amount":
             p.add_argument("--item", required=True, help="消費税 か 法人税等")
             p.add_argument("--amount", required=True, type=int, help="達人で計算した額（円、0以上）")
@@ -472,7 +476,7 @@ def main(argv=None):
                           sources=_close_sources(year_dir, args), payees=_load_payees(year_dir, args),
                           company_dir=_company_dir(year_dir))
             print(f"決算整理の候補: 要確認 {r.candidates_added}件 / 承認済み・登録済みのため据え置き {r.candidates_kept}件"
-                  f" / 出なくなったため消した候補 {r.candidates_removed}件 / 所見 {len(r.notes)}件")
+                  f" / 出なくなったため消した候補 {r.candidates_removed}件 / 却下済み {r.candidates_rejected}件 / 所見 {len(r.notes)}件")
             for n in r.notes:
                 print(f"所見［{n.item}］: {n.message}")
             print(f"報告: {r.report_path}")
@@ -480,6 +484,10 @@ def main(argv=None):
         if args.command == "close-approve":
             ids = candidate_ids(year_dir) if args.all else args.ids
             print(f"承認: {approve_candidates(year_dir, ids)}行")
+            return 0
+        if args.command == "close-reject":
+            reject_candidates(year_dir, args.ids, args.reason)
+            print(f"却下: {len(args.ids)}件（以後の close-candidates では出しません）")
             return 0
         if args.command == "close-post":
             numbers = post_candidates(year_dir, accounts, prev_year_dir=args.prev_year_dir)

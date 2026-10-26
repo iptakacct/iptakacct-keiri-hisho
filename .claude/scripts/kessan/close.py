@@ -40,6 +40,8 @@ POSTED_KIND = "決算整理"
 NEEDS_REVIEW = "要確認"
 SOURCE_PREFIX = "close:"
 TAX_PREFIX = "close:消費税:"
+CORP_PREFIX = "close:法人税等:"  # 法人税等は消費税の額を変えないので、消費税の登録順の判定では無視する
+REJECTED_KEY = "rejected"
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class CloseResult:
     candidates_removed: int  # もう出なくなったため消した未承認の候補の数
     notes: list
     report_path: Path
+    candidates_rejected: int = 0  # close-reject で却下済みのため出さなかった候補の数
 
 
 # ---- 検算・材料 ----
@@ -287,7 +290,7 @@ def _table_rows(candidate):
 STATE_LABELS = {"新規": "要確認（未承認）", "承認済み": "承認済み（作り直していません）", "登録済み": "登録済み"}
 
 
-def _write_report(year_dir, candidates, notes, states, removed, now):
+def _write_report(year_dir, candidates, notes, states, removed, now, rejected=()):
     items = list(dict.fromkeys([c.item for c in candidates] + [n.item for n in notes]))
     added = sum(states[c.source_id] == "新規" for c in candidates)
     lines = [f"# 決算整理の候補（{now:%Y-%m-%d %H:%M}）", "",
@@ -308,6 +311,9 @@ def _write_report(year_dir, candidates, notes, states, removed, now):
         item_notes = [n for n in notes if n.item == item]
         if item_notes:
             lines += [f"- {n.message}" for n in item_notes] + [""]
+    if rejected:
+        lines += ["## 却下した候補（close-reject）", ""]
+        lines += [f"- {sid}：{_cell(reason)}" for sid, reason in rejected] + [""]
     path = Path(year_dir) / "output" / REPORT_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -339,9 +345,12 @@ def run_close(year_dir, accounts, *, next_year_dir=None, prev_year_dir=None, sou
                           "（resolve-evidence で解決してから再実行）:\n" + "\n".join(unresolved))
     ctx = build_context(year_dir, accounts, next_year_dir=next_year_dir, prev_year_dir=prev_year_dir,
                         sources=sources, payees=payees, company_dir=company_dir)
-    candidates, notes = [], []
+    rejected = load_rejected(year_dir)
+    candidates, notes, dropped = [], [], []
     for module in modules:
         found, found_notes = module.collect(ctx)
+        dropped += [(c.source_id, rejected[c.source_id]) for c in found if c.source_id in rejected]
+        found = [c for c in found if c.source_id not in rejected]  # 却下済みは staging にも ctx.pending にも入れない
         candidates += found
         notes += found_notes
         ctx.pending.extend(found)
@@ -354,10 +363,10 @@ def run_close(year_dir, accounts, *, next_year_dir=None, prev_year_dir=None, sou
         replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, rows)
     except OSError:
         raise cannot_write(STAGING_FILE) from None
-    report = _write_report(year_dir, candidates, notes, states, removed, now or datetime.now())
+    report = _write_report(year_dir, candidates, notes, states, removed, now or datetime.now(), dropped)
     added = sum(s == "新規" for s in states.values())
     return CloseResult(candidates_added=added, candidates_kept=len(states) - added, candidates_removed=removed,
-                       notes=notes, report_path=report)
+                       notes=notes, report_path=report, candidates_rejected=len(dropped))
 
 
 def candidate_ids(year_dir):
@@ -409,7 +418,7 @@ def post_candidates(year_dir, accounts, now=None, *, prev_year_dir=None, items=N
     _require_clean_check(year_dir, accounts, prev_year_dir, "決算整理仕訳を登録しません")
 
     if any(r["取り込み元ID"].strip().startswith(TAX_PREFIX) for r in approved) and any(
-            not r["取り込み元ID"].strip().startswith(TAX_PREFIX) for r in remaining):
+            not r["取り込み元ID"].strip().startswith((TAX_PREFIX, CORP_PREFIX)) for r in remaining):
         raise KessanError("消費税の候補は、他の決算整理の候補をすべて承認してから登録する（消費税の額が変わるため）")
     groups = _group(approved)
     errors = _validate(groups, accounts, entry_rows(year_dir), load_period(year_dir))
@@ -475,8 +484,8 @@ def _check_amount(item, amount, where):
         raise KessanError(f"{where}: {item}の金額は0以上の整数にしてください（現在: {amount!r}）")
 
 
-def load_overrides(year_dir):
-    """close-overrides.yaml（{消費税: 金額, 法人税等: 金額}）。無ければ空。"""
+def _load_raw(year_dir):
+    """close-overrides.yaml の中身（{消費税: 金額, 法人税等: 金額, rejected: {取り込み元ID: 理由}}）。無ければ空。"""
     path = Path(year_dir) / OVERRIDES_FILE
     if not path.exists():
         return {}
@@ -488,16 +497,26 @@ def load_overrides(year_dir):
         raise KessanError(f"{OVERRIDES_FILE} が UTF-8 で読めません") from None
     if not isinstance(data, dict):
         raise KessanError(f"{OVERRIDES_FILE} は「消費税: 金額」「法人税等: 金額」の形で書いてください")
+    return data
+
+
+def load_overrides(year_dir):
+    """上書き額（{消費税: 金額, 法人税等: 金額}）。無ければ空。"""
+    data = {k: v for k, v in _load_raw(year_dir).items() if k != REJECTED_KEY}
     for item, amount in data.items():
         _check_amount(item, amount, OVERRIDES_FILE)
-    return dict(data)
+    return data
 
 
-def set_amount(year_dir, item, amount):
-    """達人で計算した額を close-overrides.yaml に保存する（次の close-candidates で候補に使う）。"""
-    _check_amount(item, amount, "close-set-amount")
-    data = load_overrides(year_dir)
-    data[item] = amount
+def load_rejected(year_dir):
+    """却下した候補（{取り込み元ID: 理由}）。無ければ空。"""
+    rejected = _load_raw(year_dir).get(REJECTED_KEY) or {}
+    if not isinstance(rejected, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in rejected.items()):
+        raise KessanError(f"{OVERRIDES_FILE} の {REJECTED_KEY} は「取り込み元ID: 理由」の形で書いてください")
+    return dict(rejected)
+
+
+def _save_raw(year_dir, data):
     path = Path(year_dir) / OVERRIDES_FILE
     tmp_path = path.with_name(path.name + ".tmp")
     try:
@@ -507,7 +526,55 @@ def set_amount(year_dir, item, amount):
         raise KessanError(f"{OVERRIDES_FILE} に書き込めません") from None
 
 
-# 項目の順：未払・未収 → 前払 → 減価償却 → 役員報酬・残高の所見 → 消費税・法人税等（後のタスクが close_tax の前に足す）
-import close_tax  # noqa: E402  （close_tax は close の型を使うので、型を定義した後で読む）
+def set_amount(year_dir, item, amount):
+    """達人で計算した額を close-overrides.yaml に保存する（次の close-candidates で候補に使う）。"""
+    _check_amount(item, amount, "close-set-amount")
+    load_overrides(year_dir)
+    load_rejected(year_dir)
+    data = _load_raw(year_dir)
+    data[item] = amount
+    _save_raw(year_dir, data)
 
-ITEMS = [close_tax]
+
+def reject_candidates(year_dir, source_ids, reason):
+    """候補を却下する：以後の close-candidates はその取り込み元IDの候補を出さない（close-report.md に理由つきで載せる）。
+
+    staging にある行は消す。登録済み（adjustments.csv）のIDは却下できない（登録済みの伝票は手で直す）。
+    """
+    year_dir = Path(year_dir)
+    ids = list(dict.fromkeys(s.strip() for s in source_ids if s and s.strip()))
+    reason = (reason or "").strip()
+    if not ids:
+        raise KessanError("却下する候補の取り込み元IDがありません")
+    if not reason:
+        raise KessanError("却下の理由を書いてください（--reason）")
+    bad = [s for s in ids if not s.startswith(SOURCE_PREFIX)]
+    if bad:
+        raise KessanError("決算整理の候補（close:…）ではない取り込み元ID（何も却下していません）: " + "、".join(bad))
+    posted = {r["取り込み元ID"].strip() for r in read_rows(year_dir / ADJUSTMENTS_FILE)}
+    done = [s for s in ids if s in posted]
+    if done:
+        raise KessanError("登録済みの候補は却下できません（登録済みの伝票を手で直す）: " + "、".join(done))
+    load_overrides(year_dir)
+    rejected = load_rejected(year_dir)
+    data = _load_raw(year_dir)
+    rejected.update({s: reason for s in ids})
+    data[REJECTED_KEY] = rejected
+    staging = read_rows(year_dir / STAGING_FILE)
+    in_staging = any(r["取り込み元ID"].strip() in ids for r in staging)
+    if in_staging:
+        ensure_writable(year_dir, [STAGING_FILE])  # 先に確かめる（却下だけ記録して承認済みの行が残る形を避ける）
+    _save_raw(year_dir, data)
+    if in_staging:
+        try:
+            replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS,
+                         [project(r, STAGING_COLUMNS) for r in staging if r["取り込み元ID"].strip() not in ids])
+        except OSError:
+            raise cannot_write(STAGING_FILE) from None
+
+
+# 項目の順：未払・未収 → 前払 → 減価償却 → 役員報酬・残高の所見 → 消費税・法人税等（後のタスクが close_tax の前に足す）
+import close_payable  # noqa: E402  （項目は close の型を使うので、型を定義した後で読む）
+import close_tax  # noqa: E402
+
+ITEMS = [close_payable, close_tax]
