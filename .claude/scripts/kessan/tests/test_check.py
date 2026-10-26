@@ -379,7 +379,7 @@ def test_evidence_with_several_candidates_is_ignored(year_dir, accounts):
     taxable_year(year_dir)
     setup_tax(year_dir)
     write_evidence(year_dir, "8", source_id="bank:2;bank:1", state="複数候補")
-    assert run_checks(year_dir, accounts) == []
+    assert [f for f in run_checks(year_dir, accounts) if f.item != "証憑"] == []
 
 
 def test_mixed_rate_evidence_needs_split_voucher(year_dir, accounts):
@@ -478,3 +478,37 @@ def test_invoice_not_required_under_simplified_or_20_percent(accounts):
     assert tax_findings(entries, accounts, TaxSettings("課税", "簡易", "割戻し", "", False)) == []
     assert tax_findings(entries, accounts, TaxSettings("課税", "2割特例", "割戻し", "", False)) == []
     assert [lvl for lvl, _ in tax_findings(entries, accounts)] == ["NG"]
+
+
+def test_check_warns_unresolved_evidence(year_dir, accounts):
+    from check import check_evidence, unresolved_evidence
+    setup_clean(year_dir)
+    base = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    base.update({"証憑ファイル": "inbox/領収書-テスト.jpg", "日付": "2025-04-05", "金額": "3300", "取引先": "テスト商店"})
+    write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [
+        {**base, "証憑ID": "m", "状態": "複数候補", "取り込み元ID": "bank:1;bank:2"},
+        {**base, "証憑ID": "n", "状態": "新規仕訳", "取り込み元ID": "receipt:n"},
+        {**base, "証憑ID": "u", "状態": "未払候補", "取り込み元ID": ""},
+        {**base, "証憑ID": "blank", "状態": "明細に対応", "取り込み元ID": ""},
+        {**base, "証憑ID": "ok", "状態": "明細に対応", "取り込み元ID": "bank:2"},
+    ])
+    entries = entry_rows(year_dir)
+    findings = check_evidence(year_dir, entries)
+    assert [(f.level, f.item) for f in findings] == [("WARN", "証憑")] * 4
+    text = " / ".join(f.message for f in findings)
+    assert "突き合わせ先が複数" in text and "対応する仕訳が無い" in text and "未払候補" in text
+    assert "inbox/領収書-テスト.jpg（2025-04-05 3300円 テスト商店）" in text
+    assert len(unresolved_evidence(year_dir, entries)) == 3  # 未払候補は含めない
+    assert not has_ng(run_checks(year_dir, accounts))
+
+
+def test_check_evidence_row_in_staging_is_not_orphan(year_dir, accounts):
+    from check import check_evidence
+    from common import STAGING_COLUMNS
+    from helpers import staging_row
+    setup_clean(year_dir)
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [staging_row(取り込み元ID="receipt:n")])
+    row = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    row.update({"証憑ID": "n", "状態": "新規仕訳", "取り込み元ID": "receipt:n"})
+    write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [row])
+    assert check_evidence(year_dir, entry_rows(year_dir)) == []

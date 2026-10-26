@@ -124,6 +124,43 @@ def _write_failure(done, failed):
     )
 
 
+def can_attach_receipt(r):
+    """証憑を付けてよい明細行か（未承認で、借方科目がまだ空）。"""
+    return r["承認"].strip() != "済" and not r["借方科目"].strip()
+
+
+def attach_receipt_to_row(r, data, abbreviations, payees=None, suspected_reason=None, duplicate_reason=None):
+    """証憑が1つに決まった明細行 r（staging の行）に、証憑の科目候補・取引先を入れ、要確認理由を足す（r を直接書き換える）。"""
+    r["借方科目"] = data["科目候補"]
+    r["借方補助"] = data.get("補助候補", "") if data["科目候補"] else ""
+    r["取引先"] = r["取引先"] or data["取引先"]
+    reasons = r["要確認理由"]
+    if r["借方科目"].strip() and r["貸方科目"].strip():
+        reasons = remove_reason(reasons, UNSET_COUNTER_ACCOUNT)
+    # 既存の理由（ページの残高が連続しない・二重計上の疑い等）は消さずに追記する
+    # 金額・日付だけで一致した行かもしれないので、取引先名が摘要に無ければその旨も付ける
+    partner_reason = (None if name_in_description(data["取引先"], r["摘要"], abbreviations, payees)
+                      else PARTNER_NOT_IN_DESCRIPTION)
+    r["要確認理由"] = add_reasons(reasons, MATCHED_RECEIPT, partner_reason, suspected_reason, duplicate_reason)
+    if data["自信度"] == "低":
+        r["読み取り信頼度"] = "低"
+
+
+def new_entry_row(data, source_id, credit, *extra_reasons):
+    """明細に該当が無い証憑から作る、staging の新しい仕訳の行。credit は credit_for_new_entry の戻り値。"""
+    subject, sub, reason = credit
+    amount = str(data["金額"])
+    row = dict.fromkeys(STAGING_COLUMNS, "")
+    row.update({
+        "日付": data["日付"],
+        "借方科目": data["科目候補"], "借方補助": data.get("補助候補", "") if data["科目候補"] else "",
+        "借方金額": amount, "貸方科目": subject, "貸方補助": sub, "貸方金額": amount,
+        "摘要": data["内容"], "取引先": data["取引先"], "証憑ファイル": data["資料"], "取り込み元ID": source_id,
+        "読み取り信頼度": data["自信度"], "判定": "要確認", "要確認理由": add_reasons(reason, *extra_reasons),
+    })
+    return row
+
+
 def _import_receipt(year_dir, data, sources, result, now, abbreviations, payees=None):
     """証憑1件を取り込む。書き込みの順序：staging.csv → evidence.csv → import-log.csv。
 
@@ -170,21 +207,9 @@ def _import_receipt(year_dir, data, sources, result, now, abbreviations, payees=
     if len(candidates) == 1:
         state, source_id = STATE_MATCHED, candidates[0]
         for r in staging:
-            if r["取り込み元ID"].strip() != source_id or r["承認"].strip() == "済" or r["借方科目"].strip():
+            if r["取り込み元ID"].strip() != source_id or not can_attach_receipt(r):
                 continue
-            r["借方科目"] = data["科目候補"]
-            r["借方補助"] = data.get("補助候補", "") if data["科目候補"] else ""
-            r["取引先"] = r["取引先"] or data["取引先"]
-            reasons = r["要確認理由"]
-            if r["借方科目"].strip() and r["貸方科目"].strip():
-                reasons = remove_reason(reasons, UNSET_COUNTER_ACCOUNT)
-            # 既存の理由（ページの残高が連続しない・二重計上の疑い等）は消さずに追記する
-            # 金額・日付だけで一致した行かもしれないので、取引先名が摘要に無ければその旨も付ける
-            partner_reason = (None if name_in_description(data["取引先"], r["摘要"], abbreviations, payees)
-                              else PARTNER_NOT_IN_DESCRIPTION)
-            r["要確認理由"] = add_reasons(reasons, MATCHED_RECEIPT, partner_reason, suspected_reason, duplicate_reason)
-            if data["自信度"] == "低":
-                r["読み取り信頼度"] = "低"
+            attach_receipt_to_row(r, data, abbreviations, payees, suspected_reason, duplicate_reason)
             staging_changed = True
     elif len(candidates) > 1:
         state, source_id = STATE_MULTIPLE, CANDIDATE_SEPARATOR.join(candidates)
@@ -197,17 +222,7 @@ def _import_receipt(year_dir, data, sources, result, now, abbreviations, payees=
             if source_id in discarded_source_ids(year_dir):  # オーナーが破棄した証憑の行は作り直さない
                 state = STATE_DISCARDED
             elif source_id not in {r["取り込み元ID"].strip() for r in lines}:
-                subject, sub, reason = credit
-                reason = add_reasons(reason, suspected_reason, duplicate_reason)
-                amount = str(data["金額"])
-                new_row = dict.fromkeys(STAGING_COLUMNS, "")
-                new_row.update({
-                    "日付": data["日付"],
-                    "借方科目": data["科目候補"], "借方補助": data.get("補助候補", "") if data["科目候補"] else "",
-                    "借方金額": amount, "貸方科目": subject, "貸方補助": sub, "貸方金額": amount,
-                    "摘要": data["内容"], "取引先": data["取引先"], "証憑ファイル": data["資料"], "取り込み元ID": source_id,
-                    "読み取り信頼度": data["自信度"], "判定": "要確認", "要確認理由": reason,
-                })
+                new_row = new_entry_row(data, source_id, credit, suspected_reason, duplicate_reason)
 
     ensure_writable(year_dir, names)
     try:

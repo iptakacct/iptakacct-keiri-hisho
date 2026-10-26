@@ -9,6 +9,7 @@
   python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-20260917.json [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --id receipt:… --part 10:1080 --part 8:540
   python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --voucher 3 --line 1 --part 10:1080 --part 8:540   （登録済み伝票）
+  python ../.claude/scripts/kessan/cli.py resolve-evidence --year-dir <Y> --evidence-id <証憑ID> (--match <取り込み元ID> | --as-payable | --as-new)
   python ../.claude/scripts/kessan/cli.py review --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-20260917.xlsx --numbers 3 5
@@ -34,6 +35,7 @@ from accounts_update import apply_review, approve, approve_numbers, load_updates
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
+from evidence_resolve import resolve_evidence
 from extracted import extracted_files
 from extracted_import import import_extracted, inbox_status
 from match import add_payee, load_abbreviations, load_payees, payment_accounts
@@ -47,7 +49,7 @@ from tax_fill import fill_tax
 from trial_balance import write_trial_balance
 from undo import discard, unimport
 
-COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "review", "apply-review",
+COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb", "tax-summary")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
@@ -67,7 +69,7 @@ def _parser():
             p.add_argument("--tax-calc", choices=["割戻し", "積上げ"])
             p.add_argument("--tax-allocation", choices=["全額控除", "個別対応", "一括比例配分"], help="方式=原則のとき必須")
             p.add_argument("--small-exemption", action="store_true", help="少額特例（1万円未満の課税仕入）を使う会社")
-        if name in ("import-bank", "import-extracted", "set-accounts", "split-tax"):
+        if name in ("import-bank", "import-extracted", "set-accounts", "split-tax", "resolve-evidence"):
             p.add_argument("--sources", type=Path, help="省略時はインスタンスの context/company/kessan-sources.yaml")
             p.add_argument("--patterns", type=Path, help="省略時はインスタンスの context/company/kessan-patterns.yaml")
         if name == "add-payee":
@@ -88,6 +90,12 @@ def _parser():
             p.add_argument("--prev-year-dir", type=Path)
             p.add_argument("--part", required=True, action="append", metavar="税率:税込金額",
                            help="税率ごとの金額（例：--part 10:1080 --part 8:540。2つ以上）")
+        if name == "resolve-evidence":
+            p.add_argument("--evidence-id", required=True, help="証憑ID（evidence.csv）")
+            how = p.add_mutually_exclusive_group(required=True)
+            how.add_argument("--match", help="複数候補のうち、この取り込み元IDの明細行に決める")
+            how.add_argument("--as-payable", action="store_true", help="決算整理で未払として扱う")
+            how.add_argument("--as-new", action="store_true", help="証憑から新しい仕訳の候補を作る")
         if name == "approve":
             target = p.add_mutually_exclusive_group(required=True)
             target.add_argument("--ids", nargs="+", help="承認する取り込み元ID")
@@ -329,6 +337,14 @@ def main(argv=None):
             sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
             number = split_tax(year_dir, args.id, _parse_parts(args.part), payment_accounts(sources), accounts)
             print(f"税率で分けました: 取り込み元ID {args.id}（staging.csv 内の伝票番号 {number}。承認はまだです）")
+            return 0
+        if args.command == "resolve-evidence":
+            sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
+            state = resolve_evidence(year_dir, args.evidence_id, match=args.match, as_payable=args.as_payable,
+                                     as_new=args.as_new, sources=sources, accounts=accounts,
+                                     payees=_load_payees(year_dir, args))
+            print(f"証憑 {args.evidence_id} を「{state}」にしました")
+            _fill_tax(year_dir, accounts)
             return 0
         if args.command == "review":
             _fill_tax(year_dir, accounts)

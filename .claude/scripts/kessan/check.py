@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from common import parse_amount, read_rows
-from evidence import evidence_by_source, read_evidence
+from evidence import STATE_MATCHED, STATE_MULTIPLE, STATE_NEW_ENTRY, STATE_UNPAID, evidence_by_source, read_evidence
 from tax import (
     ALLOCATION_VALUES, FIXED_ASSET_SECTIONS, INVOICE_VALUES, TAX_CATEGORIES, load_tax_settings, load_transitions,
     transition_label_error,
@@ -289,6 +289,37 @@ def check_tax(entries, accounts, settings, evidence=(), transitions=None):
     return findings + _check_evidence_rates(entries, evidence, settings)
 
 
+def _evidence_label(ev):
+    return f"証憑 {ev['証憑ファイル']}（{ev['日付']} {ev['金額']}円 {ev['取引先']}）"
+
+
+def _evidence_issues(year_dir, entries):
+    """証憑の状態から見た宿題。(種類, メッセージ) の一覧。種類：複数候補／仕訳無し／未払候補。"""
+    known = {r["取り込み元ID"].strip() for r in entries}
+    known |= {r["取り込み元ID"].strip() for r in read_rows(Path(year_dir) / "staging.csv")}
+    known.discard("")  # IDが空の行は、どの証憑の対応先でもない
+    issues = []
+    for ev in read_evidence(year_dir):
+        label = _evidence_label(ev)
+        if ev["状態"] == STATE_MULTIPLE:
+            issues.append(("複数候補", f"{label}: 突き合わせ先が複数（resolve-evidence で決める）"))
+        elif ev["状態"] in (STATE_MATCHED, STATE_NEW_ENTRY) and ev["取り込み元ID"].strip() not in known:
+            issues.append(("仕訳無し", f"{label}: 対応する仕訳が無い（取り込み元ID {ev['取り込み元ID'] or '空'}）"))
+        elif ev["状態"] == STATE_UNPAID:
+            issues.append(("未払候補", f"{label}: 未払候補（決算整理で未払に計上する）"))
+    return issues
+
+
+def check_evidence(year_dir, entries):
+    """証憑の突き合わせの宿題（複数候補・対応する仕訳が無い・未払候補）を警告にする。"""
+    return [Finding("WARN", "証憑", message) for _, message in _evidence_issues(year_dir, entries)]
+
+
+def unresolved_evidence(year_dir, entries):
+    """決算整理に進む前に片づけるべき証憑のメッセージ（複数候補・対応する仕訳が無い）。未払候補は決算整理で扱うので含めない。"""
+    return [message for kind, message in _evidence_issues(year_dir, entries) if kind != "未払候補"]
+
+
 def run_checks(year_dir, accounts, prev_year_dir=None):
     entries = entry_rows(year_dir)
     return (
@@ -300,6 +331,7 @@ def run_checks(year_dir, accounts, prev_year_dir=None):
         + check_negative_balances(year_dir, accounts)
         + check_opening(year_dir, accounts, prev_year_dir)
         + check_tax(entries, accounts, load_tax_settings(year_dir), read_evidence(year_dir))
+        + check_evidence(year_dir, entries)
     )
 
 
