@@ -2,10 +2,11 @@
 
 固定資産台帳 `fixed-assets.csv`（context/company）の資産ごとに、当期の償却費を計算して候補にする。
 - 定額法：floor(取得価額 × 償却率 × 月数 ÷ 12)。上限は 取得価額 − 前期末償却累計額 − 1（備忘価額1円を残す）
-- 定率法（200%）：期首帳簿価額 B × 償却率 × 月数 ÷ 12（調整前償却額）。これが償却保証額（取得価額 × 保証率）を下回った年から、
-  その年の期首帳簿価額（改定取得価額）× 改定償却率で毎年同額にする。上限は B − 1
-- 一括償却：取得価額 ÷ 3（月割りしない。3年目は残り全額。備忘価額は残さない）
-- 少額特例：供用した年度に取得価額の全額
+- 定率法（200%）：月割り前の調整前償却額 floor(B × 償却率) を償却保証額（取得価額 × 保証率）と比べ、下回った年から
+  その年の期首帳簿価額（改定取得価額）× 改定償却率を使う。選んだ1年分を月数÷12で月割りする（floor）。上限は B − 1
+- 一括償却：floor(取得価額 × 当期の月数 ÷ 36)。残り（取得価額 − 前期末償却累計額）が上限。除却しても続く（除却日は見ない）
+- 少額特例：供用した年度に取得価額の全額（年間上限は300万円×月数÷12。供用年度より後の年度は候補にせず所見）
+事業年度が12か月未満のときは、定額法・定率法の償却率が変わる（省令4条）ので候補を作らず所見にする。
 月数は、事業供用日が当期内なら供用月から期末月まで、前期以前なら期間の月数。除却日が当期内ならその月まで。
 償却率は `config/depreciation/rates.yaml`（国税庁の償却率等表）から読む。端数は円未満切り捨て。
 
@@ -227,43 +228,44 @@ def _replay_declining(asset, rate, revised, guarantee, start, end):
     for year in range(gap // 12 + 1):
         months = first_end - supply + 1 if year == 0 else 12
         book = asset.price - cumulative
-        adjusted = _floor(Decimal(book) * rate * months / 12)
-        if base is None and guarantee is not None and adjusted < guarantee:
+        full = _floor(Decimal(book) * rate)  # 償却保証額との比較は月割り前の1年分で行う
+        if base is None and guarantee is not None and full < guarantee:
             base = book
-        amount = _floor(Decimal(base) * revised * months / 12) if base is not None else adjusted
-        cumulative += max(0, min(amount, book - 1))
+        chosen = _floor(Decimal(base) * revised) if base is not None else full
+        cumulative += max(0, min(chosen * months // 12, book - 1))
     return cumulative, base
 
 
 def _declining(asset, rates, start, end, months):
-    """定率法の当期の償却費と、改定取得価額を再現できなかったかどうか。"""
+    """定率法の当期の償却費と、改定取得価額を再現できなかったかどうか。
+
+    月割り前の1年分（調整前償却額 floor(B × 償却率)）を償却保証額と比べて調整前か改定かを選び、選んだ額を月割り（floor）する。
+    """
     entry = rates[DECLINING][asset.life]
     rate, revised = entry["償却率"], entry.get("改定償却率")
     guarantee = _floor(Decimal(asset.price) * entry["保証率"]) if "保証率" in entry else None
     book = asset.price - asset.prior
-    base, unsure = None, False
-    if revised is not None:
-        replay = _replay_declining(asset, rate, revised, guarantee, start, end)
-        if replay is not None and replay[0] == asset.prior:
-            base = replay[1]
-    adjusted = _floor(Decimal(book) * rate * months / 12)
-    if base is None and guarantee is not None and adjusted < guarantee:
+    replay = _replay_declining(asset, rate, revised, guarantee, start, end) if revised is not None else None
+    base = replay[1] if replay is not None and replay[0] == asset.prior else None
+    full = _floor(Decimal(book) * rate)
+    unsure = False
+    if base is None and guarantee is not None and full < guarantee:
         base = book
-        replay = _replay_declining(asset, rate, revised, guarantee, start, end)
-        unsure = replay is None or replay[0] != asset.prior
-    amount = _floor(Decimal(base) * revised * months / 12) if base is not None else adjusted
-    return max(0, min(amount, book - 1)), unsure
+        unsure = asset.in_service < start and (replay is None or replay[0] != asset.prior)
+    chosen = _floor(Decimal(base) * revised) if base is not None else full
+    return max(0, min(chosen * months // 12, book - 1)), unsure
 
 
-def _lump(asset):
-    third = asset.price // LUMP_YEARS
-    rest = asset.price - asset.prior
-    return rest if asset.prior >= third * (LUMP_YEARS - 1) else min(third, rest)
+def _lump(asset, period_months):
+    """一括償却資産の当期の損金算入額：取得価額 × 当期の月数 ÷ 36（円未満切り捨て）。残りを超えない。"""
+    return min(asset.price * period_months // 36, asset.price - asset.prior)
 
 
 def _skip(asset, start, end):
-    """償却しない資産（供用前・除却済み・償却済み）。所見も出さない。"""
-    if asset.in_service > end or (asset.retired and asset.retired < start):
+    """償却しない資産（供用前・除却済み・償却済み）。所見も出さない。一括償却は除却しても続くので除却日を見ない。"""
+    if asset.in_service > end:
+        return True
+    if asset.method != LUMP and asset.retired and asset.retired < start:
         return True
     if asset.method in (STRAIGHT, DECLINING):
         return asset.price - asset.prior <= 1
@@ -276,13 +278,21 @@ def _tax(ctx):
 
 def _candidates(ctx, assets):
     start, end = ctx.period
+    period_months = _index(end) - _index(start) + 1
     candidates, notes, small_total = [], [], 0
     rates = load_rates() if any(a.method in (STRAIGHT, DECLINING) for a in assets) else None
+    if any(a.method == SMALL for a in assets):
+        notes.append(close.Note(ITEM, "少額減価償却資産の特例は中小企業者等だけ（適用できるか確認）"))
     for asset in assets:
         if _skip(asset, start, end):
             continue
         months = _months(asset, start, end)
-        basis = f"{asset.method}"
+        if asset.method in (STRAIGHT, DECLINING) and period_months < 12:
+            notes.append(close.Note(ITEM, f"事業年度が12か月未満のため、{asset.name}の償却は耐用年数省令4条の率で別に計算する（候補は作っていない）"))
+            continue
+        if asset.method == SMALL and asset.in_service < start:
+            notes.append(close.Note(ITEM, f"少額減価償却資産の特例は事業供用年度だけ（{asset.name}）"))
+            continue
         if asset.method == STRAIGHT:
             amount = _floor(Decimal(asset.price) * rates[STRAIGHT][asset.life] * months / 12)
             amount = max(0, min(amount, asset.price - asset.prior - 1))
@@ -292,12 +302,11 @@ def _candidates(ctx, assets):
                 notes.append(close.Note(ITEM, f"{asset.name}は償却保証額を下回る年に入っていますが、前期末償却累計額から改定取得価額を"
                                               "再現できないため、期首帳簿価額を改定取得価額として計算しました（達人などの償却額と照合する）"))
         elif asset.method == LUMP:
-            amount = _lump(asset)
+            amount = _lump(asset, period_months)
         else:
             amount = asset.price - asset.prior
-            if start <= asset.in_service <= end:
-                small_total += amount
-        if asset.retired and start <= asset.retired <= end:
+            small_total += amount
+        if asset.method != LUMP and asset.retired and start <= asset.retired <= end:
             notes.append(close.Note(ITEM, f"{asset.name}は除却日{asset.retired}が当期内です。{months}か月分まで償却しました"
                                           "（除却の仕訳は手で。除却後は台帳から外すか除却日を残す）"))
         if amount <= 0:
@@ -306,15 +315,17 @@ def _candidates(ctx, assets):
         if asset.method in (STRAIGHT, DECLINING):
             basis = f"{asset.method}・耐用年数{asset.life}年・{months}か月分"
         elif asset.method == LUMP:
-            basis = "一括償却（3年均等）"
+            basis = f"一括償却（3年均等・{period_months}か月分）"
         else:
             basis = "少額減価償却資産の特例"
         line = {"借方科目": EXPENSE, "借方金額": amount, "借方税区分": _tax(ctx),
                 "貸方科目": credit, "貸方金額": amount, "摘要": f"減価償却費 {asset.name}"}
         candidates.append(close.Candidate(ITEM, asset.name, end, [line],
                                           f"{asset.name}（{asset.account} 取得価額{asset.price:,}円）{basis}"))
-    if small_total > SMALL_CAP:
-        notes.append(close.Note(ITEM, f"少額減価償却資産の特例の年間上限（{SMALL_CAP // 10000}万円）を超えている"
+    cap = SMALL_CAP * period_months // 12
+    if small_total > cap:
+        label = f"{SMALL_CAP // 10000}万円" if period_months == 12 else f"{cap:,}円＝{SMALL_CAP // 10000}万円×{period_months}/12"
+        notes.append(close.Note(ITEM, f"少額減価償却資産の特例の年間上限（{label}）を超えている"
                                       f"（当期の合計{small_total:,}円。超えた分は一括償却または通常の償却にする）"))
     return candidates, notes
 

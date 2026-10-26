@@ -101,14 +101,46 @@ def test_lump_sum_three_years(year_dir, accounts, company):
     assert (r["借方科目"], r["借方金額"], r["貸方科目"], r["貸方金額"]) == ("減価償却費", "50000", "工具器具備品", "50000")
 
 
-def test_lump_sum_third_year_takes_the_rest(year_dir, accounts, company):
-    ledger(company, "PC一式,工具器具備品,2023-09-01,2023-09-01,199999,一括償却,,133332,,")
-    assert one(year_dir, accounts, company)["借方金額"] == "66667"
+def test_lump_sum_each_year_is_one_third(year_dir, accounts, company):
+    for prior in ("0", "50000", "100000"):
+        ledger(company, f"PC一式,工具器具備品,2023-09-01,2023-09-01,150000,一括償却,,{prior},,")
+        run(year_dir, accounts, company)
+        assert [r["借方金額"] for r in staged(year_dir)] == ["50000"]
 
 
-def test_lump_sum_second_year(year_dir, accounts, company):
-    ledger(company, "PC一式,工具器具備品,2024-09-01,2024-09-01,199999,一括償却,,66666,,")
-    assert one(year_dir, accounts, company)["借方金額"] == "66666"
+def test_lump_sum_is_capped_at_the_remainder(year_dir, accounts, company):
+    ledger(company, "PC一式,工具器具備品,2023-09-01,2023-09-01,150000,一括償却,,130000,,")
+    assert one(year_dir, accounts, company)["借方金額"] == "20000"
+
+
+def test_lump_sum_short_year_is_prorated(year_dir, accounts, company):
+    (year_dir / "period.yaml").write_text('期首日: "2025-10-01"\n期末日: "2026-03-31"\n', encoding="utf-8")
+    ledger(company, "PC一式,工具器具備品,2025-10-01,2025-10-01,150000,一括償却,,0,,")
+    assert one(year_dir, accounts, company)["借方金額"] == "25000"  # 150,000 × 6/36
+
+
+def test_lump_sum_ignores_disposal(year_dir, accounts, company):
+    ledger(company, "PC一式,工具器具備品,2024-09-01,2024-09-01,150000,一括償却,,50000,2025-08-15,",
+           "PC二式,工具器具備品,2023-09-01,2023-09-01,150000,一括償却,,50000,2025-01-15,")
+    result = run(year_dir, accounts, company)
+    assert [r["借方金額"] for r in staged(year_dir)] == ["50000", "50000"]
+    assert not any("除却" in n.message for n in result.notes)
+
+
+def test_declining_first_year_guarantee_test_uses_full_year(year_dir, accounts, company):
+    # 調整前償却額は月割り前の1年分で保証額と比べ、選んだ額を月割りする
+    for life, supply, expected in ((4, "2026-02-01", "83333"), (10, "2026-01-01", "50000"), (10, "2026-03-01", "16666")):
+        ledger(company, f"設備,工具器具備品,{supply},{supply},1000000,定率法,{life},0,,")
+        result = run(year_dir, accounts, company)
+        assert [r["借方金額"] for r in staged(year_dir)] == [expected]
+        assert not any("再現できない" in n.message for n in result.notes)
+
+
+def test_declining_retired_after_two_months(year_dir, accounts, company):
+    ledger(company, "設備,工具器具備品,2023-04-01,2023-04-01,1000000,定率法,10,360000,2025-05-15,")
+    result = run(year_dir, accounts, company)
+    assert [r["借方金額"] for r in staged(year_dir)] == ["21333"]  # B=640,000 → 128,000 × 2/12
+    assert not any("再現できない" in n.message for n in result.notes)
 
 
 def test_small_amount_special(year_dir, accounts, company):
@@ -159,10 +191,36 @@ def test_asset_retired_in_period_depreciates_to_that_month(year_dir, accounts, c
     assert any("除却" in n.message for n in result.notes)
 
 
-def test_short_fiscal_year_uses_period_months(year_dir, accounts, company):
+def test_short_fiscal_year_is_left_to_the_owner(year_dir, accounts, company):
     (year_dir / "period.yaml").write_text('期首日: "2025-10-01"\n期末日: "2026-03-31"\n', encoding="utf-8")
-    ledger(company, "サーバー,工具器具備品,2024-04-01,2024-04-01,400000,定額法,4,100000,,")
-    assert one(year_dir, accounts, company)["借方金額"] == "50000"  # 6か月：400,000 × 0.250 × 6/12
+    ledger(company, "サーバー,工具器具備品,2024-04-01,2024-04-01,400000,定額法,4,100000,,",
+           "設備,工具器具備品,2024-04-01,2024-04-01,400000,定率法,4,100000,,")
+    result = run(year_dir, accounts, company)
+    assert staged(year_dir) == []
+    messages = [n.message for n in result.notes]
+    assert ("事業年度が12か月未満のため、サーバーの償却は耐用年数省令4条の率で別に計算する（候補は作っていない）" in messages)
+    assert any("設備" in m and "12か月未満" in m for m in messages)
+
+
+def test_small_amount_after_supply_year_is_noted(year_dir, accounts, company):
+    ledger(company, "ノートPC,工具器具備品,2024-09-01,2024-09-01,250000,少額特例,,100000,,")
+    result = run(year_dir, accounts, company)
+    assert staged(year_dir) == []
+    assert any("少額減価償却資産の特例は事業供用年度だけ（ノートPC）" in n.message for n in result.notes)
+
+
+def test_small_amount_requires_small_company_note(year_dir, accounts, company):
+    ledger(company, "ノートPC,工具器具備品,2025-09-01,2025-09-01,250000,少額特例,,0,,")
+    assert any("中小企業者等だけ" in n.message for n in run(year_dir, accounts, company).notes)
+
+
+def test_small_amount_cap_is_prorated_in_short_year(year_dir, accounts, company):
+    (year_dir / "period.yaml").write_text('期首日: "2025-10-01"\n期末日: "2026-03-31"\n', encoding="utf-8")
+    rows = [f"PC{i},工具器具備品,2025-10-01,2025-10-01,299999,少額特例,,0,," for i in range(5)]
+    ledger(company, *rows)
+    assert not any("年間上限" in n.message for n in run(year_dir, accounts, company).notes)  # 1,499,995 ≤ 1,500,000
+    ledger(company, *rows, "PC9,工具器具備品,2025-10-01,2025-10-01,299999,少額特例,,0,,")
+    assert any("年間上限" in n.message for n in run(year_dir, accounts, company).notes)
 
 
 def test_unregistered_asset_noted(year_dir, accounts, company):
