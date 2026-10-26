@@ -464,3 +464,35 @@ def test_review_fills_tax_only_in_taxable_year(tmp_path, capsys):
     assert main(["review", "--year-dir", str(exempt)]) == 0
     assert "税区分を補完" not in capsys.readouterr().out
     assert read_rows(exempt / "staging.csv")[0]["借方税区分"] == ""
+
+
+def test_split_tax_command(tmp_path, capsys):
+    year = make_instance(tmp_path)
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [
+        staging_row(日付="2025-04-10", 借方科目="消耗品費", 借方金額="1620", 貸方科目="現金", 貸方金額="1620",
+                    摘要="スーパー", 取り込み元ID="rcpt:1"),
+    ])
+    args = ["split-tax", "--year-dir", str(year), "--id", "rcpt:1", "--part", "10:1080", "--part", "8:540"]
+    assert main(args) == 0
+    assert "伝票番号 S1" in capsys.readouterr().out
+    assert [r["借方金額"] or r["貸方金額"] for r in read_rows(year / "staging.csv")] == ["1080", "540", "1620"]
+    assert main(args) == 1  # 既に伝票番号が付いているので分け直せない
+    assert main(["split-tax", "--year-dir", str(year), "--id", "x", "--part", "abc"]) == 1
+    assert "税率:税込金額" in capsys.readouterr().err
+
+
+def test_set_tax_command(tmp_path, capsys):
+    import json
+    from common import JOURNAL_COLUMNS
+    from helpers import line
+    year = make_instance(tmp_path)
+    write_rows(year / "journal.csv", JOURNAL_COLUMNS, [
+        line("1", "2025-04-05", debit=("支払手数料", "", 330), credit=("普通預金", "サンプル銀行", 330), 取り込み元ID="b:1"),
+    ])
+    path = tmp_path / "set-tax.json"
+    path.write_text(json.dumps([{"伝票番号": "1", "行": 1, "借方税区分": "課税仕入10%"}], ensure_ascii=False), encoding="utf-8")
+    code = main(["set-tax", "--year-dir", str(year), "--file", str(path)])
+    assert code in (0, 3)  # 3：修正は反映済みで、税と無関係な検算NGが残っている
+    out = capsys.readouterr().out
+    assert "税の列: 1行を直しました" in out and "検算:" in out
+    assert read_rows(year / "journal.csv")[0]["借方税区分"] == "課税仕入10%"

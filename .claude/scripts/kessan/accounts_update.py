@@ -11,12 +11,13 @@ from pathlib import Path
 
 from bank_import import UNSET_COUNTER_ACCOUNT
 from common import (
-    STAGING_COLUMNS, KessanError, add_reasons, ensure_writable, parse_amount, project, read_rows, remove_reason,
-    replace_rows,
+    STAGING_COLUMNS, TAX_COLUMNS, KessanError, add_reasons, ensure_writable, parse_amount, project, read_rows,
+    remove_reason, replace_rows,
 )
 from review_xlsx import FINGERPRINT_COLUMN, row_fingerprint
+from tax_edit import tax_value_error
 
-SET_FIELDS = ("借方科目", "借方補助", "貸方科目", "貸方補助", "取引先", "判定", "要確認理由")
+SET_FIELDS = ("借方科目", "借方補助", "貸方科目", "貸方補助", "取引先", "判定", "要確認理由") + tuple(TAX_COLUMNS)
 AI_JUDGEMENT = "要確認"
 ESTABLISHED = "確立済み"
 
@@ -64,6 +65,10 @@ def _check_update(source_id, rows, values, accounts, payment_accounts):
         return errors
     if row["承認"].strip() == "済":
         errors.append(f"{where}: 承認済みの行は上書きできません")
+    for column in TAX_COLUMNS:
+        message = tax_value_error(column, values[column].strip()) if column in values else None
+        if message:
+            errors.append(f"{where}: {message}")
     judgement = values.get("判定")
     if judgement == ESTABLISHED:
         errors.append(f"{where}: 判定=確立済み はAIからは指定できません（確立済みパターンとの照合でスクリプトが付ける）")
@@ -81,7 +86,7 @@ def _check_update(source_id, rows, values, accounts, payment_accounts):
 
 
 def set_accounts(year_dir, accounts, updates, payment_accounts):
-    """updates：{取り込み元ID: {借方科目, 借方補助, 貸方科目, 貸方補助, 取引先, 判定, 要確認理由}}（書く列だけでよい）。
+    """updates：{取り込み元ID: {借方科目, 借方補助, 貸方科目, 貸方補助, 取引先, 判定, 要確認理由, 税の6列}}（書く列だけでよい）。
 
     payment_accounts：kessan-sources.yaml の口座・カード・現金の (科目, 補助)。明細側の科目は書き換えさせない。
     要確認理由は上書きせず、既存の理由（スクリプトが付けた二重計上の疑い等）に追記する。スクリプトが外すのは

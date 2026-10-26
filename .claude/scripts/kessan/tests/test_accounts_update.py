@@ -144,3 +144,33 @@ def test_set_accounts_keeps_unset_reason_while_counter_account_is_empty(year_dir
     write_staging(year_dir, [fee()])
     set_accounts(year_dir, accounts, {"bank:a": {"取引先": "サンプル銀行", "要確認理由": "摘要が読めない"}}, PAYMENT)
     assert read_rows(year_dir / "staging.csv")[0]["要確認理由"] == "相手科目未設定／摘要が読めない"
+
+
+# --- 税の列（段階3a） ---
+
+def test_set_accounts_accepts_tax_fields(year_dir, accounts):
+    write_staging(year_dir, [fee()])
+    set_accounts(year_dir, accounts, {
+        "bank:a": {"借方科目": "支払手数料", "借方税区分": "課税仕入10%", "借方インボイス": "適格", "借方個別対応": "共通"},
+    }, PAYMENT)
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert (row["借方税区分"], row["借方インボイス"], row["借方個別対応"]) == ("課税仕入10%", "適格", "共通")
+
+
+@pytest.mark.parametrize("values, message", [
+    ({"借方税区分": "課税仕入9%"}, "借方税区分「課税仕入9%」は使えない値"),
+    ({"貸方インボイス": "たぶん適格"}, "貸方インボイス「たぶん適格」は使えない値"),
+    ({"借方個別対応": "半分"}, "借方個別対応「半分」は使えない値"),
+])
+def test_set_accounts_rejects_bad_tax_value(year_dir, accounts, values, message):
+    before = write_staging(year_dir, [fee()])
+    with pytest.raises(KessanError, match=message):
+        set_accounts(year_dir, accounts, {"bank:a": values}, PAYMENT)
+    assert (year_dir / "staging.csv").read_bytes() == before
+
+
+def test_set_accounts_allows_clearing_tax_value(year_dir, accounts):
+    write_staging(year_dir, [fee(借方税区分="課税仕入10%")])
+    set_accounts(year_dir, accounts, {"bank:a": {"借方税区分": ""}}, PAYMENT)
+    (row,) = read_rows(year_dir / "staging.csv")
+    assert row["借方税区分"] == ""

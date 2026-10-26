@@ -6,6 +6,8 @@
   python ../.claude/scripts/kessan/cli.py import-bank --year-dir <Y> --account-id main --file <Y>/inbox/2025-04.csv
   python ../.claude/scripts/kessan/cli.py import-extracted --year-dir <Y> [--file <Y>/extracted/通帳-2025-04.pdf.json]
   python ../.claude/scripts/kessan/cli.py set-accounts --year-dir <Y> --file <Y>/output/set-accounts-20260917.json
+  python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-20260917.json
+  python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --id receipt:… --part 10:1080 --part 8:540
   python ../.claude/scripts/kessan/cli.py review --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
   python ../.claude/scripts/kessan/cli.py approve --year-dir <Y> --review-file <Y>/output/review-20260917.xlsx --numbers 3 5
@@ -17,7 +19,7 @@
   python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
-          / 3 post で登録は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
+          / 3 post（set-tax）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
           （import-bank・import-extracted・set-accounts の反映後に自動承認だけが失敗したときは、反映が完了した旨を出して 1。
             import-extracted で形式エラーのファイルもあったときは 4）
 """
@@ -37,11 +39,12 @@ from patterns import auto_approve, load_patterns
 from post import post_approved
 from review_xlsx import read_review, write_review
 from tax import load_tax_settings, load_transitions
+from tax_edit import load_tax_updates, set_journal_tax, split_tax
 from tax_fill import fill_tax
 from trial_balance import write_trial_balance
 from undo import discard, unimport
 
-COMMANDS = ("init", "inbox-status", "import-bank", "import-extracted", "set-accounts", "review", "apply-review",
+COMMANDS = ("init", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "review", "apply-review",
             "approve", "unimport", "discard", "post", "check", "tb")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
@@ -61,7 +64,7 @@ def _parser():
             p.add_argument("--tax-calc", choices=["割戻し", "積上げ"])
             p.add_argument("--tax-allocation", choices=["全額控除", "個別対応", "一括比例配分"], help="方式=原則のとき必須")
             p.add_argument("--small-exemption", action="store_true", help="少額特例（1万円未満の課税仕入）を使う会社")
-        if name in ("import-bank", "import-extracted", "set-accounts"):
+        if name in ("import-bank", "import-extracted", "set-accounts", "split-tax"):
             p.add_argument("--sources", type=Path, help="省略時はインスタンスの context/company/kessan-sources.yaml")
             p.add_argument("--patterns", type=Path, help="省略時はインスタンスの context/company/kessan-patterns.yaml")
         if name == "import-bank":
@@ -69,8 +72,12 @@ def _parser():
             p.add_argument("--file", required=True, type=Path)
         if name == "import-extracted":
             p.add_argument("--file", type=Path, nargs="+", help="省略時は extracted/*.json をすべて")
-        if name in ("set-accounts", "apply-review"):
+        if name in ("set-accounts", "set-tax", "apply-review"):
             p.add_argument("--file", required=True, type=Path)
+        if name == "split-tax":
+            p.add_argument("--id", required=True, help="分ける明細の取り込み元ID")
+            p.add_argument("--part", required=True, action="append", metavar="税率:税込金額",
+                           help="税率ごとの金額（例：--part 10:1080 --part 8:540。2つ以上）")
         if name == "approve":
             target = p.add_mutually_exclusive_group(required=True)
             target.add_argument("--ids", nargs="+", help="承認する取り込み元ID")
@@ -188,6 +195,17 @@ def _init_tax(args):
             "控除": args.tax_allocation or "", "少額特例": args.small_exemption}
 
 
+def _parse_parts(texts):
+    """--part 10:1080 の形を (税率, 金額) にする。"""
+    parts = []
+    for text in texts:
+        rate, sep, amount = text.partition(":")
+        if not sep or not rate.strip().isdigit() or not amount.strip().isdigit():
+            raise KessanError(f"--part は 税率:税込金額 の形で書く（例：10:1080）。値: {text}")
+        parts.append((int(rate), int(amount)))
+    return parts
+
+
 def main(argv=None):
     args = _parser().parse_args(argv)
     year_dir = args.year_dir
@@ -230,6 +248,18 @@ def main(argv=None):
             count = set_accounts(year_dir, accounts, load_updates(args.file), payment_accounts(sources))
             print(f"科目候補: {count}件を反映しました")
             return _auto_approve_after(year_dir, accounts, args, "科目候補の反映は完了しています")
+        if args.command == "set-tax":
+            count = set_journal_tax(year_dir, load_tax_updates(args.file))
+            print(f"税の列: {count}行を直しました")
+            if has_ng(_run_check(year_dir, accounts, None)):
+                print("修正は反映済みですが、検算でNGがあります（check-result.md を確認）")
+                return EXIT_POSTED_WITH_NG
+            return 0
+        if args.command == "split-tax":
+            sources = load_sources(_company_file(year_dir, args.sources, "kessan-sources.yaml"))
+            number = split_tax(year_dir, args.id, _parse_parts(args.part), payment_accounts(sources), accounts)
+            print(f"税率で分けました: 取り込み元ID {args.id}（staging.csv 内の伝票番号 {number}。承認はまだです）")
+            return 0
         if args.command == "review":
             _fill_tax(year_dir, accounts)
             s = write_review(year_dir)
