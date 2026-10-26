@@ -112,7 +112,7 @@ def _sheet(workbook, title, columns, first=False):
     return ws
 
 
-def write_review(year_dir, today=None):
+def write_review(year_dir, today=None, payees=None):
     year_dir = Path(year_dir)
     today = today or date.today()
     staging = read_rows(year_dir / "staging.csv")
@@ -173,7 +173,7 @@ def write_review(year_dir, today=None):
     ws = _sheet(workbook, MULTIPLE_SHEET, MULTIPLE_COLUMNS)
     for r in multiple:
         candidates = candidate_ids(r)
-        hits = [c for c in candidates if name_in_description(r["取引先"], descriptions.get(c, ""), abbreviations)]
+        hits = [c for c in candidates if name_in_description(r["取引先"], descriptions.get(c, ""), abbreviations, payees)]
         ws.append([r["証憑ID"], r["証憑ファイル"], r["日付"], int(r["金額"]), r["取引先"], r["内容"],
                    " ".join(candidates), " ".join(hits)])
 

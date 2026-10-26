@@ -265,7 +265,10 @@ def main(argv=None):
         accounts = _load_accounts(year_dir)
 
         if args.command == "add-payee":
-            path = _payees_path(year_dir, args)
+            try:
+                path = _payees_path(year_dir, args)
+            except IndexError:
+                raise KessanError("年度フォルダがインスタンスの work/kessan/<期>/ の下にありません（--payees で対応表のファイルを指定してください）") from None
             if add_payee(path, args.name, args.kana):
                 print(f"支払先を追加しました: {args.name} ← {args.kana}（{path}）")
             else:
@@ -329,7 +332,7 @@ def main(argv=None):
             return 0
         if args.command == "review":
             _fill_tax(year_dir, accounts)
-            s = write_review(year_dir)
+            s = write_review(year_dir, payees=_load_payees(year_dir, args))
             print(f"確認用Excel: {s.path}")
             print(f"行 {s.rows}件（要確認 {s.needs_review}件 / 承認済み {s.approved}件）"
                   f" / 読み取り信頼度が低い {s.low_confidence}件 / 明細に該当なし {s.no_match}件")

@@ -614,4 +614,16 @@ def test_add_payee_cli(tmp_path, capsys):
     assert main(args[:-1] + ["テストシヨウジ（カ"]) == 0
     from match import load_payees
     assert load_payees(path) == {"テスト商事": ["テストシヨウジ", "テストシヨウジ（カ"]}
-    assert not path.with_name(path.name + ".tmp").exists()
+    assert [f.name for f in path.parent.iterdir()] == [path.name]
+
+
+def test_add_payee_outside_instance(tmp_path, capsys, monkeypatch):
+    year = tmp_path / "2026-03期"
+    main(["init", "--year-dir", str(year), *PERIOD])
+
+    def outside(*_):
+        raise IndexError
+
+    monkeypatch.setattr("cli._company_file", outside)
+    assert main(["add-payee", "--year-dir", str(year), "--name", "テスト商事", "--kana", "テストシヨウジ"]) == 1
+    assert "--payees" in capsys.readouterr().err

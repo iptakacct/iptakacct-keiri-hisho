@@ -1,7 +1,6 @@
 import pytest
 
 from common import KessanError
-from common import KessanError
 from match import expand_abbreviations, load_abbreviations, name_in_description
 
 
@@ -70,8 +69,8 @@ def test_load_payees_validates_and_merges(tmp_path):
     from match import load_payees
     assert load_payees(tmp_path / "none.yaml") == {}
     path = tmp_path / "p.yaml"
-    path.write_text("payees:\n  - {取引先: A社, 名義: [エー]}\n  - {取引先: A社, 名義: [エー, ビー]}\n", encoding="utf-8")
-    assert load_payees(path) == {"A社": ["エー", "ビー"]}
+    path.write_text("payees:\n  - {取引先: A社, 名義: [エーエー]}\n  - {取引先: A社, 名義: [エーエー, ビーシー]}\n", encoding="utf-8")
+    assert load_payees(path) == {"A社": ["エーエー", "ビーシー"]}
     for bad in ("payees: x\n", "payees:\n  - {取引先: A社}\n", "payees:\n  - {取引先: A社, 名義: エー}\n"):
         path.write_text(bad, encoding="utf-8")
         with pytest.raises(KessanError):
@@ -88,3 +87,27 @@ def test_load_payees_rejects_unknown_shape(tmp_path):
         with pytest.raises(KessanError):
             add_payee(path, "A社", "エー")
         assert path.read_text(encoding="utf-8") == bad
+
+
+def test_short_keys_do_not_match(abbreviations):
+    assert name_in_description("ビー", "ビル管理", abbreviations) is False
+    assert name_in_description("ー・", "ビル管理", abbreviations) is False
+
+
+def test_payee_lookup_uses_normalized_name(abbreviations):
+    payees = {"株式会社テスト商事": ["テストシヨウジ"]}
+    assert name_in_description("カ）テスト商事", "フリコミ テストシヨウジ", abbreviations, payees) is True
+
+
+def test_payee_too_short_is_rejected(tmp_path):
+    from match import add_payee, load_payees
+    path = tmp_path / "p.yaml"
+    for bad in ("payees:" + chr(10) + "  - {取引先: A社, 名義: [ー]}" + chr(10),
+               "payees:" + chr(10) + "  - {取引先: ビ, 名義: [エーエー]}" + chr(10)):
+        path.write_text(bad, encoding="utf-8")
+        with pytest.raises(KessanError, match="短すぎます"):
+            load_payees(path)
+    for name, kana in (("A社", "ー・"), ("ー", "エーエー")):
+        with pytest.raises(KessanError, match="短すぎます"):
+            add_payee(tmp_path / "q.yaml", name, kana)
+    assert not (tmp_path / "q.yaml").exists()

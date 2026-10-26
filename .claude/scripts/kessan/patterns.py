@@ -16,7 +16,7 @@ from common import (
     replace_rows, split_reasons,
 )
 from evidence import evidence_by_source, read_evidence
-from match import expand_abbreviations, name_in_description
+from match import expand_abbreviations, load_abbreviations, name_in_description, reading_key
 from tax import INVOICE_VALUES, TAX_CATEGORIES
 from tax_fill import MIXED_RATE_REASON, QUALIFIED_WITHOUT_REGISTRATION_REASON, REDUCED_RATE_ACCOUNTS
 
@@ -70,6 +70,7 @@ def load_patterns(path, accounts):
     if not isinstance(items, list):
         raise KessanError(f"{path.name}: patterns は「- 名前: …」の並び（リスト）で書く")
     patterns, errors = [], []
+    abbreviations = load_abbreviations()
     for i, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             errors.append(f"{i}番目: 「名前: …」などの項目で書く")
@@ -84,9 +85,9 @@ def load_patterns(path, accounts):
             errors.append(f"{where}: 入出金は 入金／出金 のどちらかで書く（値: {direction}）")
         if not keyword and not partner:
             errors.append(f"{where}: 摘要キーワード・取引先のどちらかを書く")
-        if keyword and len(_normalize_keyword(keyword)) < MIN_KEYWORD_LENGTH:
+        if keyword and min(len(_normalize_keyword(keyword)), len(reading_key(keyword, abbreviations))) < MIN_KEYWORD_LENGTH:
             errors.append(f"{where}: 摘要キーワード「{keyword}」は短すぎます（最小{MIN_KEYWORD_LENGTH}文字）")
-        if partner and len(_normalize_keyword(partner)) < MIN_KEYWORD_LENGTH:
+        if partner and min(len(_normalize_keyword(partner)), len(reading_key(partner, abbreviations))) < MIN_KEYWORD_LENGTH:
             errors.append(f"{where}: 取引先「{partner}」は短すぎます（最小{MIN_KEYWORD_LENGTH}文字）")
         tax, invoice = _text(item.get("税区分")), _text(item.get("インボイス"))
         if tax and tax not in TAX_CATEGORIES:

@@ -76,6 +76,14 @@ def reading_key(text, abbreviations):
     return "".join(c for c in s if c != "ー" and unicodedata.category(c)[0] not in ("P", "S", "Z", "C"))
 
 
+MIN_KEY_LENGTH = 2  # 照合に使う文字列の最小の長さ（reading_key 後）。短いと無関係な摘要に当たる
+
+
+def _check_key_length(text, label, where, abbreviations):
+    if len(reading_key(text, abbreviations)) < MIN_KEY_LENGTH:
+        raise KessanError(f"{where}: {label}「{text}」は短すぎます（記号・長音を除いて最小{MIN_KEY_LENGTH}文字）")
+
+
 def load_payees(path):
     """支払先の対応表（context/company/kessan-payees.yaml）を {取引先: [名義...]} にする。無ければ空。"""
     path = Path(path)
@@ -93,12 +101,16 @@ def load_payees(path):
     if not isinstance(items, list):
         raise KessanError(f"{path.name} の payees は一覧で書いてください")
     payees = {}
+    abbreviations = load_abbreviations()
     for i, item in enumerate(items, 1):
         name = item.get("取引先") if isinstance(item, dict) else None
         kana = item.get("名義") if isinstance(item, dict) else None
         if (not isinstance(name, str) or not name.strip() or not isinstance(kana, list)
                 or not all(isinstance(k, str) and k.strip() for k in kana)):
             raise KessanError(f"{path.name} の{i}件目の書き方に誤りがあります（取引先: 文字列、名義: 文字列の一覧）")
+        _check_key_length(name, "取引先", f"{path.name} の{i}件目", abbreviations)
+        for k in kana:
+            _check_key_length(k, "名義", f"{path.name} の{i}件目", abbreviations)
         merged = payees.setdefault(name.strip(), [])
         merged.extend(k.strip() for k in kana if k.strip() not in merged)
     return payees
@@ -110,6 +122,9 @@ def add_payee(path, name, kana):
     name, kana = str(name or "").strip(), str(kana or "").strip()
     if not name or not kana:
         raise KessanError("--name（取引先）と --kana（名義）は空にできません")
+    abbreviations = load_abbreviations()
+    _check_key_length(name, "取引先", "add-payee", abbreviations)
+    _check_key_length(kana, "名義", "add-payee", abbreviations)
     payees = load_payees(path)  # 書き方が誤っているファイルは、ここで止めて上書きしない
     if kana in payees.get(name, []):
         return False
@@ -136,8 +151,13 @@ def name_in_description(name, description, abbreviations, payees=None):
     payees（支払先の対応表）に name の名義があれば、その名義のどれかが含まれても一致とする。
     """
     haystack = reading_key(description, abbreviations)
-    names = [name] + list((payees or {}).get(str(name or "").strip(), []))
-    return any(needle and needle in haystack for needle in (reading_key(n, abbreviations) for n in names))
+    key = reading_key(name, abbreviations)
+    names = [name]
+    for payee, kana in (payees or {}).items():
+        if reading_key(payee, abbreviations) == key:
+            names += kana
+    needles = (reading_key(n, abbreviations) for n in names)
+    return any(len(needle) >= MIN_KEY_LENGTH and needle in haystack for needle in needles)
 
 
 # --- 証憑と明細行の突き合わせ ---

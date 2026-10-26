@@ -420,3 +420,21 @@ def test_simplified_methods_approve_without_invoice(tmp_path, accounts, abbrevia
     from tax import TaxSettings
     result, row = _tax_case(tmp_path, accounts, abbreviations, settings=TaxSettings("課税", method, "割戻し", "", False))
     assert result.approved == 1 and row["借方インボイス"] == ""
+
+
+@pytest.mark.parametrize("field, value", [("摘要キーワード", "ビー"), ("摘要キーワード", "A-"), ("摘要キーワード", "ー・"), ("取引先", "ビー")])
+def test_pattern_too_short_after_normalization_is_rejected(tmp_path, accounts, field, value):
+    text = f"patterns:\n  - 名前: 短い\n    入出金: 出金\n    {field}: \"{value}\"\n    科目: 支払手数料\n"
+    with pytest.raises(KessanError, match="短すぎます"):
+        load_patterns(write_patterns(tmp_path, text), accounts)
+
+
+def test_pattern_auto_approves_via_payees(year_dir, tmp_path, accounts, abbreviations):
+    text = "patterns:\n  - 名前: 商事\n    入出金: 入金\n    取引先: テスト商事\n    科目: 売上高\n"
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [deposit()])
+    patterns = load_patterns(write_patterns(tmp_path, text), accounts)
+    r = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations)
+    assert r.approved == 0
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [deposit()])
+    r = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations, payees={"テスト商事": ["テストシヨウジ"]})
+    assert r.approved == 1
