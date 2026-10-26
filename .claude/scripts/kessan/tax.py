@@ -1,5 +1,6 @@
 """消費税の設定・区分・経過措置（段階3a）。period.yaml の `消費税` を読む。免税の年度では他のキーを見ない。"""
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import yaml
@@ -161,3 +162,30 @@ def invoice_class(date, has_registration, amount, small_exemption, transitions):
         if t.start <= date <= t.end:
             return t.label
     return "なし"
+
+
+# ---- 税率の内訳（国税・地方） ----
+
+RATES_PATH = Path(__file__).parents[3] / "config/consumption-tax/rates.yaml"
+
+
+def load_rates(path=RATES_PATH):
+    """税率の設定ファイルを読む。{税率: {"国税": Decimal, "地方": Decimal}}。国税＋地方が税率と合わなければ止める。"""
+    path = Path(path)
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise KessanError(f"税率の設定を読めません（{path}）: {e}") from None
+    raw = data.get("税率") if isinstance(data, dict) else None
+    if not isinstance(raw, dict) or not raw:
+        raise KessanError(f"税率の設定の形式が不正です（税率の表が必要）: {path}")
+    out = {}
+    for rate, parts in raw.items():
+        try:
+            national, local = Decimal(str(parts["国税"])), Decimal(str(parts["地方"]))
+        except (KeyError, TypeError, InvalidOperation):
+            raise KessanError(f"税率の設定の形式が不正です（{rate}%: 国税・地方を文字列で書く）: {path}") from None
+        if isinstance(rate, bool) or not isinstance(rate, int) or national + local != rate:
+            raise KessanError(f"税率の設定が不正です（{rate}%: 国税＋地方が税率と合わない）: {path}")
+        out[rate] = {"国税": national, "地方": local}
+    return out

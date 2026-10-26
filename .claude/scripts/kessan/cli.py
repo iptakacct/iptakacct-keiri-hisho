@@ -38,14 +38,15 @@ from match import load_abbreviations, payment_accounts
 from patterns import auto_approve, load_patterns
 from post import post_approved
 from review_xlsx import read_review, write_review
-from tax import load_tax_settings, load_transitions
+from tax import load_rates, load_tax_settings, load_transitions
+from tax_summary import summarize, write_summary
 from tax_edit import load_tax_updates, set_journal_tax, split_tax
 from tax_fill import fill_tax
 from trial_balance import write_trial_balance
 from undo import discard, unimport
 
 COMMANDS = ("init", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "review", "apply-review",
-            "approve", "unimport", "discard", "post", "check", "tb")
+            "approve", "unimport", "discard", "post", "check", "tb", "tax-summary")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -328,6 +329,21 @@ def main(argv=None):
             return 0
         if args.command == "check":
             return 1 if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)) else 0
+        if args.command == "tax-summary":
+            settings = load_tax_settings(year_dir)
+            if not settings.taxable:
+                raise KessanError("免税の年度です（period.yaml の消費税）")
+            findings = _run_check(year_dir, accounts, None)
+            if has_ng(findings):
+                ng = sum(f.level == "NG" for f in findings)
+                raise KessanError(f"検算にNGが{ng}件あるため集計表を出しません（output/check-result.md を確認）")
+            summary = summarize(year_dir, accounts, settings, load_transitions(), load_rates())
+            csv_path, xlsx_path = write_summary(year_dir, summary)
+            est = "概算しない" if summary.estimate is None else f"{summary.estimate:,}円"
+            print(f"消費税の集計表: {csv_path} / {xlsx_path}（課税売上割合 {summary.taxable_sales_ratio * 100:.2f}% / 概算納付税額 {est}）")
+            for n in summary.notes:
+                print(f"注記: {n}")
+            return 0
         if args.command == "tb":
             print(f"試算表: {write_trial_balance(year_dir, accounts)}")
             return 0
