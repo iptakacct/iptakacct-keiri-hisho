@@ -12,10 +12,11 @@ from openpyxl.styles import Font
 
 from common import KessanError, ensure_writable, parse_amount, replace_rows
 from ledger import entry_rows, entry_where
-from tax import TAX_CATEGORIES
+from tax import BEFORE_INVOICE_SYSTEM, TAX_CATEGORIES
 
-# 貸方を＋とする区分（売上系）。それ以外（仕入系・返還・貸倒）は借方を＋とする
-CREDIT_POSITIVE_KINDS = ("課税売上", "免税売上", "非課税売上", "非課税資産輸出", "貸倒回収")
+# 貸方を＋とする区分（売上系・仕入の返還）。それ以外（仕入・売上の返還・貸倒）は借方を＋とする。
+# 返還・貸倒は「その区分の金額」が＋になる側（仕入返還なら費用の貸方）を＋にする
+CREDIT_POSITIVE_KINDS = ("課税売上", "免税売上", "非課税売上", "非課税資産輸出", "貸倒回収", "課税仕入返還")
 KIND_ORDER = ("課税売上", "課税売上返還", "免税売上", "非課税売上", "非課税資産輸出", "貸倒", "貸倒回収",
               "課税仕入", "課税仕入返還", "非課税仕入")
 PURCHASE_KINDS = ("課税仕入", "課税仕入返還")
@@ -72,8 +73,8 @@ def _national(net, rates, rate):
 
 
 def _ratio_of(invoice, ratios, where):
-    """インボイス区分ごとの控除割合。空・適格・少額特例は100、なしは0、経過XXは設定ファイルの割合。"""
-    if invoice in ("", "適格", "少額特例"):
+    """インボイス区分ごとの控除割合。空・適格・少額特例・制度前は100、なしは0、経過XXは設定ファイルの割合。"""
+    if invoice in ("", "適格", "少額特例", BEFORE_INVOICE_SYSTEM):
         return FULL_RATIO
     if invoice == "なし":
         return 0
@@ -158,11 +159,14 @@ def summarize(year_dir, accounts, settings, transitions, rates):
     if not denominator:
         numerator = denominator = 1
 
-    sales_tax = (_sum(lines, "課税売上", "tax") - _sum(lines, "課税売上返還", "tax")
-                 - _sum(lines, "貸倒", "tax") + _sum(lines, "貸倒回収", "tax"))
+    # 売上の税額（返還を引き、貸倒回収を足す）。貸倒の税額は控除する税額として別に引く
+    sales_base = _sum(lines, "課税売上", "tax") - _sum(lines, "課税売上返還", "tax") + _sum(lines, "貸倒回収", "tax")
+    bad_debt = _sum(lines, "貸倒", "tax")
+    sales_tax = sales_base - bad_debt
     estimate = None
     if settings.method == "2割特例":
-        estimate = sales_tax - _floor_mul_div(sales_tax, 80, 100)
+        # 特別控除は売上の税額の80%。貸倒の税額はその後に引く
+        estimate = sales_base - _floor_mul_div(sales_base, 80, 100) - bad_debt
     elif settings.method == "簡易":
         notes.append("簡易課税は事業区分が要るため概算しない（達人で計算）")
     else:

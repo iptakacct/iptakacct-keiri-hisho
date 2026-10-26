@@ -333,3 +333,119 @@ def test_adjustments_rows_are_checked(year_dir, accounts):
     adj = line("A1", "2026-03-31", debit=("消耗品費", "", 1000), credit=("未払金", "", 1000))
     write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS, [adj])
     assert tax_messages(run_checks(year_dir, accounts)) == ["adjustments.csv 伝票A1: 借方 消耗品費 の税区分が空"]
+
+
+# ---- 最終レビューの修正：証憑の税率・固定資産・経過措置の日付・簡易／2割特例 ----
+
+from common import EVIDENCE_COLUMNS  # noqa: E402
+from check import check_tax  # noqa: E402
+from tax import TaxSettings, load_transitions  # noqa: E402
+
+TAXABLE = TaxSettings("課税", "原則", "割戻し", "全額控除", False)
+
+
+def write_evidence(year_dir, rate, source_id="bank:2", state="明細に対応"):
+    row = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    row.update({"証憑ID": "e1", "証憑ファイル": "inbox/領収書-テスト.jpg", "状態": state, "取り込み元ID": source_id,
+                "税率": rate})
+    write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [row])
+
+
+def test_evidence_rate_8_with_10_percent_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    write_evidence(year_dir, "8")
+    msgs = tax_messages([f for f in run_checks(year_dir, accounts) if f.level == "NG"])
+    assert len(msgs) == 1 and "伝票2" in msgs[0] and "inbox/領収書-テスト.jpg" in msgs[0] and "8%" in msgs[0]
+
+
+def test_evidence_rate_10_with_reduced_is_ng(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方税区分="課税仕入8%軽")
+    write_evidence(year_dir, "10")
+    assert len([f for f in run_checks(year_dir, accounts) if f.level == "NG" and f.item == "税区分"]) == 1
+
+
+def test_evidence_rate_matching_is_clean(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir, 借方税区分="課税仕入8%軽")
+    write_evidence(year_dir, "8")
+    assert run_checks(year_dir, accounts) == []
+
+
+def test_evidence_with_several_candidates_is_ignored(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    write_evidence(year_dir, "8", source_id="bank:2;bank:1", state="複数候補")
+    assert run_checks(year_dir, accounts) == []
+
+
+def test_mixed_rate_evidence_needs_split_voucher(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_tax(year_dir)
+    write_evidence(year_dir, "混在")
+    msgs = [f.message for f in run_checks(year_dir, accounts) if f.level == "NG"]
+    assert len(msgs) == 1 and "伝票2" in msgs[0] and "混在" in msgs[0]
+
+
+def test_mixed_rate_evidence_with_split_voucher_is_clean(year_dir, accounts):
+    taxable_year(year_dir)
+    setup_clean(year_dir)
+    rows = read_rows(year_dir / "journal.csv")
+    rows[0]["貸方税区分"] = "課税売上10%"
+    rows = rows[:1] + [
+        line("2", "2025-04-05", debit=("消耗品費", "", 2200), 取り込み元ID="bank:2", 借方税区分="課税仕入10%",
+             借方インボイス="適格"),
+        line("2", "2025-04-05", debit=("消耗品費", "", 1100), 取り込み元ID="bank:2", 借方税区分="課税仕入8%軽",
+             借方インボイス="適格"),
+        line("2", "2025-04-05", credit=(*BANK, 3300), 取り込み元ID="bank:2"),
+    ]
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    write_evidence(year_dir, "混在")
+    assert run_checks(year_dir, accounts) == []
+
+
+def _entry(debit, credit, amount=110000, date="2025-06-01", **extra):
+    return line("9", date, debit=(debit, "", amount), credit=(credit, "", amount), **extra)
+
+
+def tax_findings(entries, accounts, settings=TAXABLE):
+    return [(f.level, f.message) for f in check_tax(entries, accounts, settings, [], load_transitions())]
+
+
+def test_purchase_on_credit_side_of_bs_account_warns(accounts):
+    found = tax_findings([_entry("普通預金", "工具器具備品", 貸方税区分="課税仕入10%", 貸方インボイス="適格")], accounts)
+    assert [lvl for lvl, _ in found] == ["WARN"] and "貸方" in found[0][1]
+
+
+def test_tax_on_bs_account_outside_fixed_assets_warns(accounts):
+    found = tax_findings([_entry("消耗品費", "普通預金", 借方税区分="課税仕入10%", 借方インボイス="適格",
+                                 貸方税区分="課税売上10%")], accounts)
+    assert [lvl for lvl, _ in found] == ["WARN"] and "普通預金" in found[0][1]
+    assert tax_findings([_entry("消耗品費", "普通預金", 借方税区分="課税仕入10%", 借方インボイス="適格",
+                                貸方税区分="対象外")], accounts) == []
+
+
+def test_asset_sale_on_credit_side_as_taxable_sale_is_clean(accounts):
+    assert tax_findings([_entry("普通預金", "車両運搬具", 330000, 貸方税区分="課税売上10%")], accounts) == []
+    assert tax_findings([_entry("車両運搬具", "普通預金", 330000, 借方税区分="課税仕入10%", 借方インボイス="適格")],
+                        accounts) == []
+
+
+def test_transition_label_must_match_date(accounts):
+    found = tax_findings([_entry("消耗品費", "普通預金", 借方税区分="課税仕入10%", 借方インボイス="経過70")], accounts)
+    assert [lvl for lvl, _ in found] == ["WARN"] and "経過80" in found[0][1]
+    found = tax_findings([_entry("消耗品費", "普通預金", 借方税区分="課税仕入10%", 借方インボイス="制度前")], accounts)
+    assert [lvl for lvl, _ in found] == ["WARN"] and "制度前" in found[0][1]
+
+
+def test_before_invoice_system_is_accepted(accounts):
+    assert tax_findings([_entry("消耗品費", "普通預金", date="2023-09-30", 借方税区分="課税仕入10%",
+                                借方インボイス="制度前")], accounts) == []
+
+
+def test_invoice_not_required_under_simplified_or_20_percent(accounts):
+    entries = [_entry("消耗品費", "普通預金", 借方税区分="課税仕入10%")]
+    assert tax_findings(entries, accounts, TaxSettings("課税", "簡易", "割戻し", "", False)) == []
+    assert tax_findings(entries, accounts, TaxSettings("課税", "2割特例", "割戻し", "", False)) == []
+    assert [lvl for lvl, _ in tax_findings(entries, accounts)] == ["NG"]

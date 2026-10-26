@@ -353,3 +353,64 @@ def test_taxable_existing_tax_differing_from_pattern_is_not_approved(tmp_path, a
     row = read_rows(year_dir / "staging.csv")[0]
     assert (r.approved, r.conflicts) == (0, 1) and row["承認"] != "済"
     assert "税区分（非課税仕入）と違う" in row["要確認理由"]
+
+
+# --- 最終レビューの修正：証憑の税率・軽減税率の可能性・簡易／2割特例 ---
+
+def _write_evidence(year_dir, rate, source_id="bank:fee"):
+    from common import EVIDENCE_COLUMNS
+    row = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    row.update({"証憑ID": "e1", "証憑ファイル": "inbox/領収書.jpg", "状態": "明細に対応", "取り込み元ID": source_id,
+                "税率": rate})
+    write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [row])
+
+
+def _tax_case_with_evidence(tmp_path, accounts, abbreviations, rate, pattern_extra="    インボイス: 適格\n",
+                            subject="支払手数料"):
+    from tax import TaxSettings
+    year_dir = tmp_path / "y"
+    year_dir.mkdir()
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee()])
+    _write_evidence(year_dir, rate)
+    text = f"patterns:\n  - 名前: 振込手数料\n    入出金: 出金\n    摘要キーワード: テスウリヨウ\n    科目: {subject}\n{pattern_extra}"
+    patterns = load_patterns(write_patterns(tmp_path, text), accounts)
+    result = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations,
+                          tax_settings=TaxSettings("課税", "原則", "割戻し", "全額控除", False))
+    return result, read_rows(year_dir / "staging.csv")[0]
+
+
+@pytest.mark.parametrize("rate", ["8", "混在"])
+def test_taxable_evidence_with_rate_8_or_mixed_is_not_approved(tmp_path, accounts, abbreviations, rate):
+    result, row = _tax_case_with_evidence(tmp_path, accounts, abbreviations, rate)
+    assert (result.approved, result.conflicts) == (0, 1) and row["承認"] != "済"
+    assert ("証憑の税率" if rate == "8" else "税率が複数（split-tax で分ける）") in row["要確認理由"]
+
+
+def test_taxable_evidence_rate_8_with_reduced_pattern_is_approved(tmp_path, accounts, abbreviations):
+    result, row = _tax_case_with_evidence(tmp_path, accounts, abbreviations, "8",
+                                          "    税区分: 課税仕入8%軽\n    インボイス: 適格\n")
+    assert result.approved == 1 and row["借方税区分"] == "課税仕入8%軽"
+
+
+def test_taxable_evidence_rate_10_is_approved(tmp_path, accounts, abbreviations):
+    result, row = _tax_case_with_evidence(tmp_path, accounts, abbreviations, "10")
+    assert result.approved == 1
+
+
+def test_reduced_rate_account_without_pattern_tax_is_not_approved(tmp_path, accounts, abbreviations):
+    result, row = _tax_case(tmp_path, accounts, abbreviations, "    インボイス: 適格\n", subject="会議費")
+    assert (result.approved, result.conflicts) == (0, 1)
+    assert "軽減税率の可能性（パターンに税区分が無い）" in row["要確認理由"]
+
+
+def test_reduced_rate_account_with_pattern_tax_is_approved(tmp_path, accounts, abbreviations):
+    result, row = _tax_case(tmp_path, accounts, abbreviations, "    税区分: 課税仕入10%\n    インボイス: 適格\n",
+                            subject="会議費")
+    assert result.approved == 1
+
+
+@pytest.mark.parametrize("method", ["簡易", "2割特例"])
+def test_simplified_methods_approve_without_invoice(tmp_path, accounts, abbreviations, method):
+    from tax import TaxSettings
+    result, row = _tax_case(tmp_path, accounts, abbreviations, settings=TaxSettings("課税", method, "割戻し", "", False))
+    assert result.approved == 1 and row["借方インボイス"] == ""

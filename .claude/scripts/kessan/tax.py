@@ -1,5 +1,6 @@
 """消費税の設定・区分・経過措置（段階3a）。period.yaml の `消費税` を読む。免税の年度では他のキーを見ない。"""
 from dataclasses import dataclass
+from functools import lru_cache
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
@@ -96,8 +97,10 @@ def _build_categories():
 
 
 TAX_CATEGORIES = _build_categories()
-INVOICE_VALUES = ("適格", "経過80", "経過70", "経過50", "経過30", "少額特例", "なし")
+INVOICE_VALUES = ("適格", "経過80", "経過70", "経過50", "経過30", "少額特例", "なし", "制度前")
+BEFORE_INVOICE_SYSTEM = "制度前"  # インボイス制度（最初の経過措置の開始日）より前の取引。全額控除
 ALLOCATION_VALUES = ("課税対応", "非課税対応", "共通")
+FIXED_ASSET_SECTIONS = ("有形固定資産", "無形固定資産")  # 科目マスタの表示区分。取得（借方）に既定税区分を使う
 
 
 def with_rate(name, rate):
@@ -152,16 +155,66 @@ def load_transitions(path=TRANSITION_PATH):
     return out
 
 
-def invoice_class(date, has_registration, amount, small_exemption, transitions):
-    """仕入のインボイス区分。登録番号あり→適格、少額特例（税込1万円未満）、経過措置の期間、どれでもなければ なし。"""
+def load_small_exemption_period(path=TRANSITION_PATH):
+    """少額特例の適用期間 (開始, 終了) を経過措置の設定ファイルから読む。"""
+    path = Path(path)
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        raise KessanError(f"経過措置の設定を読めません（{path}）: {e}") from None
+    raw = data.get("少額特例") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        raise KessanError(f"経過措置の設定に少額特例の期間（開始・終了）がありません: {path}")
+    start, end = parse_date(raw.get("開始")), parse_date(raw.get("終了"))
+    if not start or not end or start > end:
+        raise KessanError(f"少額特例の開始・終了は YYYY-MM-DD で、開始≦終了で書いてください: {raw}")
+    return start, end
+
+
+@lru_cache(maxsize=None)
+def _default_small_period():
+    return load_small_exemption_period()
+
+
+def invoice_class(date, has_registration, amount, small_exemption, transitions, small_period=None):
+    """仕入のインボイス区分。
+
+    インボイス制度より前→制度前、登録番号あり→適格、少額特例（期間内・税込1万円未満）、経過措置の期間、どれでもなければ なし。
+    small_period は少額特例の (開始, 終了)。省略時は設定ファイルから読む。
+    """
+    if transitions and date < min(t.start for t in transitions):
+        return BEFORE_INVOICE_SYSTEM
     if has_registration:
         return "適格"
     if small_exemption and amount < SMALL_EXEMPTION_LIMIT:
-        return "少額特例"
+        start, end = small_period or _default_small_period()
+        if start <= date <= end:
+            return "少額特例"
     for t in transitions:
         if t.start <= date <= t.end:
             return t.label
     return "なし"
+
+
+def transition_label_error(invoice, date, transitions):
+    """インボイスの経過XX・制度前・少額特例の値が取引日と合わなければ理由を返す（合えば None）。"""
+    if not transitions or not date:
+        return None
+    if invoice == BEFORE_INVOICE_SYSTEM:
+        first = min(t.start for t in transitions)
+        if date >= first:
+            return f"「制度前」はインボイス制度（{first}）より前の取引だけに付ける"
+        return None
+    if invoice == "少額特例":
+        start, end = _default_small_period()
+        if not start <= date <= end:
+            return f"少額特例の期間（{start}〜{end}）の外の取引"
+        return None
+    if invoice.startswith("経過"):
+        expected = next((t.label for t in transitions if t.start <= date <= t.end), None)
+        if invoice != expected:
+            return f"取引日 {date} の経過措置は「{expected or '期間外'}」"
+    return None
 
 
 # ---- 税率の内訳（国税・地方） ----

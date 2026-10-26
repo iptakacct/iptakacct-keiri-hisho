@@ -5,7 +5,11 @@ from datetime import datetime
 from pathlib import Path
 
 from common import parse_amount, read_rows
-from tax import ALLOCATION_VALUES, INVOICE_VALUES, TAX_CATEGORIES, load_tax_settings
+from evidence import evidence_by_source, read_evidence
+from tax import (
+    ALLOCATION_VALUES, FIXED_ASSET_SECTIONS, INVOICE_VALUES, TAX_CATEGORIES, load_tax_settings, load_transitions,
+    transition_label_error,
+)
 from ledger import compute_balances, entry_rows, entry_where, load_opening
 
 BS_CATEGORIES = ("資産", "負債", "純資産")
@@ -162,10 +166,57 @@ def check_opening(year_dir, accounts, prev_year_dir=None):
     return findings
 
 
-def check_tax(entries, accounts, settings):
-    """課税の年度だけ、各行・各側の税区分・インボイス・個別対応を検算する。免税の年度は何も返さない。"""
+def _bs_tax_warning(label, side, name, tax, kind, account):
+    """資産・負債・純資産の科目に付いた税区分の注意。固定資産の取得（借方）と売却（貸方の課税売上）以外は確かめてもらう。"""
+    if account is None or account.category not in BS_CATEGORIES:
+        return None
+    if kind in _PURCHASE_KINDS and side == "貸方":
+        return Finding("WARN", "税区分", f"{label}: 貸方 {name} に税区分「{tax}」（資産の売却は売却価額を課税売上で計上する）")
+    if account.section not in FIXED_ASSET_SECTIONS and kind != "対象外":
+        return Finding("WARN", "税区分", f"{label}: {side} {name}（固定資産以外の資産・負債・純資産）に税区分「{tax}」")
+    return None
+
+
+def _check_evidence_rates(entries, evidence):
+    """証憑の税率（8／10／混在）と帳簿の税区分の税率が合っているか。証憑が1つに決まった行だけを見る。"""
+    by_source = evidence_by_source(evidence)
+    rated = defaultdict(int)  # 取り込み元ID -> 税率を持つ側の数
+    first_label = {}
+    findings = []
+    for r in entries:
+        source_id = r["取り込み元ID"].strip()
+        ev = by_source.get(source_id)
+        if ev is None or not ev["税率"].strip():
+            continue
+        label = _voucher_label(r.get("_file", "journal.csv"), r["伝票番号"])
+        first_label.setdefault(source_id, label)
+        rate = ev["税率"].strip()
+        for side in ("借方", "貸方"):
+            category = TAX_CATEGORIES.get(r.get(f"{side}税区分", "").strip())
+            if category is None or category.rate is None:
+                continue
+            rated[source_id] += 1
+            if rate in ("8", "10") and category.rate != int(rate):
+                findings.append(Finding("NG", "税区分", f"{label}: 証憑（{ev['証憑ファイル']}）の税率は{rate}%なのに"
+                                                       f"{side}税区分が「{category.name}」"))
+    for source_id, label in first_label.items():
+        ev = by_source[source_id]
+        if ev["税率"].strip() == "混在" and rated[source_id] < 2:
+            findings.append(Finding("NG", "税区分", f"{label}: 証憑（{ev['証憑ファイル']}）の税率が混在なのに"
+                                                   "税率ごとに行を分けていない（登録前なら split-tax で分ける）"))
+    return findings
+
+
+def check_tax(entries, accounts, settings, evidence=(), transitions=None):
+    """課税の年度だけ、各行・各側の税区分・インボイス・個別対応を検算する。免税の年度は何も返さない。
+
+    evidence（evidence.csv の行）があれば証憑の税率と税区分の税率を突き合わせる。インボイスは原則課税のときだけ必須。
+    """
     if not settings.taxable:
         return []
+    if transitions is None:
+        transitions = load_transitions()
+    invoice_required = settings.method == "原則"
     findings = []
     for r in entries:
         label = _voucher_label(r.get("_file", "journal.csv"), r["伝票番号"])
@@ -188,11 +239,19 @@ def check_tax(entries, accounts, settings):
             if account and kind not in _ALLOWED_KINDS.get(account.category, ()):
                 findings.append(Finding("NG", "税区分", f"{label}: {side} {name} に税区分「{tax}」は使えない"))
                 continue
+            warning = _bs_tax_warning(label, side, name, tax, kind, account)
+            if warning:
+                findings.append(warning)
             if kind in _PURCHASE_KINDS:
                 if not invoice:
-                    findings.append(Finding("NG", "税区分", f"{label}: {side} インボイスが空（課税仕入には必須）"))
+                    if invoice_required:
+                        findings.append(Finding("NG", "税区分", f"{label}: {side} インボイスが空（課税仕入には必須）"))
                 elif invoice not in INVOICE_VALUES:
                     findings.append(Finding("NG", "税区分", f"{label}: {side} インボイス「{invoice}」は使えない値"))
+                else:
+                    message = transition_label_error(invoice, r["日付"].strip(), transitions)
+                    if message:
+                        findings.append(Finding("WARN", "税区分", f"{label}: {side} インボイス「{invoice}」: {message}"))
                 if settings.allocation == "個別対応":
                     if not allocation:
                         findings.append(Finding("NG", "税区分", f"{label}: {side} 個別対応が空（個別対応方式の課税仕入には必須）"))
@@ -202,7 +261,7 @@ def check_tax(entries, accounts, settings):
                 for title, value in (("インボイス", invoice), ("個別対応", allocation)):
                     if value:
                         findings.append(Finding("WARN", "税区分", f"{label}: {side} {title}「{value}」は課税仕入以外には付けない"))
-    return findings
+    return findings + _check_evidence_rates(entries, evidence)
 
 
 def run_checks(year_dir, accounts, prev_year_dir=None):
@@ -215,7 +274,7 @@ def run_checks(year_dir, accounts, prev_year_dir=None):
         + check_duplicates(entries)
         + check_negative_balances(year_dir, accounts)
         + check_opening(year_dir, accounts, prev_year_dir)
-        + check_tax(entries, accounts, load_tax_settings(year_dir))
+        + check_tax(entries, accounts, load_tax_settings(year_dir), read_evidence(year_dir))
     )
 
 

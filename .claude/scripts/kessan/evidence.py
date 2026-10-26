@@ -56,3 +56,13 @@ def unique_evidence_id(evidence_rows, base_id):
         n += 1
         candidate = f"{base_id}-{n}"
     return candidate, base_id
+
+
+def evidence_by_source(evidence_rows):
+    """明細行（取り込み元ID）ごとに、対応が1つに決まった証憑（明細に対応・新規仕訳）を返す。"""
+    found = {}
+    for r in evidence_rows:
+        source_id = r["取り込み元ID"].strip()
+        if r["状態"] in (STATE_MATCHED, STATE_NEW_ENTRY) and source_id and CANDIDATE_SEPARATOR not in source_id:
+            found.setdefault(source_id, r)
+    return found

@@ -141,3 +141,38 @@ def test_transition_ratio_must_match_label(tmp_path):
     p.write_text('経過措置:\n  - {開始: "2023-10-01", 終了: "2026-09-30", 区分: 経過80, 割合: 70}\n', encoding="utf-8")
     with pytest.raises(KessanError):
         load_transitions(p)
+
+
+# ---- 最終レビューの修正：制度前・少額特例の期間 ----
+
+def test_invoice_class_before_invoice_system_and_last_boundaries():
+    t = load_transitions()
+    assert invoice_class("2023-09-30", False, 50000, False, t) == "制度前"
+    assert invoice_class("2023-09-30", True, 50000, False, t) == "制度前"
+    assert invoice_class("2023-10-01", False, 50000, False, t) == "経過80"
+    assert invoice_class("2031-09-30", False, 50000, False, t) == "経過30"
+    assert invoice_class("2031-10-01", False, 50000, False, t) == "なし"
+
+
+def test_small_exemption_only_inside_its_period():
+    t = load_transitions()
+    assert invoice_class("2029-09-30", False, 5000, True, t) == "少額特例"
+    assert invoice_class("2029-10-01", False, 5000, True, t) == "経過50"
+    assert invoice_class("2023-09-30", False, 5000, True, t) == "制度前"
+
+
+def test_small_exemption_period_loaded_from_file(tmp_path):
+    from tax import load_small_exemption_period
+    assert load_small_exemption_period() == ("2023-10-01", "2029-09-30")
+    p = tmp_path / "t.yaml"
+    p.write_text('少額特例: {開始: "2029-10-01", 終了: "2023-10-01"}\n', encoding="utf-8")
+    with pytest.raises(KessanError):
+        load_small_exemption_period(p)
+    p.write_text("経過措置: []\n", encoding="utf-8")
+    with pytest.raises(KessanError):
+        load_small_exemption_period(p)
+
+
+def test_invoice_values_include_before_system():
+    from tax import INVOICE_VALUES
+    assert "制度前" in INVOICE_VALUES

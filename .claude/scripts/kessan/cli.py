@@ -6,7 +6,7 @@
   python ../.claude/scripts/kessan/cli.py import-bank --year-dir <Y> --account-id main --file <Y>/inbox/2025-04.csv
   python ../.claude/scripts/kessan/cli.py import-extracted --year-dir <Y> [--file <Y>/extracted/通帳-2025-04.pdf.json]
   python ../.claude/scripts/kessan/cli.py set-accounts --year-dir <Y> --file <Y>/output/set-accounts-20260917.json
-  python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-20260917.json
+  python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-20260917.json [--prev-year-dir …]
   python ../.claude/scripts/kessan/cli.py split-tax --year-dir <Y> --id receipt:… --part 10:1080 --part 8:540
   python ../.claude/scripts/kessan/cli.py review --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py apply-review --year-dir <Y> --file <Y>/output/review-20260917.xlsx
@@ -17,6 +17,7 @@
   python ../.claude/scripts/kessan/cli.py post --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py check --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
   python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
+  python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
           / 3 post（set-tax）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
@@ -31,7 +32,7 @@ from accounts import load_accounts
 from accounts_update import apply_review, approve, approve_numbers, load_updates, set_accounts
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
-from common import KessanError, init_year_dir
+from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from extracted import extracted_files
 from extracted_import import import_extracted, inbox_status
 from match import load_abbreviations, payment_accounts
@@ -90,9 +91,20 @@ def _parser():
         if name == "discard":
             p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
             p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")
-        if name in ("post", "check"):
+        if name in ("post", "check", "set-tax", "tax-summary"):
             p.add_argument("--prev-year-dir", type=Path)
     return parser
+
+
+def _upgrade_year_files(year_dir):
+    """段階3a より前に作った年度フォルダ（税の列が無いCSV）を、今の列構成に直す（値と行の順序はそのまま）。"""
+    if not (year_dir / PERIOD_FILE).exists():
+        return
+    for name, columns in YEAR_FILES.items():
+        try:
+            upgrade_header(year_dir / name, columns)
+        except OSError:
+            raise cannot_write(name) from None
 
 
 def _company_file(year_dir, given, name):
@@ -124,8 +136,11 @@ def _fill_tax(year_dir, accounts):
     if not settings.taxable:
         return
     r = fill_tax(year_dir, accounts, settings, load_transitions())
-    if r.filled or r.flagged:
-        print(f"税区分を補完: {r.filled}件／要確認: {r.flagged}件")
+    if r.filled or r.flagged or r.unapproved:
+        line = f"税区分を補完: {r.filled}件／要確認: {r.flagged}件"
+        if r.unapproved:
+            line += f"／証憑の税率と合わず承認を外した行: {r.unapproved}件（要確認理由を見て承認し直す）"
+        print(line)
 
 
 def _auto_approve_after(year_dir, accounts, args, done):
@@ -217,6 +232,7 @@ def main(argv=None):
             return 0
         if not (year_dir / "journal.csv").exists():
             raise KessanError(f"年度フォルダが初期化されていません（先に init を実行）: {year_dir}")
+        _upgrade_year_files(year_dir)
         accounts = load_accounts()
 
         if args.command == "inbox-status":
@@ -252,7 +268,7 @@ def main(argv=None):
         if args.command == "set-tax":
             count = set_journal_tax(year_dir, load_tax_updates(args.file))
             print(f"税の列: {count}行を直しました")
-            if has_ng(_run_check(year_dir, accounts, None)):
+            if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)):
                 print("修正は反映済みですが、検算でNGがあります（check-result.md を確認）")
                 return EXIT_POSTED_WITH_NG
             return 0
@@ -333,7 +349,7 @@ def main(argv=None):
             settings = load_tax_settings(year_dir)
             if not settings.taxable:
                 raise KessanError("免税の年度です（period.yaml の消費税）")
-            findings = _run_check(year_dir, accounts, None)
+            findings = _run_check(year_dir, accounts, args.prev_year_dir)
             if has_ng(findings):
                 ng = sum(f.level == "NG" for f in findings)
                 raise KessanError(f"検算にNGが{ng}件あるため集計表を出しません（output/check-result.md を確認）")

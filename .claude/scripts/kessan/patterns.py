@@ -15,8 +15,10 @@ from common import (
     STAGING_COLUMNS, KessanError, add_reasons, cannot_write, ensure_writable, parse_amount, project, read_rows, remove_reason,
     replace_rows, split_reasons,
 )
+from evidence import evidence_by_source, read_evidence
 from match import expand_abbreviations, name_in_description
 from tax import INVOICE_VALUES, TAX_CATEGORIES
+from tax_fill import MIXED_RATE_REASON, REDUCED_RATE_ACCOUNTS
 
 DIRECTIONS = ("入金", "出金")
 ESTABLISHED = "確立済み"
@@ -132,11 +134,12 @@ def _statement_side(row, payment_accounts):
     return None
 
 
-def _tax_values(row, counter, pattern, accounts, settings):
+def _tax_values(row, counter, pattern, accounts, settings, ev=None):
     """課税の年度で、相手側に書く税の列と、承認できない理由（無ければ None）を返す。
 
     税区分はパターン→科目の既定の順、インボイスはパターンから、どちらも空欄のときだけ書く。
-    課税仕入でインボイスが決まらない・収益／費用なのに税区分が決まらない行は承認しない。
+    課税仕入でインボイスが決まらない（原則課税のとき）・収益／費用なのに税区分が決まらない行は承認しない。
+    軽減税率の可能性がある科目でパターンに税区分が無い行、証憑（ev）の税率と税区分の税率が合わない・税率が混在の行も承認しない。
     """
     values = {}
     account = accounts.get(pattern.subject)
@@ -156,8 +159,15 @@ def _tax_values(row, counter, pattern, accounts, settings):
             return values, "確立済みパターンに税区分が無い（税区分を確認）"
         return values, None
     category = TAX_CATEGORIES.get(tax)
+    if pattern.subject in REDUCED_RATE_ACCOUNTS and not pattern.tax:
+        return values, "軽減税率の可能性（パターンに税区分が無い）"
+    rate = ev["税率"].strip() if ev else ""
+    if rate == "混在":
+        return values, MIXED_RATE_REASON
+    if rate in ("8", "10") and category and category.rate is not None and category.rate != int(rate):
+        return values, f"証憑の税率（{rate}%）と税区分（{tax}）が違う"
     if category and category.kind in ("課税仕入", "課税仕入返還"):
-        if not invoice:
+        if not invoice and settings.method == "原則":
             return values, "確立済みパターンにインボイスが無い（税区分・インボイスを確認）"
         if settings.allocation == "個別対応" and not row[f"{counter}個別対応"].strip():
             values[f"{counter}個別対応"] = "共通"
@@ -168,6 +178,7 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, 
     """staging.csv の未承認の明細行をパターンと照合し、一致した行を自動承認する。"""
     year_dir = Path(year_dir)
     staging = read_rows(year_dir / "staging.csv")
+    evidence = evidence_by_source(read_evidence(year_dir)) if tax_settings is not None and tax_settings.taxable else {}
     approved = conflicts = 0
     changed = False
     for row in staging:
@@ -194,7 +205,8 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, 
         else:
             tax_values = {}
             if tax_settings is not None and tax_settings.taxable:
-                tax_values, reason = _tax_values(row, counter, matched[0], accounts, tax_settings)
+                tax_values, reason = _tax_values(row, counter, matched[0], accounts, tax_settings,
+                                                 evidence.get(row["取り込み元ID"].strip()))
             row.update(tax_values)  # 承認しない場合も、決まった税の列は書く（空欄だけ）
             changed |= bool(tax_values)
             if reason is None:

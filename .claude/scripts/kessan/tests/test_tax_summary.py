@@ -195,3 +195,92 @@ def test_load_rates_rejects_mismatch(tmp_path):
     p.write_text('税率:\n  10: {国税: "7.8", 地方: "2.0"}\n', encoding="utf-8")
     with pytest.raises(KessanError, match="合わない"):
         load_rates(p)
+
+
+# ---- 最終レビューの修正：返還・貸倒の符号、課税売上割合、2割特例と貸倒、制度前 ----
+
+def taxed(no, debit, credit, amount, side, cat, invoice=""):
+    """debit／credit の科目で1行。side（借方／貸方）に税区分 cat を付ける。"""
+    extra = {f"{side}税区分": cat}
+    if invoice:
+        extra[f"{side}インボイス"] = invoice
+    return line(no, "2025-06-03", debit=(debit, "", amount), credit=(credit, "", amount), **extra)
+
+
+def test_purchase_return_on_credit_side_reduces_deduction(year_dir, accounts):
+    s = run(year_dir, accounts, [
+        purchase("1", 110000),
+        taxed("2", "現金", "消耗品費", 11000, "貸方", "課税仕入返還10%", "適格"),
+    ])
+    ret = find(s, "課税仕入返還10%", "適格")
+    assert (ret.gross, ret.tax, ret.deductible) == (11000, 1000, 1000)
+    assert s.estimate == -9000
+
+
+def test_purchase_return_on_debit_side_is_negative_return(year_dir, accounts):
+    s = run(year_dir, accounts, [
+        purchase("1", 110000),
+        taxed("2", "消耗品費", "現金", 11000, "借方", "課税仕入返還10%", "適格"),
+    ])
+    assert find(s, "課税仕入返還10%", "適格").tax == -1000
+    assert s.estimate == -11000
+
+
+def test_sales_return_both_sides(year_dir, accounts):
+    s = run(year_dir, accounts, [sale("1", 110000), taxed("2", "売上高", "現金", 11000, "借方", "課税売上返還10%")])
+    assert find(s, "課税売上返還10%").tax == 1000
+    assert s.estimate == 9000
+    s = run(year_dir, accounts, [sale("1", 110000), taxed("2", "現金", "売上高", 11000, "貸方", "課税売上返還10%")])
+    assert find(s, "課税売上返還10%").tax == -1000
+    assert s.estimate == 11000
+
+
+def test_bad_debt_both_sides(year_dir, accounts):
+    s = run(year_dir, accounts, [sale("1", 1100000), taxed("2", "雑損失", "売掛金", 110000, "借方", "貸倒10%")])
+    assert s.estimate == 90000
+    s = run(year_dir, accounts, [sale("1", 1100000), taxed("2", "売掛金", "雑損失", 110000, "貸方", "貸倒10%")])
+    assert s.estimate == 110000
+
+
+def test_bad_debt_recovery_both_sides(year_dir, accounts):
+    s = run(year_dir, accounts, [sale("1", 1100000), taxed("2", "現金", "雑収入", 55000, "貸方", "貸倒回収10%")])
+    assert s.estimate == 105000
+    s = run(year_dir, accounts, [sale("1", 1100000), taxed("2", "雑収入", "現金", 55000, "借方", "貸倒回収10%")])
+    assert s.estimate == 95000
+
+
+def test_ratio_counts_exempt_sales_and_exports(year_dir, accounts):
+    s = run(year_dir, accounts, [
+        sale("1", 110000),
+        sale("2", 100000, cat="免税売上"),
+        sale("3", 100000, cat="非課税資産輸出"),
+        sale("4", 100000, cat="非課税売上"),
+    ], settings(allocation="一括比例配分"))
+    assert s.taxable_sales_ratio == Decimal(3) / Decimal(4)
+
+
+def test_adjustments_rows_are_included(year_dir, accounts):
+    adj = line("A1", "2026-03-31", debit=("消耗品費", "", 22000), credit=("未払金", "", 22000),
+               借方税区分="課税仕入10%", 借方インボイス="適格")
+    write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS, [adj])
+    s = run(year_dir, accounts, [sale("1", 110000)])
+    assert find(s, "課税仕入10%", "適格").tax == 2000
+    assert s.estimate == 8000
+
+
+def test_niwari_with_bad_debt(year_dir, accounts):
+    rows = [sale("1", 1100000), taxed("2", "雑損失", "売掛金", 110000, "借方", "貸倒10%")]
+    s = run(year_dir, accounts, rows, settings("2割特例"))
+    # 売上税額 100,000 − floor(100,000×80%) − 貸倒 10,000
+    assert s.estimate == 10000
+    rows += [taxed("3", "売上高", "現金", 11000, "借方", "課税売上返還10%"),
+             taxed("4", "現金", "雑収入", 33000, "貸方", "貸倒回収10%")]
+    s = run(year_dir, accounts, rows, settings("2割特例"))
+    # S' = 100,000 − 1,000 + 3,000 = 102,000 → 102,000 − 81,600 − 10,000
+    assert s.estimate == 10400
+
+
+def test_before_invoice_system_is_fully_deductible(year_dir, accounts):
+    s = run(year_dir, accounts, [purchase("1", 11000, invoice="制度前", date="2023-09-30")])
+    p = find(s, "課税仕入10%", "制度前")
+    assert (p.ratio, p.deductible) == (100, 1000)

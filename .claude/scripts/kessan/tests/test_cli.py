@@ -496,3 +496,72 @@ def test_set_tax_command(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "税の列: 1行を直しました" in out and "検算:" in out
     assert read_rows(year / "journal.csv")[0]["借方税区分"] == "課税仕入10%"
+
+
+# ---- 最終レビューの修正：古い列構成の年度・--prev-year-dir・承認を外した行の表示 ----
+
+def test_pre_3a_year_folder_with_old_headers_works(tmp_path):
+    from common import JOURNAL_COLUMNS, TAX_COLUMNS
+    year = tmp_path / "2026-03期"
+    assert main(["init", "--year-dir", str(year), *PERIOD]) == 0
+    old_staging = [c for c in STAGING_COLUMNS if c not in TAX_COLUMNS]
+    row = dict.fromkeys(old_staging, "")
+    row.update({"日付": "2025-05-01", "借方科目": "消耗品費", "借方金額": "1000", "貸方科目": "現金", "貸方金額": "1000",
+                "取り込み元ID": "bank:x"})
+    write_rows(year / "staging.csv", old_staging, [row])
+    write_rows(year / "journal.csv", [c for c in JOURNAL_COLUMNS if c not in TAX_COLUMNS], [])
+    assert main(["review", "--year-dir", str(year)]) == 0
+    assert main(["check", "--year-dir", str(year)]) == 0
+    header = (year / "staging.csv").read_text(encoding="utf-8-sig").splitlines()[0].split(",")
+    assert header == STAGING_COLUMNS
+    assert read_rows(year / "staging.csv")[0]["借方科目"] == "消耗品費"
+
+
+def _taxable_with_prev(tmp_path):
+    from common import JOURNAL_COLUMNS
+    from helpers import line
+    prev = tmp_path / "2025-03期"
+    assert main(["init", "--year-dir", str(prev), "--start", "2024-04-01", "--end", "2025-03-31"]) == 0
+    opening(prev, [{"科目": "現金", "補助": "", "残高": "500000"}, {"科目": "資本金", "補助": "", "残高": "500000"}])
+    year = tmp_path / "2026-03期"
+    assert main(["init", "--year-dir", str(year), *PERIOD, "--consumption-tax", "課税", "--tax-method", "原則",
+                 "--tax-calc", "割戻し", "--tax-allocation", "全額控除"]) == 0
+    opening(year, [{"科目": "現金", "補助": "", "残高": "400000"}, {"科目": "資本金", "補助": "", "残高": "400000"}])
+    write_rows(year / "journal.csv", JOURNAL_COLUMNS, [
+        line("1", "2025-06-01", debit=("現金", "", 110000), credit=("売上高", "", 110000), 貸方税区分="課税売上10%"),
+    ])
+    return prev, year
+
+
+def test_tax_summary_passes_prev_year_dir_to_check(tmp_path, capsys):
+    prev, year = _taxable_with_prev(tmp_path)
+    assert main(["tax-summary", "--year-dir", str(year)]) == 0
+    assert main(["tax-summary", "--year-dir", str(year), "--prev-year-dir", str(prev)]) == 1
+    assert "前期末" in (year / "output" / "check-result.md").read_text(encoding="utf-8")
+
+
+def test_set_tax_passes_prev_year_dir_to_check(tmp_path, capsys):
+    import json
+    prev, year = _taxable_with_prev(tmp_path)
+    path = tmp_path / "set-tax.json"
+    path.write_text(json.dumps([{"伝票番号": "1", "行": 1, "貸方税区分": "課税売上10%"}], ensure_ascii=False),
+                    encoding="utf-8")
+    assert main(["set-tax", "--year-dir", str(year), "--file", str(path)]) == 0
+    assert main(["set-tax", "--year-dir", str(year), "--file", str(path), "--prev-year-dir", str(prev)]) == 3
+    assert "前期末" in (year / "output" / "check-result.md").read_text(encoding="utf-8")
+
+
+def test_review_reports_unapproved_rows(tmp_path, capsys):
+    from common import EVIDENCE_COLUMNS
+    year = tmp_path / "2026-03期"
+    assert main(["init", "--year-dir", str(year), *PERIOD, "--consumption-tax", "課税", "--tax-method", "原則",
+                 "--tax-calc", "割戻し", "--tax-allocation", "全額控除"]) == 0
+    write_rows(year / "staging.csv", STAGING_COLUMNS, [staging_row(
+        日付="2025-05-10", 借方科目="会議費", 借方金額="5400", 貸方科目="現金", 貸方金額="5400", 取り込み元ID="bank:m1",
+        借方税区分="課税仕入10%", 借方インボイス="適格", 承認="済")])
+    ev = dict.fromkeys(EVIDENCE_COLUMNS, "")
+    ev.update({"証憑ID": "e1", "状態": "明細に対応", "取り込み元ID": "bank:m1", "税率": "8", "登録番号": "T1234567890123"})
+    write_rows(year / "evidence.csv", EVIDENCE_COLUMNS, [ev])
+    assert main(["review", "--year-dir", str(year)]) == 0
+    assert "証憑の税率と合わず承認を外した行: 1件" in capsys.readouterr().out
+    assert read_rows(year / "staging.csv")[0]["承認"] == ""

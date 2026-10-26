@@ -87,6 +87,18 @@ def test_taxable_year_end_to_end(tmp_path, capsys):
 
     # 確認用Excel：課税の年度には税の列がある。全行を「済」にして反映する
     assert main(["review", "--year-dir", str(year)]) == 0
+    # 承認前の要確認理由：分けた伝票に「税率が複数」が戻らない。登録番号の無い証憑には確認の理由が付く
+    reasons = [(r["摘要"], r["伝票番号"], r["要確認理由"]) for r in read_rows(year / "staging.csv")]
+    assert reasons == [
+        ("フリコミ カ)テストシヨウジ", "", ""),
+        ("テスウリヨウ", "", "確立済みパターン「振込手数料」"),
+        ("カード テストカフエ", "", "証憑と一致／取引先名が摘要に無い（突き合わせ先を確認）"),
+        ("カード テストマート", "S1", "証憑と一致"),
+        ("カード テストマート", "S1", "証憑と一致"),
+        ("カード テストマート", "S1", "証憑と一致"),
+        ("カード テストチユウモン", "", "証憑と一致／取引先名が摘要に無い（突き合わせ先を確認）"
+                                     "／証憑に登録番号が無い（経過措置で計上。登録番号を確認）"),
+    ]
     (review,) = (year / "output").glob("review-*.xlsx")
     workbook = load_workbook(review)
     sheet = workbook["確認"]
@@ -118,3 +130,45 @@ def test_taxable_year_end_to_end(tmp_path, capsys):
     tail = {r["区分"]: r["税区分"] for r in read_rows(year / "output" / "consumption-tax-summary.csv")}
     assert tail["概算納付税額"] == "8362"
     assert tail["課税売上割合"] == "100.00%"
+
+
+AUTO_PATTERNS_YAML = PATTERNS_YAML + """  - 名前: カフェ
+    入出金: 出金
+    摘要キーワード: テストカフエ
+    科目: 会議費
+    税区分: 課税仕入10%
+    インボイス: 適格
+  - 名前: マート
+    入出金: 出金
+    摘要キーワード: テストマート
+    科目: 消耗品費
+    インボイス: 適格
+"""
+
+
+def test_auto_approved_rows_follow_receipt_rate(tmp_path, capsys):
+    """明細の取り込みで自動承認した行も、後から来た証憑の税率（8%・混在）に合わなければ承認を外す。"""
+    root = tmp_path / "インスタンス"
+    year = root / "work" / "kessan" / "2026-03期"
+    assert main(["init", "--year-dir", str(year), *PERIOD, *TAX_ARGS]) == 0
+    company = root / "context" / "company"
+    company.mkdir(parents=True)
+    write_sources(company)
+    (company / "kessan-patterns.yaml").write_text(AUTO_PATTERNS_YAML, encoding="utf-8")
+    csv_path = write_bank_csv(year / "inbox", text=BANK)
+    assert main(["import-bank", "--year-dir", str(year), "--account-id", "main", "--file", str(csv_path)]) == 0
+    rows = by_description(year)
+    assert rows["カード テストカフエ"]["承認"] == "済" and rows["カード テストマート"]["承認"] == "済"
+
+    write_document(year, receipt(資料="inbox/領収書-カフェ.jpg", 日付="2025-04-10", 金額=5400, 取引先="テストカフェ",
+                                 内容="打合せ", 科目候補="会議費", 税率=8, 登録番号="T1234567890123"))
+    write_document(year, receipt(資料="inbox/領収書-マート.jpg", 日付="2025-04-12", 金額=1620, 取引先="テストマート",
+                                 内容="備品と食品", 科目候補="消耗品費", 税率="混在", 登録番号="T1234567890123"))
+    assert main(["import-extracted", "--year-dir", str(year)]) == 0
+    assert "証憑の税率と合わず承認を外した行: 2件" in capsys.readouterr().out
+    rows = by_description(year)
+    cafe, mart = rows["カード テストカフエ"], rows["カード テストマート"]
+    assert cafe["承認"] == "" and cafe["借方税区分"] == "課税仕入8%軽"
+    assert "税区分を8%軽に直したため承認を外した" in cafe["要確認理由"]
+    assert mart["承認"] == "" and "税率が複数（split-tax で分ける）" in mart["要確認理由"]
+    assert rows["テスウリヨウ"]["承認"] == "済"
