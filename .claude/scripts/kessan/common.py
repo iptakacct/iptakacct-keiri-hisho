@@ -38,6 +38,7 @@ YEAR_FILES = {
     "journal.csv": JOURNAL_COLUMNS,
     "adjustments.csv": JOURNAL_COLUMNS,
     "staging.csv": STAGING_COLUMNS,
+    "adjustments-staging.csv": STAGING_COLUMNS,  # 決算整理仕訳の候補（kessan-close）
     "import-log.csv": IMPORT_LOG_COLUMNS,
     "statement-balances.csv": STATEMENT_BALANCE_COLUMNS,
     "opening-balances.csv": OPENING_COLUMNS,

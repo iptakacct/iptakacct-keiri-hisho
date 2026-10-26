@@ -1,0 +1,212 @@
+"""決算整理の枠組み（候補・承認・登録）。項目のモジュールは架空のものを差し込む。"""
+from types import SimpleNamespace
+
+import pytest
+import yaml
+
+import cli
+import close
+from check import has_ng, run_checks
+from common import EVIDENCE_COLUMNS, JOURNAL_COLUMNS, KessanError, read_rows, write_rows
+from evidence import STATE_MULTIPLE
+from helpers import evidence_row, line
+
+STAGING = "adjustments-staging.csv"
+
+
+def base_books(year_dir):
+    """資本金で預金を作っただけの帳簿（検算NGなし）。"""
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [
+        line("1", "2025-04-01", debit=("普通預金", "", 1000000), credit=("資本金", "", 1000000)),
+    ])
+
+
+def fee(key, amount, reason="テストの理由"):
+    """1行の候補：支払手数料／未払金。"""
+    return close.Candidate(item="テスト", key=key, date="2026-03-31", reason=reason, lines=[
+        {"借方科目": "支払手数料", "借方金額": str(amount), "貸方科目": "未払金", "貸方金額": str(amount), "摘要": f"手数料{key}"},
+    ])
+
+
+def split(key):
+    """複数行の候補：租税公課 500 ／ 未払金 300・未払費用 200。"""
+    return close.Candidate(item="テスト", key=key, date="2026-03-31", reason="複数行", lines=[
+        {"借方科目": "租税公課", "借方金額": "500", "摘要": "印紙"},
+        {"貸方科目": "未払金", "貸方金額": "300", "摘要": "印紙"},
+        {"貸方科目": "未払費用", "貸方金額": "200", "摘要": "印紙"},
+    ])
+
+
+class FakeItem:
+    def __init__(self, candidates, notes=()):
+        self.candidates = list(candidates)
+        self.notes = list(notes)
+        self.posted = []
+
+    def collect(self, ctx):
+        assert isinstance(ctx, close.CloseContext)
+        return list(self.candidates), list(self.notes)
+
+    def after_post(self, year_dir, posted_source_ids):
+        self.posted.append(list(posted_source_ids))
+
+
+def staging(year_dir):
+    return read_rows(year_dir / STAGING)
+
+
+def test_refuses_when_check_ng(year_dir, accounts):
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, [
+        line("1", "2025-04-01", debit=("普通預金", "", 1000), credit=("資本金", "", 900)),
+    ])
+    with pytest.raises(KessanError, match="NG.*check-result.md"):
+        close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 100)])])
+    assert staging(year_dir) == []
+
+
+def test_refuses_when_evidence_unresolved(year_dir, accounts):
+    base_books(year_dir)
+    write_rows(year_dir / "evidence.csv", EVIDENCE_COLUMNS, [
+        evidence_row(証憑ID="E1", 証憑ファイル="inbox/領収書-1.jpg", 日付="2025-05-01", 金額="1100", 取引先="テスト商店",
+                     状態=STATE_MULTIPLE),
+    ])
+    with pytest.raises(KessanError, match="証憑"):
+        close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 100)])])
+
+
+def test_candidates_idempotent(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000), split("k2")])
+    r1 = close.run_close(year_dir, accounts, items=[item])
+    rows1 = staging(year_dir)
+    assert (r1.candidates_added, r1.candidates_kept) == (2, 0)
+    assert len(rows1) == 4
+    assert {r["伝票番号"] for r in rows1} == {"C1", "C2"}
+    assert {r["取り込み元ID"] for r in rows1} == {"close:テスト:k1", "close:テスト:k2"}
+    assert all(r["判定"] == "要確認" and r["承認"] == "" for r in rows1)
+    assert rows1[0]["要確認理由"] == "テストの理由"
+    assert r1.report_path.exists()
+
+    r2 = close.run_close(year_dir, accounts, items=[item])
+    assert len(staging(year_dir)) == 4
+    assert r2.candidates_added == 2
+
+    # 承認済みの候補は、内容が変わっても作り直さない（所見で知らせる）
+    assert close.approve_candidates(year_dir, ["close:テスト:k1"]) == 1
+    item.candidates = [fee("k1", 9999), split("k2")]
+    r3 = close.run_close(year_dir, accounts, items=[item])
+    rows3 = staging(year_dir)
+    k1 = [r for r in rows3 if r["取り込み元ID"] == "close:テスト:k1"]
+    assert [r["借方金額"] for r in k1] == ["1000"] and k1[0]["承認"] == "済"
+    assert (r3.candidates_added, r3.candidates_kept) == (1, 1)
+    assert any("close:テスト:k1" in n.message for n in r3.notes)
+
+    # 登録済みの候補は staging に出さない
+    close.post_candidates(year_dir, accounts)
+    r4 = close.run_close(year_dir, accounts, items=[item])
+    ids = {r["取り込み元ID"] for r in staging(year_dir)}
+    assert ids == {"close:テスト:k2"}
+    assert r4.candidates_kept == 1
+
+
+def test_stale_unapproved_candidate_removed(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([fee("k1", 1000), fee("k2", 2000), fee("k3", 3000)])
+    close.run_close(year_dir, accounts, items=[item])
+    close.approve_candidates(year_dir, ["close:テスト:k3"])
+    item.candidates = [fee("k1", 1000)]
+    close.run_close(year_dir, accounts, items=[item])
+    ids = [r["取り込み元ID"] for r in staging(year_dir)]
+    assert "close:テスト:k2" not in ids
+    assert "close:テスト:k3" in ids  # 承認済みは消さない
+    numbers = [r["伝票番号"] for r in staging(year_dir)]
+    assert len(set(numbers)) == len(numbers)
+
+
+def test_invalid_candidate_refused(year_dir, accounts):
+    base_books(year_dir)
+    bad = close.Candidate(item="テスト", key="x", date="2026-03-31", reason="", lines=[
+        {"借方科目": "支払手数料", "借方金額": "100", "貸方科目": "未払金", "貸方金額": "90"},
+    ])
+    with pytest.raises(KessanError, match="借方100≠貸方90"):
+        close.run_close(year_dir, accounts, items=[FakeItem([bad])])
+    assert staging(year_dir) == []
+
+
+def test_post_assigns_A_numbers(year_dir, accounts):
+    base_books(year_dir)
+    write_rows(year_dir / "adjustments.csv", JOURNAL_COLUMNS, [
+        line("A1", "2026-03-31", debit=("支払手数料", "", 100), credit=("未払金", "", 100), 登録区分="決算整理",
+             取り込み元ID="manual:a1"),
+    ])
+    item = FakeItem([fee("k1", 1000), split("k2")])
+    close.run_close(year_dir, accounts, items=[item])
+    assert close.approve_candidates(year_dir, ["close:テスト:k1", "close:テスト:k2"]) == 4
+    numbers = close.post_candidates(year_dir, accounts, items=[item])
+    assert numbers == ["A2", "A3"]
+    adjustments = read_rows(year_dir / "adjustments.csv")
+    assert [r["伝票番号"] for r in adjustments] == ["A1", "A2", "A3", "A3", "A3"]
+    assert all(r["登録区分"] == "決算整理" and r["登録日時"] for r in adjustments[1:])
+    assert adjustments[1]["取り込み元ID"] == "close:テスト:k1"
+    assert staging(year_dir) == []
+    assert not has_ng(run_checks(year_dir, accounts))
+    assert item.posted == [["close:テスト:k1", "close:テスト:k2"]]
+
+
+def test_post_refuses_when_check_ng(year_dir, accounts):
+    base_books(year_dir)
+    close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 1000)])])
+    close.approve_candidates(year_dir, ["close:テスト:k1"])
+    rows = read_rows(year_dir / "journal.csv")
+    rows[0]["貸方金額"] = "1"
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    with pytest.raises(KessanError, match="NG"):
+        close.post_candidates(year_dir, accounts)
+    assert read_rows(year_dir / "adjustments.csv") == []
+
+
+def test_approve_unknown_id_refused(year_dir, accounts):
+    base_books(year_dir)
+    close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 1000)])])
+    with pytest.raises(KessanError, match="close:テスト:zz"):
+        close.approve_candidates(year_dir, ["close:テスト:k1", "close:テスト:zz"])
+    assert all(r["承認"] == "" for r in staging(year_dir))
+
+
+def test_set_amount_validates(year_dir):
+    with pytest.raises(KessanError, match="消費税"):
+        close.set_amount(year_dir, "住民税", 100)
+    with pytest.raises(KessanError, match="0以上"):
+        close.set_amount(year_dir, "消費税", -1)
+    with pytest.raises(KessanError, match="0以上"):
+        close.set_amount(year_dir, "消費税", True)
+    close.set_amount(year_dir, "消費税", 12000)
+    close.set_amount(year_dir, "法人税等", 70000)
+    data = yaml.safe_load((year_dir / "close-overrides.yaml").read_text(encoding="utf-8"))
+    assert data == {"消費税": 12000, "法人税等": 70000}
+    assert close.load_overrides(year_dir) == {"消費税": 12000, "法人税等": 70000}
+
+
+def test_report_lists_candidates_and_notes(year_dir, accounts):
+    base_books(year_dir)
+    item = FakeItem([split("k2")], [close.Note("テスト", "確かめてほしいこと")])
+    r = close.run_close(year_dir, accounts, items=[item])
+    text = r.report_path.read_text(encoding="utf-8")
+    assert "## テスト" in text
+    assert "| 日付 | 借方 | 貸方 | 金額 | 要確認理由 |" in text
+    assert "未払費用" in text and "- 確かめてほしいこと" in text
+    assert "---" not in text.replace("|---", "")
+
+
+def test_cli_close_flow(year_dir, capsys):
+    base_books(year_dir)
+    assert cli.main(["close-set-amount", "--year-dir", str(year_dir), "--item", "法人税等", "--amount", "50000"]) == 0
+    assert cli.main(["close-candidates", "--year-dir", str(year_dir)]) == 0
+    ids = {r["取り込み元ID"] for r in staging(year_dir)}
+    assert ids == {"close:法人税等:2026-03-31"}
+    assert cli.main(["close-approve", "--year-dir", str(year_dir), "--all"]) == 0
+    assert cli.main(["close-post", "--year-dir", str(year_dir)]) == 0
+    adjustments = read_rows(year_dir / "adjustments.csv")
+    assert [(r["伝票番号"], r["借方科目"] or r["貸方科目"]) for r in adjustments] == [("A1", "法人税等")]
+    assert cli.main(["close-set-amount", "--year-dir", str(year_dir), "--item", "住民税", "--amount", "1"]) == 1
+    assert cli.main(["close-set-amount", "--year-dir", str(year_dir), "--item", "消費税", "--amount", "-5"]) == 1

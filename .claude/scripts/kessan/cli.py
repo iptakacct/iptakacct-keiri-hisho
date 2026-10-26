@@ -20,9 +20,13 @@
   python ../.claude/scripts/kessan/cli.py check --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
   python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
   python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y> [--prev-year-dir work/kessan/2025-03期]
+  python ../.claude/scripts/kessan/cli.py close-set-amount --year-dir <Y> --item 消費税|法人税等 --amount 123400
+  python ../.claude/scripts/kessan/cli.py close-candidates --year-dir <Y> [--next-year-dir work/kessan/2027-03期] [--prev-year-dir …]
+  python ../.claude/scripts/kessan/cli.py close-approve --year-dir <Y> (--ids close:消費税:2026-03-31 … | --all)
+  python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]
 
 終了コード: 0 正常 / 1 エラー（何も書いていない） / 2 コマンドの使い方の誤り（argparse）
-          / 3 post（set-tax・登録済み伝票の split-tax）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
+          / 3 post（set-tax・登録済み伝票の split-tax・close-post）で登録（修正）は完了したが検算NG / 4 import-extracted で形式エラーのファイルがあった（他のファイルは取り込み済み）
           （import-bank・import-extracted・set-accounts の反映後に自動承認だけが失敗したときは、反映が完了した旨を出して 1。
             import-extracted で形式エラーのファイルもあったときは 4）
 """
@@ -34,6 +38,7 @@ from accounts import load_accounts
 from accounts_update import apply_review, approve, approve_numbers, load_updates, set_accounts
 from bank_import import import_bank, load_sources
 from check import has_ng, run_checks, write_report
+from close import approve_candidates, candidate_ids, post_candidates, run_close, set_amount
 from common import PERIOD_FILE, YEAR_FILES, KessanError, cannot_write, init_year_dir, upgrade_header
 from evidence_resolve import resolve_evidence
 from extracted import extracted_files
@@ -50,7 +55,8 @@ from trial_balance import write_trial_balance
 from undo import discard, unimport
 
 COMMANDS = ("init", "add-payee", "inbox-status", "import-bank", "import-extracted", "set-accounts", "set-tax", "split-tax", "resolve-evidence", "review", "apply-review",
-            "approve", "unimport", "discard", "post", "check", "tb", "tax-summary")
+            "approve", "unimport", "discard", "post", "check", "tb", "tax-summary",
+            "close-candidates", "close-approve", "close-post", "close-set-amount")
 EXIT_POSTED_WITH_NG = 3
 EXIT_SOME_FILES_REJECTED = 4
 
@@ -107,8 +113,19 @@ def _parser():
         if name == "discard":
             p.add_argument("--ids", required=True, nargs="+", help="破棄する取り込み元ID")
             p.add_argument("--reason", required=True, help="破棄の理由（discard-log.csv に記録）")
-        if name in ("post", "check", "set-tax", "tax-summary"):
+        if name in ("post", "check", "set-tax", "tax-summary", "close-candidates", "close-post"):
             p.add_argument("--prev-year-dir", type=Path)
+        if name == "close-candidates":
+            p.add_argument("--next-year-dir", type=Path, help="翌期の年度フォルダ（未払・未収の照合に使う）")
+            p.add_argument("--sources", type=Path, help="省略時はインスタンスの context/company/kessan-sources.yaml（無ければ使わない）")
+            p.add_argument("--payees", type=Path, help="省略時はインスタンスの context/company/kessan-payees.yaml")
+        if name == "close-approve":
+            target = p.add_mutually_exclusive_group(required=True)
+            target.add_argument("--ids", nargs="+", help="承認する候補の取り込み元ID（close:…）")
+            target.add_argument("--all", action="store_true", help="adjustments-staging.csv の候補をすべて承認する")
+        if name == "close-set-amount":
+            p.add_argument("--item", required=True, help="消費税 か 法人税等")
+            p.add_argument("--amount", required=True, type=int, help="達人で計算した額（円、0以上）")
     return parser
 
 
@@ -142,6 +159,23 @@ def _run_check(year_dir, accounts, prev_year_dir):
     ng = sum(f.level == "NG" for f in findings)
     print(f"検算: NG {ng}件 / 警告 {len(findings) - ng}件（{path}）")
     return findings
+
+
+def _company_dir(year_dir):
+    """インスタンスの context/company。年度フォルダがインスタンスの外なら None。"""
+    try:
+        return year_dir.resolve().parents[2] / "context" / "company"
+    except IndexError:
+        return None
+
+
+def _close_sources(year_dir, args):
+    """決算整理で使う口座の設定。--sources を指定したら必須、省略時はインスタンスのファイルがあれば読む（無ければ空）。"""
+    if args.sources:
+        return load_sources(args.sources)
+    company_dir = _company_dir(year_dir)
+    path = company_dir / "kessan-sources.yaml" if company_dir else None
+    return load_sources(path) if path and path.exists() else {}
 
 
 def _payees_path(year_dir, args):
@@ -428,6 +462,31 @@ def main(argv=None):
             print(f"消費税の集計表: {csv_path} / {xlsx_path}（課税売上割合 {summary.taxable_sales_ratio * 100:.2f}% / 概算納付税額 {est}）")
             for n in summary.notes:
                 print(f"注記: {n}")
+            return 0
+        if args.command == "close-set-amount":
+            set_amount(year_dir, args.item, args.amount)
+            print(f"{args.item}の額を {args.amount:,}円 にしました（close-overrides.yaml。close-candidates で候補に反映）")
+            return 0
+        if args.command == "close-candidates":
+            r = run_close(year_dir, accounts, next_year_dir=args.next_year_dir, prev_year_dir=args.prev_year_dir,
+                          sources=_close_sources(year_dir, args), payees=_load_payees(year_dir, args),
+                          company_dir=_company_dir(year_dir))
+            print(f"決算整理の候補: 要確認 {r.candidates_added}件 / 承認済み・登録済みのため据え置き {r.candidates_kept}件"
+                  f" / 出なくなったため消した候補 {r.candidates_removed}件 / 所見 {len(r.notes)}件")
+            for n in r.notes:
+                print(f"所見［{n.item}］: {n.message}")
+            print(f"報告: {r.report_path}")
+            return 0
+        if args.command == "close-approve":
+            ids = candidate_ids(year_dir) if args.all else args.ids
+            print(f"承認: {approve_candidates(year_dir, ids)}行")
+            return 0
+        if args.command == "close-post":
+            numbers = post_candidates(year_dir, accounts, prev_year_dir=args.prev_year_dir)
+            print(f"決算整理仕訳の登録: {len(numbers)}件（{', '.join(numbers) or 'なし'}）")
+            if has_ng(_run_check(year_dir, accounts, args.prev_year_dir)):
+                print("登録は完了済みですが、検算でNGがあります（check-result.md を確認）")
+                return EXIT_POSTED_WITH_NG
             return 0
         if args.command == "tb":
             print(f"試算表: {write_trial_balance(year_dir, accounts)}")
