@@ -18,7 +18,7 @@ import json
 from openpyxl import load_workbook
 
 from cli import main
-from common import read_rows
+from common import OPENING_COLUMNS, read_rows, write_rows
 from helpers import receipt, write_bank_csv, write_document, write_sources
 
 PERIOD = ["--start", "2025-04-01", "--end", "2026-03-31"]
@@ -58,7 +58,6 @@ def test_taxable_year_end_to_end(tmp_path, capsys):
     company.mkdir(parents=True)
     write_sources(company)
     (company / "kessan-patterns.yaml").write_text(PATTERNS_YAML, encoding="utf-8")
-    from common import OPENING_COLUMNS, write_rows
     write_rows(year / "opening-balances.csv", OPENING_COLUMNS, [
         {"科目": "普通預金", "補助": "サンプル銀行", "残高": "1000000"},
         {"科目": "資本金", "補助": "", "残高": "1000000"},

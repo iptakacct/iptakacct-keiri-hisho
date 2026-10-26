@@ -286,3 +286,70 @@ def test_auto_approve_conflicts_when_pattern_tax_differs(tmp_path, accounts, abb
     r = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations, tax_settings=taxable)
     assert (r.approved, r.conflicts) == (0, 1)
     assert read_rows(year_dir / "staging.csv")[0]["承認"] != "済"
+
+
+# --- 課税の年度：パターンに税区分・インボイスが無いときの扱い ---
+
+def _tax_case(tmp_path, accounts, abbreviations, pattern_extra="", subject="支払手数料", settings=None):
+    from tax import TaxSettings
+    settings = settings or TaxSettings("課税", "原則", "割戻し", "全額控除", False)
+    year_dir = tmp_path / "y"
+    year_dir.mkdir()
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee()])
+    text = f"patterns:\n  - 名前: 振込手数料\n    入出金: 出金\n    摘要キーワード: テスウリヨウ\n    科目: {subject}\n{pattern_extra}"
+    patterns = load_patterns(write_patterns(tmp_path, text), accounts)
+    result = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations, tax_settings=settings)
+    return result, read_rows(year_dir / "staging.csv")[0]
+
+
+def test_taxable_pattern_without_invoice_is_not_approved(tmp_path, accounts, abbreviations):
+    result, row = _tax_case(tmp_path, accounts, abbreviations)
+    assert (result.approved, result.conflicts) == (0, 1)
+    assert row["承認"] != "済" and row["判定"] == "要確認"
+    assert (row["借方税区分"], row["借方インボイス"]) == ("課税仕入10%", "")
+    assert "確立済みパターンにインボイスが無い（税区分・インボイスを確認）" in row["要確認理由"]
+
+
+def test_taxable_pattern_with_invoice_uses_account_default_tax(tmp_path, accounts, abbreviations):
+    result, row = _tax_case(tmp_path, accounts, abbreviations, "    インボイス: 適格\n")
+    assert result.approved == 1 and row["承認"] == "済"
+    assert (row["借方税区分"], row["借方インボイス"]) == ("課税仕入10%", "適格")
+
+
+def test_taxable_non_purchase_default_needs_no_invoice(tmp_path, accounts, abbreviations):
+    result, row = _tax_case(tmp_path, accounts, abbreviations, subject="租税公課")
+    assert result.approved == 1 and row["承認"] == "済"
+    assert (row["借方税区分"], row["借方インボイス"]) == ("対象外", "")
+
+
+def test_taxable_pattern_without_any_tax_for_expense_is_not_approved(tmp_path, accounts, abbreviations):
+    import dataclasses
+    blank = {n: dataclasses.replace(a, default_tax="") if n == "支払手数料" else a for n, a in accounts.items()}
+    result, row = _tax_case(tmp_path, blank, abbreviations)
+    assert result.approved == 0 and "確立済みパターンに税区分が無い（税区分を確認）" in row["要確認理由"]
+
+
+def test_taxable_individual_allocation_defaults_to_common(tmp_path, accounts, abbreviations):
+    from tax import TaxSettings
+    settings = TaxSettings("課税", "原則", "割戻し", "個別対応", False)
+    result, row = _tax_case(tmp_path, accounts, abbreviations, "    インボイス: 適格\n", settings=settings)
+    assert result.approved == 1 and row["借方個別対応"] == "共通"
+
+
+def test_exempt_pattern_without_tax_still_approved(tmp_path, accounts, abbreviations):
+    from tax import TaxSettings
+    result, row = _tax_case(tmp_path, accounts, abbreviations, settings=TaxSettings("免税", "", "", "", False))
+    assert result.approved == 1 and row["承認"] == "済" and row["借方税区分"] == ""
+
+
+def test_taxable_existing_tax_differing_from_pattern_is_not_approved(tmp_path, accounts, abbreviations):
+    from tax import TaxSettings
+    year_dir = tmp_path / "y"
+    year_dir.mkdir()
+    write_rows(year_dir / "staging.csv", STAGING_COLUMNS, [fee(借方税区分="課税仕入10%")])
+    patterns = load_patterns(write_patterns(tmp_path, TAX_YAML), accounts)  # パターンは 非課税仕入／適格
+    r = auto_approve(year_dir, accounts, patterns, PAYMENT, abbreviations,
+                     tax_settings=TaxSettings("課税", "原則", "割戻し", "全額控除", False))
+    row = read_rows(year_dir / "staging.csv")[0]
+    assert (r.approved, r.conflicts) == (0, 1) and row["承認"] != "済"
+    assert "税区分（非課税仕入）と違う" in row["要確認理由"]

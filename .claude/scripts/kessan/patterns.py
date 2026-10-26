@@ -132,6 +132,38 @@ def _statement_side(row, payment_accounts):
     return None
 
 
+def _tax_values(row, counter, pattern, accounts, settings):
+    """課税の年度で、相手側に書く税の列と、承認できない理由（無ければ None）を返す。
+
+    税区分はパターン→科目の既定の順、インボイスはパターンから、どちらも空欄のときだけ書く。
+    課税仕入でインボイスが決まらない・収益／費用なのに税区分が決まらない行は承認しない。
+    """
+    values = {}
+    account = accounts.get(pattern.subject)
+    tax = row[f"{counter}税区分"].strip()
+    if not tax:
+        tax = pattern.tax or (account.default_tax if account else "")
+        if tax:
+            values[f"{counter}税区分"] = tax
+    invoice = row[f"{counter}インボイス"].strip()
+    if not invoice and pattern.invoice:
+        invoice = pattern.invoice
+        values[f"{counter}インボイス"] = invoice
+    if tax and pattern.tax and tax != pattern.tax:
+        return values, f"確立済みパターンの税区分（{pattern.tax}）と違う（税区分を確認）"
+    if not tax:
+        if account and account.category in ("収益", "費用"):
+            return values, "確立済みパターンに税区分が無い（税区分を確認）"
+        return values, None
+    category = TAX_CATEGORIES.get(tax)
+    if category and category.kind in ("課税仕入", "課税仕入返還"):
+        if not invoice:
+            return values, "確立済みパターンにインボイスが無い（税区分・インボイスを確認）"
+        if settings.allocation == "個別対応" and not row[f"{counter}個別対応"].strip():
+            values[f"{counter}個別対応"] = "共通"
+    return values, None
+
+
 def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, tax_settings=None):
     """staging.csv の未承認の明細行をパターンと照合し、一致した行を自動承認する。"""
     year_dir = Path(year_dir)
@@ -148,6 +180,7 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, 
         if side is None:
             continue
         direction, counter, statement = side
+        reason = None
         amount = parse_amount(row[f"{statement}金額"], f"staging.csv 取り込み元ID {row['取り込み元ID']}")
         matched = [p for p in patterns if _matches(p, row, direction, amount, abbreviations)]
         if not matched:
@@ -159,20 +192,21 @@ def auto_approve(year_dir, accounts, patterns, payment_accounts, abbreviations, 
         elif current[0] and current != targets[0][:2]:
             reason = f"確立済みパターン「{matched[0].name}」（{' '.join(targets[0][:2]).strip()}）と科目候補が違う"
         else:
-            row.update({
-                f"{counter}科目": targets[0][0], f"{counter}補助": targets[0][1],
-                "判定": ESTABLISHED, "承認": "済",
-                "要確認理由": add_reasons(remove_reason(row["要確認理由"], UNSET_COUNTER_ACCOUNT),
-                                     f"確立済みパターン「{matched[0].name}」"),
-            })
+            tax_values = {}
             if tax_settings is not None and tax_settings.taxable:
-                # 税の列は相手側が空のときだけ書く（既に入っている値は変えない）
-                for key, value in (("税区分", matched[0].tax), ("インボイス", matched[0].invoice)):
-                    if value and not row[f"{counter}{key}"].strip():
-                        row[f"{counter}{key}"] = value
-            approved += 1
-            changed = True
-            continue
+                tax_values, reason = _tax_values(row, counter, matched[0], accounts, tax_settings)
+            row.update(tax_values)  # 承認しない場合も、決まった税の列は書く（空欄だけ）
+            changed |= bool(tax_values)
+            if reason is None:
+                row.update({
+                    f"{counter}科目": targets[0][0], f"{counter}補助": targets[0][1],
+                    "判定": ESTABLISHED, "承認": "済",
+                    "要確認理由": add_reasons(remove_reason(row["要確認理由"], UNSET_COUNTER_ACCOUNT),
+                                         f"確立済みパターン「{matched[0].name}」"),
+                })
+                approved += 1
+                changed = True
+                continue
         conflicts += 1
         updated = add_reasons(row["要確認理由"], reason)
         if row["要確認理由"] != updated:
