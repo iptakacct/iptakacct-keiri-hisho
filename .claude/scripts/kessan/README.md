@@ -36,6 +36,9 @@ pip install pyyaml openpyxl pytest
 | `kessan-sources.yaml` | 口座・カード・現金と明細CSVの形式、`receipt_default`（領収書の既定の支払方法：`立替`／`現金`／空欄） |
 | `kessan-accounts.yaml` | 会社別の追加科目（共通の科目マスタに無い科目を足す。マスタと同じ名前は足せない。追加科目はマスタの後ろに並ぶ。雛形は `テンプレート/context/company/kessan-accounts.yaml`） |
 | `kessan-patterns.yaml` | 確立済みパターン（自動承認の根拠。オーナーの承認後に追加する）。課税の年度は、自動承認のときに相手側の空欄へ 税区分（パターン→科目の既定の順）・インボイス（パターン）を書く。課税仕入でインボイスが決まらない（原則課税のとき）、収益・費用なのに税区分が決まらない、行に入っている税区分がパターンの税区分と違う、会議費・交際費・福利厚生費・新聞図書費でパターンに税区分が無い（「軽減税率の可能性（パターンに税区分が無い）」）、証憑の税率が8%・10%で税区分の税率と違う／混在、のいずれかは承認せず、要確認理由（「確立済みパターンにインボイスが無い／税区分が無い／の税区分と違う」）を付ける（課税仕入のパターンには `インボイス` を書く） |
+| `kessan-payees.yaml` | 支払先の対応表（漢字の取引先名⇔通帳・カードに出るカナの名義）。`add-payee` で足す（オーナーの承認後）。証憑の突き合わせ・確立済みパターン・決算整理の未払・未収の照合で使う |
+| `kessan-prepaid.yaml` | 前払費用の登録簿（年払いの費用の名前・科目・摘要キーワードか取引先・月数）。月数は1〜12。キーワードと取引先を両方書いたら両方に一致した行だけが対象（AND）。オーナーの承認後に書く |
+| `fixed-assets.csv` | 固定資産台帳（UTF-8 BOM付き）。列は 資産名・科目・取得日・事業供用日・取得価額・償却方法・耐用年数・前期末償却累計額・除却日・備考。償却方法は 定額法／定率法／一括償却／少額特例 |
 
 ## 手順
 
@@ -63,6 +66,13 @@ python ../.claude/scripts/kessan/cli.py check --year-dir <Y> --prev-year-dir <�
 python ../.claude/scripts/kessan/cli.py tb --year-dir <Y>
 python ../.claude/scripts/kessan/cli.py set-tax --year-dir <Y> --file <Y>/output/set-tax-YYYYMMDD.json [--prev-year-dir …]   # 課税の年度：登録済みの仕訳の税の列を直す
 python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y> [--prev-year-dir …]   # 課税の年度：消費税の集計表と概算納付税額
+python ../.claude/scripts/kessan/cli.py resolve-evidence --year-dir <Y> --evidence-id <証憑ID> (--match <取り込み元ID> | --as-payable | --as-new)   # 複数候補・未払候補・明細に該当なしの証憑を決める
+python ../.claude/scripts/kessan/cli.py add-payee --year-dir <Y> --name <取引先> --kana <名義>   # 支払先の対応を足す（オーナーの承認後）
+python ../.claude/scripts/kessan/cli.py close-set-amount --year-dir <Y> --item 消費税|法人税等 --amount <達人で計算した額>
+python ../.claude/scripts/kessan/cli.py close-candidates --year-dir <Y> [--next-year-dir <翌期のY>] [--prev-year-dir …]   # 決算整理の候補と所見
+python ../.claude/scripts/kessan/cli.py close-approve --year-dir <Y> (--ids close:… | --all)
+python ../.claude/scripts/kessan/cli.py close-reject --year-dir <Y> --ids close:… --reason <理由>
+python ../.claude/scripts/kessan/cli.py close-post --year-dir <Y> [--prev-year-dir …]   # 承認済みの候補を adjustments.csv に登録＋検算
 ```
 
 - `init` は課税の年度なら消費税の引数も渡す：`--consumption-tax 課税 --tax-method 原則 --tax-calc 割戻し --tax-allocation 全額控除 [--small-exemption]`（`--tax-method` は 原則／簡易／2割特例、`--tax-calc` は 割戻し／積上げ、`--tax-allocation` は 方式=原則のときだけ必須で 全額控除／個別対応／一括比例配分）。免税なら `--consumption-tax 免税` か引数なし（`period.yaml` に `消費税` が無ければ免税）。既にある年度フォルダに後から指定して、`period.yaml` の消費税だけを変えられる（帳簿は触らない）。
@@ -147,6 +157,23 @@ python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y> [--prev-year-
 - **設定ファイル**（`config/consumption-tax/`、根拠URL・確認日つき。税率・割合はコードに書かない）：`rates.yaml`（10%・8%の国税／地方税の内訳）、`invoice-transition.yaml`（免税事業者等からの課税仕入れの経過措置の期間と割合、少額特例の期間）。
 - 扱わないもの：旧税率（8%・5%・3%）、輸入、特定課税仕入、税抜経理、売上の積上げ（売上は割戻しで計算する）。
 
+## 決算整理（kessan-close）
+
+手順書は `.claude/skills/kessan-close/SKILL.md`。検算にNGがあれば `close-candidates`・`close-post` は実行を拒否する。流れは `check` → 証憑の未解決を `resolve-evidence` で片づける → `close-candidates` → オーナーに見せる → `close-set-amount`（消費税・法人税等）→ `close-approve` → `close-post`。
+
+- 候補はすべて「要確認」で `adjustments-staging.csv`（伝票番号 C1…）に入り、`output/close-report.md` に項目ごとにまとめる。承認（`close-approve`）したものだけが `close-post` で `adjustments.csv` に `A1`, `A2`…（登録区分 決算整理）で入る。同じ取り込み元ID（`close:<項目>:<キー>`）が承認済み・登録済みなら作り直さず、未承認なら最新の内容で置き換え、もう出ない未承認の候補は消す
+- 項目の順：未払・未収 → 前払（と期首の戻し）→ 減価償却 → 役員報酬・残高の所見（候補なし）→ 消費税・法人税等
+- 数字はすべてスクリプトが確定する。端数は円未満切り捨て。償却率は `config/depreciation/rates.yaml`（国税庁の別表。根拠URL・確認日つき）から読む
+- **未払**：`evidence.csv` の未払候補の請求書（期末日以前）を、翌期の支払（`--next-year-dir` の staging・journal。期日の前後10日、期日が無ければ期末から92日）と取引先・金額で照合して候補にする。**未収**は、翌期の入金（期末から60日以内）のうち当期の売上先と合うもの。期末の売掛金で説明できる入金は所見にする
+- **前払**：`kessan-prepaid.yaml` の登録簿に合う支払ごとに 金額 × 期末より後の月数 ÷ 月数 を前払費用に。月数は1〜12だけ（1年を超えるものは長期前払費用として手で扱う）。キーワードと取引先を両方書いたら両方に一致した行だけが対象（AND）。期首の前払費用は同じ名前の科目へ戻す候補
+- **減価償却**：`fixed-assets.csv` から計算する。定額法・200%定率法は事業供用月から期末月まで（除却日があればその月まで）の月割り。**一括償却（10万円以上20万円未満）は 取得価額 × 月数 ÷ 36**（除却しても続く）。**少額特例（30万円未満、中小企業者等だけ）は事業供用した年度だけ**全額、年間上限は300万円 × 月数 ÷ 12。**12か月未満の事業年度では定額法・定率法は計算せず所見**にする
+- **消費税**（課税の年度）：年税額は `close-set-amount --item 消費税` の額（達人の計算結果）があればそれ、無ければ tax-summary の概算（同じ回の他の候補を含める）。**簡易課税は概算しないので上書きが必須**。仮払税金（補助なしか補助「消費税」）の期末残高を中間納付として差し引き、残りを未払消費税等（マイナスなら未収入金〈補助 消費税〉）にする。消費税の候補は、他のすべての候補を承認してからでないと登録できない（額が変わるため）。他の候補を `close-reject` で却下すると、承認済みの消費税の候補は承認が外れる（`close-candidates` を流し直す）
+- **法人税等**：見積もらない。`close-set-amount --item 法人税等` に入れた**期末の未払額**（年税額ではない）があるときだけ候補にする。仮払税金（補助「法人税等」）の中間納付があれば、借方 法人税等（未払額＋中間納付）／貸方 未払法人税等・仮払税金（法人税等）にして仮払税金も消す
+- **却下**：オーナーが拒む候補は `close-reject --reason`（理由は必須）。以後の `close-candidates` で出なくなり、報告書に理由つきで載る。承認済みの候補が再計算で出なくなったときは承認が外れて所見が出る
+- 上書き額と却下は `close-overrides.yaml` に保存する（直接編集しない）
+- 登録後に `close-candidates` を流し直すと、登録済みの内容と再計算が違う候補は所見になる。登録済みの消費税・法人税等の中間納付は、仮払税金の残高が0になっても足し戻して比べる
+- 登録した後の混在税率の伝票は `split-tax --voucher <伝票番号> --line <行> --part 税率:税込金額 …` で分ける
+
 ## 終了コード
 
 | コード | 意味 |
@@ -154,7 +181,7 @@ python ../.claude/scripts/kessan/cli.py tax-summary --year-dir <Y> [--prev-year-
 | 0 | 正常終了（`check`・`post` は検算NGなし） |
 | 1 | エラーで止まった（入力の不備など。何も書いていない。ただし、`post` でメッセージに「登録は完了済み」とある場合は帳簿への登録は済んでいて後始末だけが失敗している。`import-bank`・`import-extracted`・`set-accounts` で「取り込みは完了しています」「科目候補の反映は完了しています」とある場合は、反映は済んでいて確立済みパターンの自動承認だけが止まっている（直して同じコマンドを再実行すると、二重には反映せず自動承認をやり直す）。取り込み・取り消しの途中の書き込みで止まった場合は、メッセージに更新済みのファイルが出る） |
 | 2 | コマンドの使い方の誤り（必須の引数が無い等。argparse が出す） |
-| 3 | `post`（と `set-tax`）で登録（修正）は完了したが、検算でNGがある（`check-result.md` を確認） |
+| 3 | `post`（と `set-tax`・登録済み伝票の `split-tax`・`close-post`）で登録（修正）は完了したが、検算でNGがある（`check-result.md` を確認） |
 | 4 | `import-extracted` で形式エラーのファイルがあった（そのファイルは取り込んでいない。他のファイルは取り込み済み。自動承認も止まったときは、そのエラーも出したうえで 4） |
 
 `check` は検算NGがあると 1 を返す。

@@ -247,7 +247,42 @@ $K set-tax --year-dir $Y --file $Y/output/set-tax-YYYYMMDD.json
 # 突き合わせ先が複数の証憑
 
 - 同じ金額の支払が前後7日以内に複数あるため、どの明細行の証憑か決められなかったもの。確認用Excelの「突き合わせ先が複数」に候補の取り込み元IDと、取引先名が摘要に含まれる候補が載る
-- オーナーにどの行か確認し、その行に `set-accounts` で科目候補を付ける（証憑から新しい仕訳は作らない）
+- オーナーにどの行か確認し、`resolve-evidence` でその明細行に決める（明細行に証憑の科目・取引先が付く。証憑から新しい仕訳は作らない）
+  ```bash
+  $K resolve-evidence --year-dir $Y --evidence-id <証憑ID> --match <明細の取り込み元ID>
+  ```
+
+# 未払候補・明細に該当なしの証憑（resolve-evidence）
+
+`review` の「未払候補」「明細に該当なし」に出た証憑は、1件ずつオーナーに聞いて次のどれかに決める。決めるまで決算整理（`kessan-close`）の候補は作れない。
+
+```bash
+$K resolve-evidence --year-dir $Y --evidence-id <証憑ID> --as-payable   # 期末までの役務で、まだ払っていない → 決算整理で未払として扱う
+$K resolve-evidence --year-dir $Y --evidence-id <証憑ID> --as-new       # 払い済みだが明細に無い → 証憑から新しい仕訳の候補を作る（支払方法が決まらないものは作れない）
+$K resolve-evidence --year-dir $Y --evidence-id <証憑ID> --match <明細の取り込み元ID>   # 明細行が見つかった（複数候補からの選択を含む）
+```
+
+`--as-new` は `receipt_default`（立替／現金）に従う候補を staging に作る。承認前の行なので ⑥ の承認を受けて `post` する。
+
+# 支払先の対応（kessan-payees.yaml）
+
+「取引先名が摘要に無い（突き合わせ先を確認）」が、漢字の取引先名と通帳・カードのカナの名義の違いで出ているときは、同じ相手かをオーナーに確認し、**承認を得てから** `add-payee` で対応を足す。2回目からは証憑の突き合わせ・確立済みパターン・決算整理の未払照合で自動で当たる。AIの判断だけで足さない。
+
+```bash
+$K add-payee --year-dir $Y --name テスト商事 --kana テストシヨウジ
+```
+
+# 登録済みの混在税率の伝票（split-tax --voucher）
+
+承認・登録のあとで、税率が混在する領収書を1行で登録してしまったと分かったときは、登録済みの伝票の行を税率ごとに分ける。分ける行は税区分に税率がある側（両側にあればエラー）、`--part` の税込金額の合計は元の行と一致させる。分けたあとに検算が走る。
+
+```bash
+$K split-tax --year-dir $Y --voucher 3 --line 1 --part 10:1080 --part 8:540
+```
+
+# 決算整理
+
+期末の整理（未払・前払・減価償却・消費税・法人税等）は `kessan-close` スキルで行う。検算NGなし・証憑の未解決なしにしてから渡す。
 
 # エラー時
 

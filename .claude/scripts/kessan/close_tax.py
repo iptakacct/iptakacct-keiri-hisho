@@ -8,6 +8,7 @@
   仮払税金（補助「法人税等」）の残高（中間納付）があれば、法人税等＝未払額＋中間納付として仮払税金を消す。
 """
 import close
+from common import parse_amount
 from tax import load_rates, load_transitions
 from tax_summary import summarize
 
@@ -53,12 +54,19 @@ def _annual_consumption_tax(ctx, overrides, notes):
     return summary.estimate, origin
 
 
+def _posted_interim(ctx, prefix, sub):
+    """登録済みの同じ項目の候補が仮払税金から引いた額。登録後は残高が0になるので、再計算では足し戻して同じ額にする。"""
+    return sum(parse_amount(r["貸方金額"], f"adjustments.csv 伝票{r['伝票番号']}") for r in ctx.entries
+               if r.get("_file") == close.ADJUSTMENTS_FILE and r["取り込み元ID"].strip().startswith(prefix)
+               and r["貸方科目"].strip() == PREPAID and r["貸方補助"].strip() == sub)
+
+
 def _consumption_tax(ctx, overrides):
     notes = []
     annual, origin = _annual_consumption_tax(ctx, overrides, notes)
     if annual is None:
         return [], notes
-    prepaid = {sub: ctx.balance(PREPAID, sub) for sub in PREPAID_SUBS}
+    prepaid = {sub: ctx.balance(PREPAID, sub) + _posted_interim(ctx, close.TAX_PREFIX, sub) for sub in PREPAID_SUBS}
     prepaid = {sub: amount for sub, amount in prepaid.items() if amount}
     others = sorted({s for (n, s), v in ctx.balances.items()
                      if n == PREPAID and s not in PREPAID_SUBS + (CORP_SUB,) and v["期末残高"]})
@@ -91,7 +99,7 @@ def _consumption_tax(ctx, overrides):
 
 
 def _corporate_tax(ctx, overrides):
-    interim = ctx.balance(PREPAID, CORP_SUB)
+    interim = ctx.balance(PREPAID, CORP_SUB) + _posted_interim(ctx, close.CORP_PREFIX, CORP_SUB)
     if ITEM_CORP not in overrides:
         notes = [close.Note(ITEM_CORP, "法人税等は達人で計算した額（期末の未払額）を close-set-amount で入れる")]
         if interim:

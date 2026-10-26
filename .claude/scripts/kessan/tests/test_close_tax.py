@@ -260,3 +260,16 @@ def test_corporate_tax_with_interim(year_dir, accounts):
         ("貸", "仮払税金", "法人税等", 20000, ""),
         ("貸", "未払法人税等", "", 50000, ""),
     ]
+
+
+def test_rerun_after_posting_interim_payments_matches(year_dir, accounts):
+    # 登録で仮払税金が0になっても、再計算は登録済みの引き当てを足し戻して同じ額になる（「違います」の所見が出ない）
+    taxable(year_dir)
+    books(year_dir, prepaid=3000)
+    corp_interim(year_dir)
+    close.set_amount(year_dir, "法人税等", 50000)
+    run(year_dir, accounts)
+    close.approve_candidates(year_dir, [ID_TAX, ID_CORP])
+    assert close.post_candidates(year_dir, accounts) == ["A1", "A2"]
+    r = run(year_dir, accounts)
+    assert r.candidates_kept == 2 and not any("違います" in n.message for n in r.notes)

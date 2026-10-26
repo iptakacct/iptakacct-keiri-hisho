@@ -587,10 +587,11 @@ def reject_candidates(year_dir, source_ids, reason):
     _save_raw(year_dir, data)  # staging を先に書く（失敗しても却下だけ記録されて承認済みの行が残る形にならない）
 
 
-# 項目の順：未払・未収 → 前払 → 減価償却 → 役員報酬・残高の所見 → 消費税・法人税等（後のタスクが close_tax の前に足す）
+# 項目の順：未払・未収 → 前払 → 減価償却 → 役員報酬・残高の所見（候補なし） → 消費税・法人税等
 import close_payable  # noqa: E402  （項目は close の型を使うので、型を定義した後で読む）
 import close_prepaid  # noqa: E402
 import close_depreciation  # noqa: E402
+import close_review  # noqa: E402
 import close_tax  # noqa: E402
 
-ITEMS = [close_payable, close_prepaid, close_depreciation, close_tax]
+ITEMS = [close_payable, close_prepaid, close_depreciation, close_review, close_tax]
