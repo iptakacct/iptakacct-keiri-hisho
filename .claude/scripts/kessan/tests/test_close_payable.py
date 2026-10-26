@@ -144,7 +144,7 @@ def test_unpaid_taxable_columns(year_dir, accounts):
     evidence(year_dir, 登録番号="")
     run(year_dir, accounts)
     (r,) = staged(year_dir, "close:未払:ev1")
-    assert r["借方インボイス"] in ("経過80", "なし", "経過70", "経過50", "経過30", "少額特例")
+    assert r["借方インボイス"] == "経過80"  # 2026-03-25 は経過措置80%の期間
 
 
 def test_unpaid_exempt_year_has_no_tax_columns(year_dir, accounts):
@@ -209,3 +209,102 @@ def test_evidence_state_updated_after_post(year_dir, accounts):
 
 def test_default_items_order_puts_payable_before_tax():
     assert close.ITEMS.index(close_payable) < close.ITEMS.index(close_tax)
+
+
+def test_unpaid_92_day_edge(year_dir, accounts, next_dir):
+    books(year_dir)
+    evidence(year_dir, 支払期日="")
+    next_journal(next_dir, [payment_out(date="2026-07-01")])  # 期末日の92日後（含む）
+    run(year_dir, accounts, next_dir)
+    assert "と一致" in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+    next_journal(next_dir, [payment_out(date="2026-07-02")])  # 93日後（含まない）
+    run(year_dir, accounts, next_dir)
+    assert "翌期の支払が見つからない" in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+
+
+def test_unpaid_flags_payment_within_period(year_dir, accounts):
+    books(year_dir)
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("3", "2026-03-28", debit=("外注費", "", 55000), credit=("普通預金", "サンプル銀行", 55000),
+                     摘要="フリコミ テストシヨウジ", 取り込み元ID="bank:main:paid"))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    evidence(year_dir)
+    run(year_dir, accounts)
+    assert "当期中に同額の支払あり（2026-03-28 bank:main:paid）。二重計上の恐れ" in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+    evidence(year_dir, 日付="2026-03-29")  # 支払より後の証憑は対象外
+    run(year_dir, accounts)
+    assert "二重計上" not in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+
+
+def test_next_year_rows_deduplicated_by_source_id(year_dir, accounts, next_dir):
+    books(year_dir)
+    evidence(year_dir)
+    next_journal(next_dir, [payment_out()])
+    next_journal(next_dir, [{**payment_out(), "判定": "要確認"}], "staging.csv")  # 同じ行が staging にも残っている
+    run(year_dir, accounts, next_dir)
+    assert "と一致" in staged(year_dir, "close:未払:ev1")[0]["要確認理由"]
+
+
+def income(date="2026-04-20", counter="売上高", memo="フリコミ テストシヨウジ", amount=110000):
+    return line("1", date, debit=("普通預金", "サンプル銀行", amount), credit=(counter, "", amount), 摘要=memo,
+                取り込み元ID=ID_BANK_IN)
+
+
+def test_receivable_skips_collection_of_booked_receivable(year_dir, accounts, next_dir):
+    books(year_dir)
+    for counter in ("売掛金", "未収入金", "前受金"):
+        next_journal(next_dir, [income(counter=counter)])
+        run(year_dir, accounts, next_dir)
+        assert staged(year_dir, f"close:未収:{ID_BANK_IN}") == [], counter
+
+
+def test_receivable_not_proposed_when_explained_by_year_end_balance(year_dir, accounts, next_dir):
+    books(year_dir)
+    rows = read_rows(year_dir / "journal.csv")
+    rows.append(line("3", "2026-03-10", debit=("売掛金", "", 110000), credit=("売上高", "", 110000), 取引先="テストシヨウジ"))
+    write_rows(year_dir / "journal.csv", JOURNAL_COLUMNS, rows)
+    next_journal(next_dir, [income()])
+    r = run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}") == []
+    assert any("翌期の入金 2026-04-20 110,000円（テストシヨウジ）は期末の売掛金で説明できる可能性があるので候補にしない" in n.message
+               for n in r.notes)
+    next_journal(next_dir, [income(amount=110001)])  # 残高を超える入金は候補になる
+    run(year_dir, accounts, next_dir)
+    (r,) = staged(year_dir, f"close:未収:{ID_BANK_IN}")
+    assert "期末の売掛金が110,000円あるので、一部は計上済みの可能性" in r["要確認理由"]
+
+
+def test_receivable_balance_by_sub_account_and_opening(year_dir, accounts, next_dir):
+    books(year_dir)
+    write_rows(year_dir / "opening-balances.csv", ["科目", "補助", "残高"], [
+        {"科目": "売掛金", "補助": "テストシヨウジ", "残高": "200000"}, {"科目": "資本金", "補助": "", "残高": "200000"}])
+    next_journal(next_dir, [income()])
+    r = run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}") == []
+    assert any(n.item == "未収" for n in r.notes)
+
+
+def test_receivable_payees(year_dir, accounts, next_dir):
+    books(year_dir, partner="テスト商事")
+    next_journal(next_dir, [income()])
+    run(year_dir, accounts, next_dir)
+    assert staged(year_dir, f"close:未収:{ID_BANK_IN}") == []
+    run(year_dir, accounts, next_dir, payees={"テスト商事": ["テストシヨウジ"]})
+    (r,) = staged(year_dir, f"close:未収:{ID_BANK_IN}")
+    assert r["取引先"] == "テスト商事"
+
+
+def test_rejected_candidate_excluded_from_tax_estimate(year_dir, accounts):
+    (year_dir / "period.yaml").write_text("\n".join([
+        '期首日: "2025-04-01"', '期末日: "2026-03-31"', "消費税:", "  区分: 課税", "  方式: 原則", "  計算: 割戻し",
+        "  控除: 全額控除", ""]), encoding="utf-8")
+    books(year_dir, taxable=True)
+    evidence(year_dir)
+
+    def tax_amount():
+        close.run_close(year_dir, accounts, items=close.ITEMS, sources=SOURCES)
+        return next(int(r["借方金額"]) for r in staged(year_dir, "close:消費税:2026-03-31") if r["借方科目"] == "租税公課")
+
+    with_unpaid = tax_amount()
+    close.reject_candidates(year_dir, ["close:未払:ev1"], "計上しない")
+    assert tax_amount() == with_unpaid + 5000  # 未払の候補（税込55,000＝税5,000）を除いた概算になる

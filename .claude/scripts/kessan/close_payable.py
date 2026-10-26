@@ -30,6 +30,7 @@ DUE_WINDOW_DAYS = 10         # 支払期日の前後
 NO_DUE_WINDOW_DAYS = 92      # 支払期日が無いとき、期末日の翌日から
 RECEIPT_WINDOW_DAYS = 60     # 未収：期末日の翌日から
 PURCHASE_KINDS = ("課税仕入", "課税仕入返還")
+COLLECTED_ACCOUNTS = ("売掛金", "未収入金", "前受金")  # 翌期の入金の相手がこれなら、計上済みの額の回収
 PAYABLE_PREFIX = f"{close.SOURCE_PREFIX}{ITEM_PAYABLE}:"
 
 
@@ -46,17 +47,22 @@ def _next_year_rows(ctx):
     if not (next_dir / PERIOD_FILE).exists():
         raise KessanError(f"翌期の年度フォルダに {PERIOD_FILE} がありません（--next-year-dir を確かめる）: {next_dir}")
     pay = payment_accounts(ctx.sources)
+    seen = set()  # 同じ取り込み元IDは1つだけ（journal.csv が staging.csv に優先）
     for name in ("journal.csv", "staging.csv"):
         for r in read_rows(next_dir / name):
             where = f"{next_dir.name}/{name} {r['伝票番号'] or r['日付']}"
             when = parse_date(r["日付"])
             if when is None:
                 continue
-            base = {"日付": when, "摘要": r["摘要"], "取り込み元ID": r["取り込み元ID"].strip()}
-            if (r["貸方科目"].strip(), r["貸方補助"].strip()) in pay:
-                out["出金"].append({**base, "金額": parse_amount(r["貸方金額"], where)})
-            if (r["借方科目"].strip(), r["借方補助"].strip()) in pay:
-                out["入金"].append({**base, "金額": parse_amount(r["借方金額"], where)})
+            sid = r["取り込み元ID"].strip()
+            base = {"日付": when, "摘要": r["摘要"], "取り込み元ID": sid}
+            for side, other, kind in (("貸方", "借方", "出金"), ("借方", "貸方", "入金")):
+                if (r[f"{side}科目"].strip(), r[f"{side}補助"].strip()) not in pay:
+                    continue
+                if sid and (sid, kind) in seen:
+                    continue
+                seen.add((sid, kind))
+                out[kind].append({**base, "金額": parse_amount(r[f"{side}金額"], where), "相手科目": r[f"{other}科目"].strip()})
     return out
 
 
@@ -100,6 +106,38 @@ def _debit_tax(ctx, ev, account, amount, line, reasons):
             line["借方個別対応"] = "共通"
 
 
+def _paid_this_year(ctx, ev, amount):
+    """証憑の日付から期末日までに、同額・同じ取引先の支払（貸方が支払口座）が帳簿にあれば、その行。"""
+    pay = payment_accounts(ctx.sources)
+    first, last = ev["日付"].strip(), ctx.period[1]
+    partner = ev["取引先"].strip()
+    for r in ctx.entries:
+        when = parse_date(r["日付"])
+        if (when is None or not first <= when <= last
+                or (r["貸方科目"].strip(), r["貸方補助"].strip()) not in pay
+                or parse_amount(r["貸方金額"], f"{r.get('_file', 'journal.csv')} {r['伝票番号']}") != amount):
+            continue
+        if _same_partner(ctx, partner, r["摘要"]) or _same_partner(ctx, partner, r["取引先"]):
+            return {"日付": when, "取り込み元ID": r["取り込み元ID"].strip()}
+    return None
+
+
+def _same_partner(ctx, partner, text):
+    return bool(partner and text and text.strip() and name_in_description(partner, text, ctx.abbreviations, ctx.payees))
+
+
+def _receivable_balance(ctx, partner):
+    """期末の売掛金のうち、取引先（または補助科目）がその取引先に当たる分（期首残高＋当期の仕訳）。"""
+    total = sum(v for (n, sub), v in ctx.opening.items() if n == RECEIVABLE_ACCOUNT and _same_partner(ctx, partner, sub))
+    for r in ctx.entries:
+        for side, sign in (("借方", 1), ("貸方", -1)):
+            if r[f"{side}科目"].strip() != RECEIVABLE_ACCOUNT:
+                continue
+            if _same_partner(ctx, partner, r["取引先"]) or _same_partner(ctx, partner, r[f"{side}補助"]):
+                total += sign * parse_amount(r[f"{side}金額"], f"{r.get('_file', 'journal.csv')} {r['伝票番号']}")
+    return total
+
+
 def _payables(ctx, outgoing):
     candidates, notes = [], []
     end = ctx.period[1]
@@ -116,6 +154,9 @@ def _payables(ctx, outgoing):
         partner = ev["取引先"].strip()
         debit = {"借方科目": account.name, "借方補助": ev["補助候補"].strip(), "借方金額": amount}
         reasons = [_payment_reason(ctx, ev, amount, outgoing)]
+        paid = _paid_this_year(ctx, ev, amount)
+        if paid:
+            reasons.append(f"当期中に同額の支払あり（{paid['日付']} {paid['取り込み元ID'] or '取り込み元IDなし'}）。二重計上の恐れ")
         _debit_tax(ctx, ev, account, amount, debit, reasons)
         line = {**debit, "貸方科目": PAYABLE_ACCOUNT, "貸方金額": amount, "取引先": partner,
                 "摘要": " ".join(x for x in ("未払計上", partner, ev["内容"].strip()) if x)}
@@ -130,10 +171,15 @@ def _receivables(ctx, incoming):
     first, last = _day(end) + timedelta(days=1), _day(end) + timedelta(days=RECEIPT_WINDOW_DAYS)
     candidates, notes = [], []
     for r in incoming:
-        if not first <= _day(r["日付"]) <= last or r["金額"] <= 0:
+        if not first <= _day(r["日付"]) <= last or r["金額"] <= 0 or r["相手科目"] in COLLECTED_ACCOUNTS:
             continue
         partner = next((p for p in partners if name_in_description(p, r["摘要"], ctx.abbreviations, ctx.payees)), None)
         if partner is None:
+            continue
+        balance = _receivable_balance(ctx, partner)
+        if balance >= r["金額"]:
+            notes.append(close.Note(ITEM_RECEIVABLE, f"翌期の入金 {r['日付']} {r['金額']:,}円（{partner}）は期末の売掛金で説明できる"
+                                                      "可能性があるので候補にしない"))
             continue
         if not r["取り込み元ID"]:
             notes.append(close.Note(ITEM_RECEIVABLE, f"翌期の入金 {r['日付']} {r['金額']:,}円「{r['摘要']}」は取り込み元IDが無いため"
@@ -143,7 +189,8 @@ def _receivables(ctx, incoming):
                 "貸方税区分": SALES_TAX if ctx.tax_settings.taxable else "", "取引先": partner,
                 "摘要": f"未収計上 {partner}（翌期の入金 {r['日付']}）"}
         candidates.append(close.Candidate(ITEM_RECEIVABLE, r["取り込み元ID"], end, [line],
-                                          "当期分の売上か確認（翌期の入金から推定）"))
+                                          "当期分の売上か確認（翌期の入金から推定）"
+                                          + (f"。期末の売掛金が{balance:,}円あるので、一部は計上済みの可能性" if balance > 0 else "")))
     return candidates, notes
 
 

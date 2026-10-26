@@ -295,6 +295,7 @@ def test_reject_drops_candidate_and_reports_reason(year_dir, accounts):
 
 def test_reject_keeps_amounts_and_validates(year_dir, accounts):
     base_books(year_dir)
+    close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 1000)])])
     close.set_amount(year_dir, "消費税", 100)
     close.reject_candidates(year_dir, ["close:テスト:k1"], "不要")
     close.set_amount(year_dir, "法人税等", 200)
@@ -354,3 +355,29 @@ def test_tax_candidate_posts_with_only_corporate_tax_left(year_dir, accounts):
     close.approve_candidates(year2, ["close:消費税:2026-03-31"])
     with pytest.raises(KessanError, match="消費税の候補"):
         close.post_candidates(year2, accounts, items=other)
+
+
+def test_reject_unknown_id_is_error(year_dir, accounts):
+    base_books(year_dir)
+    close.run_close(year_dir, accounts, items=[FakeItem([fee("k1", 1000)])])
+    with pytest.raises(KessanError, match="候補にないID.*k9"):
+        close.reject_candidates(year_dir, ["close:テスト:k1", "close:テスト:k9"], "誤字")
+    assert close.load_rejected(year_dir) == {}
+    assert [r["取り込み元ID"] for r in staging(year_dir)] == ["close:テスト:k1"]
+
+
+def test_reject_other_candidate_unapproves_tax(year_dir, accounts):
+    base_books(year_dir)
+    tax = close.Candidate(item="消費税", key="2026-03-31", date="2026-03-31", reason="t", lines=[
+        {"借方科目": "租税公課", "借方金額": "100", "貸方科目": "未払消費税等", "貸方金額": "100"}])
+    corp = close.Candidate(item="法人税等", key="2026-03-31", date="2026-03-31", reason="c", lines=[
+        {"借方科目": "法人税等", "借方金額": "200", "貸方科目": "未払法人税等", "貸方金額": "200"}])
+    items = [FakeItem([fee("k1", 1000), tax, corp])]
+    close.run_close(year_dir, accounts, items=items)
+    close.approve_candidates(year_dir, ["close:消費税:2026-03-31"])
+    close.reject_candidates(year_dir, ["close:法人税等:2026-03-31"], "別途")  # 法人税等は消費税に影響しない
+    assert [r["承認"] for r in staging(year_dir) if r["取り込み元ID"].startswith("close:消費税")] == ["済"]
+    close.reject_candidates(year_dir, ["close:テスト:k1"], "不要")
+    (r,) = staging(year_dir)
+    assert (r["取り込み元ID"], r["承認"], r["判定"]) == ("close:消費税:2026-03-31", "", "要確認")
+    assert "他の候補の却下で額が変わる" in r["要確認理由"]

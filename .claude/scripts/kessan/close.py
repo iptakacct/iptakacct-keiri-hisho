@@ -42,6 +42,7 @@ SOURCE_PREFIX = "close:"
 TAX_PREFIX = "close:消費税:"
 CORP_PREFIX = "close:法人税等:"  # 法人税等は消費税の額を変えないので、消費税の登録順の判定では無視する
 REJECTED_KEY = "rejected"
+TAX_UNAPPROVED_REASON = "他の候補の却下で額が変わる（close-candidates を再実行）"
 
 
 @dataclass(frozen=True)
@@ -557,20 +558,33 @@ def reject_candidates(year_dir, source_ids, reason):
         raise KessanError("登録済みの候補は却下できません（登録済みの伝票を手で直す）: " + "、".join(done))
     load_overrides(year_dir)
     rejected = load_rejected(year_dir)
+    staging = read_rows(year_dir / STAGING_FILE)
+    known = {r["取り込み元ID"].strip() for r in staging} | set(rejected)
+    unknown = [s for s in ids if s not in known]
+    if unknown:
+        raise KessanError("候補にないID（何も却下していません。close-candidates で出た取り込み元IDを指定する）: " + "、".join(unknown))
     data = _load_raw(year_dir)
     rejected.update({s: reason for s in ids})
     data[REJECTED_KEY] = rejected
-    staging = read_rows(year_dir / STAGING_FILE)
-    in_staging = any(r["取り込み元ID"].strip() in ids for r in staging)
-    if in_staging:
-        ensure_writable(year_dir, [STAGING_FILE])  # 先に確かめる（却下だけ記録して承認済みの行が残る形を避ける）
-    _save_raw(year_dir, data)
-    if in_staging:
+    # 消費税・法人税等以外の候補を却下すると消費税の額が変わるので、承認済みの消費税の候補は承認を外す
+    unapprove_tax = any(not s.startswith((TAX_PREFIX, CORP_PREFIX)) for s in ids)
+    new_rows, changed = [], False
+    for r in staging:
+        sid = r["取り込み元ID"].strip()
+        if sid in ids:
+            changed = True
+            continue
+        if unapprove_tax and sid.startswith(TAX_PREFIX) and r["承認"].strip() == "済":
+            r.update({"承認": "", "判定": NEEDS_REVIEW, "要確認理由": add_reasons(r["要確認理由"], TAX_UNAPPROVED_REASON)})
+            changed = True
+        new_rows.append(project(r, STAGING_COLUMNS))
+    if changed:
+        ensure_writable(year_dir, [STAGING_FILE])
         try:
-            replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS,
-                         [project(r, STAGING_COLUMNS) for r in staging if r["取り込み元ID"].strip() not in ids])
+            replace_rows(year_dir / STAGING_FILE, STAGING_COLUMNS, new_rows)
         except OSError:
             raise cannot_write(STAGING_FILE) from None
+    _save_raw(year_dir, data)  # staging を先に書く（失敗しても却下だけ記録されて承認済みの行が残る形にならない）
 
 
 # 項目の順：未払・未収 → 前払 → 減価償却 → 役員報酬・残高の所見 → 消費税・法人税等（後のタスクが close_tax の前に足す）
