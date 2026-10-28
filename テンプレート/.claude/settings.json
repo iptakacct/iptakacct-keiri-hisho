@@ -27,10 +27,6 @@
       "WebFetch"
     ],
     "ask": [
-      "Write(context/company/**)",
-      "Write(context/customers/**)",
-      "Write(context/members/**)",
-      "Write(context/rules/**)",
       "Edit(context/company/**)",
       "Edit(context/customers/**)",
       "Edit(context/members/**)",
